@@ -142,12 +142,11 @@ diagnostics:
 
 ### 3.2 工具清单(HARD CONTRACT)
 
-| 工具名                               | 只读 | 破坏性 | 幂等 |
-| ------------------------------------ | ---- | ------ | ---- |
-| `list_run_configurations_with_state` | ✓    | ✗      | ✓    |
-| `get_run_configuration_status`       | ✓    | ✗      | ✓    |
-| `stop_run_configuration`             | ✗    | ✓      | ✓    |
-| `rerun_run_configuration`            | ✗    | ✓      | ✗    |
+| 工具名                        | 只读 | 破坏性 | 幂等 |
+| ----------------------------- | ---- | ------ | ---- |
+| `list_running_configurations` | ✓    | ✗      | ✓    |
+| `stop_run_configuration`      | ✗    | ✓      | ✓    |
+| `rerun_run_configuration`     | ✗    | ✓      | ✗    |
 
 每个工具 MUST：
 
@@ -156,6 +155,13 @@ diagnostics:
 - 归属同一个 `McpToolCategory`
 - 名字是合法 snake_case
 
+> 只有三个工具的取舍：内置的 `get_run_configurations` 已经回答"有哪些配置"（静态），
+> 本插件负责"现在到底什么在跑"（动态）与"停 / 重启"。曾经有过第四个工具
+> `get_run_configuration_status`（按名查单个配置的状态），经实测判定冗余并**移除**：
+> 它唯一独占的能力是"省一次全量拉取"，而"名字纠错"由 §3.5 / §3.6 的按名工具提供
+> （同一套解析：精确 → 忽略大小写 → 列候选名），"看实时状态"由 `list_running_configurations`
+> 提供（项目里并发的作业本来就不多，全量拉一次很便宜）。工具少一个，agent 少一次选择。
+
 ### 3.3 定位配置名的规则(HARD CONTRACT)
 
 - MUST 先**精确**匹配 `RunnerAndConfigurationSettings.name`
@@ -163,26 +169,36 @@ diagnostics:
 - 仍失败时 MUST 返回 `isError = true`，并在 `structuredContent.availableNames` 里给出全部非模板配置名（排序后）
 - MUST NOT 静默创建一个同名配置
 
-### 3.4 `list_run_configurations_with_state`
+### 3.4 `list_running_configurations`
 
 入参：
 
-| 参数               | 类型    | 必填 | 默认   |
-| ------------------ | ------- | ---- | ------ |
-| `includeTemplates` | boolean | 否   | `true` |
+| 参数          | 类型   | 必填 | 默认 |
+| ------------- | ------ | ---- | ---- |
+| `projectPath` | string | 否   | —    |
+
+**只要 `projectPath`**，没有模板开关、也没有"是否只看在跑的"开关。理由：
+
+- 模板不是实例、**永远不会在跑**，所以"只返回在跑的"天然把它排除，再加开关是多余的
+- 工具名就叫 running，那就不该存在"返回全部配置"这种模式；想知道"有哪些配置"用内置的 `get_run_configurations`
 
 行为：
 
-- MUST 列出全部 Run Configuration；`includeTemplates = false` 时 MUST 排除模板
-- MUST 附带实时状态：`running`、`runningInstanceCount`、`instances[]`
+- MUST 只返回**至少有一个活实例**的配置；没有在跑的配置 MUST 完全不出现
+- 每个配置的 `instances[]` MUST 只含**活实例**（已结束的 Run 内容——Run 工具窗口留下的标签页——MUST 被剔除）
+- 于是有三个恒等式：`runningInstanceCount` == `instances` 的长度、`running` 恒为 true、`exitCode` 恒为 null
 - 每个实例 MUST 含 `executionId` / `displayName` / `running` / `terminating` / `startNotified` / `pid` / `exitCode`
-- MUST 按 `RunManager.allSettings` 的顺序输出（保证可复现）
+- MUST 按 `RunManager.allSettings` 的顺序输出（保证可复现）；筛选 MUST 是纯过滤（`onlyRunningInstances()`），MUST NOT 重排
+- 文本摘要 MUST 在"什么都没在跑"时直说（例如 `Nothing is running in this project.`）
+
+> 与 `stop` / `rerun` 的区别是刻意的：那两个工具报告"它实际动过哪些实例"，所以保留已结束的记录
+> （退出码正是"停干净了没有"的证据）；list 回答的是"现在什么在跑"，所以整份返回里不含任何不在跑的东西。
+> 三个工具复用同一个元素结构，所以 list 里 `isTemplate` / `running` 会是常量——不影响校验。
 
 输出 JSON：
 
 ```json
 {
-  "count": 6,
   "runningCount": 1,
   "configurations": [
     {
@@ -190,7 +206,7 @@ diagnostics:
       "type": "js.build_tools.npm",
       "isTemplate": false,
       "running": true,
-      "runningInstanceCount": 2,
+      "runningInstanceCount": 1,
       "instances": [
         {
           "executionId": 1832,
@@ -207,13 +223,7 @@ diagnostics:
 }
 ```
 
-### 3.5 `get_run_configuration_status`
-
-- MUST 只读，MUST NOT 启动任何东西
-- MUST 返回与 §3.4 相同的单个 `RunConfigurationState` JSON
-- 文本摘要 MUST 在 `runningInstanceCount > 1` 时给出"被启动了不止一次"的告警——这是端口漂移的直接信号
-
-### 3.6 `stop_run_configuration`
+### 3.5 `stop_run_configuration`
 
 入参：
 
@@ -231,6 +241,9 @@ diagnostics:
 - `force = true` 且超时后 MUST 对仍在终止中的 `KillableProcess` 调用 `killProcess()`
 - `configurationName` 缺失 → `isError = true`，`structuredContent.argument = "configurationName"`
 - 该配置没在跑 → `isError = false`（这是正常状态，不是错误），`matchedInstances = 0`
+- **可重入(HARD CONTRACT)** —— 重复 stop MUST 幂等成功，MUST NOT 因为"它已经停了"报错；
+  并发 stop MUST 也各自安全（后到的一个通常看到"没在跑"，同样返回成功）。
+  理由：agent 在"确保它停掉"的意图下重复调用是完全正常的，不该让它去分辨"是失败还是本来就没跑"
 
 输出 JSON：
 
@@ -247,16 +260,17 @@ diagnostics:
 }
 ```
 
-### 3.7 `rerun_run_configuration`
+### 3.6 `rerun_run_configuration`
 
 入参：
 
-| 参数                | 类型    | 必填 | 默认   |
-| ------------------- | ------- | ---- | ------ |
-| `configurationName` | string  | 是   | —      |
-| `stopTimeoutMs`     | integer | 否   | `5000` |
+| 参数                | 类型    | 必填 | 默认    |
+| ------------------- | ------- | ---- | ------- |
+| `configurationName` | string  | 是   | —       |
+| `stopTimeoutMs`     | integer | 否   | `5000`  |
+| `startTimeoutMs`    | integer | 否   | `20000` |
 
-行为 —— MUST 等价于 IDE 的 Rerun 按钮：
+行为 —— MUST 与 IDE 的 Rerun 按钮有同样的可观察效果：
 
 | 起始状态           | MUST 做什么                                        | `mode`      |
 | ------------------ | -------------------------------------------------- | ----------- |
@@ -264,23 +278,55 @@ diagnostics:
 | 没有实例在跑       | 直接启动                                           | `STARTED`   |
 | IDE 造不出执行环境 | 什么都不做，`warnings[]` 说明原因                  | `NO_OP`     |
 
-- MUST 通过 `ExecutionManager.restartRunProfile(ExecutionEnvironment)` 启动，与界面按钮同一条代码路径
+- **MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；MUST NOT 发出启动请求后立刻做快照
+  —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"
+- MUST NOT 用"拿到第一段输出就返回"来缩短等待：第一段通常是回显的启动命令行，MUST 采满窗口再返回
+- MUST 用 `ProgramRunner.Callback` 接住 `processStarted` / `processNotStarted`
+  （经 `ProgramRunnerUtil.executeConfigurationAsync`），与内置 `execute_run_configuration` 同一条路
+- MUST 在 `processStarted` 里给 `ProcessHandler` 挂输出监听并 `startNotify()`
+- `output` MUST 是新进程输出的内联预览，上限 10000 字符，超出时补 `<truncated>`
+- `fullOutputPath` MUST 指向完整日志文件，进程运行期间持续增长
+- `sessionId` 语义 MUST 与内置工具一致：单活实例用配置名，多活实例用 `<名字>#<executionId>`
+- `transition[]` MUST 按时间顺序给出状态节点（`STOPPED` / `STARTED` / `START_FAILED`）并带每步耗时；
+  停掉的旧实例的退出码 MUST 出现在第一个节点的 `detail` 里
+- `STARTED` 节点的 `elapsedMs` MUST 是"到进程真的被创建"的时间，MUST NOT 把返回前采集日志的固定窗口算进去
+  （否则摘要会写成"启动用了 2 秒"，而实际是等日志等了 2 秒）
+- 判断"新进程到底起没起" MUST 看 `started`，MUST NOT 只看 `mode`
 - MUST NOT 改写项目的启动命令，MUST NOT 按命令行模式匹配，MUST NOT 依赖固定监听端口
 - 旧实例超时未退出时 MUST 仍然启动新实例，并在 `warnings[]` 里说明
+- **可重入性(HARD CONTRACT)** —— 两条守护都必须有，且都必须返回 `isError = true` 而不是放行到平台：
+  1. 目标配置处于**中间态**（`terminating`，或已创建进程但还没 `startNotified`）时 MUST 拒绝，理由必须写明
+     "IDE 在这个状态下会禁用 Rerun"；这正是 GUI 把 Rerun 按钮灰掉的那两种状态
+     （平台 `FakeRerunAction.isEnabled` 判的就是 `isStarting()` 与 `isProcessTerminating()`）
+  2. **同一配置**已有一次 rerun 正在飞行中时 MUST 拒绝，并提示等它结束
+- 第 2 条不是可选的：放行到平台的实测后果是——平台会为"对已在运行的配置再来一次"弹**模态确认框**，
+  而 MCP 这条无头路径上没人点它，于是这次调用挂约 **20 秒后拿到传输层 HTTP 404 空响应**（见 `RunLifecycleInFlight` 的 KDoc）
+- 守护的粒度 MUST 是"每个项目 + 每个配置名"：实测**不同配置**并发 rerun 都正常，只有**同配置**才会撞；
+  MUST NOT 做成全局互斥（那会连正当的"重启 B 的同时重启 A"也挡掉）
+- 占用 MUST 在 `finally` 里释放，否则该配置名会被永久占住、再也 rerun 不了
 - 输出 JSON：
 
 ```json
 {
   "configurationName": "console > dev",
   "mode": "RESTARTED",
+  "started": true,
+  "startFailure": null,
   "stoppedInstances": 1,
   "runningAfter": 1,
+  "sessionId": "console > dev",
+  "output": "[node] listening on http://127.0.0.1:3201\n",
+  "fullOutputPath": "/…/system/tmp/ij_rerun__console_dev_<uuid>.log",
+  "transition": [
+    { "phase": "STOPPED", "detail": "stop requested for 1 instance(s); forced kills: 0; exit codes: 0", "elapsedMs": 180 },
+    { "phase": "STARTED", "detail": "execution 3, pid 1003", "elapsedMs": 640 }
+  ],
   "instances": [ ... ],
   "warnings": []
 }
 ```
 
-### 3.8 返回值通用约定
+### 3.7 返回值通用约定
 
 - 成功 MUST 用 `McpToolCallResult.text(摘要文本, 结构化JSON)`
 - 失败 MUST 用 `McpToolCallResult.error(说明文本, 结构化JSON)`
@@ -288,10 +334,36 @@ diagnostics:
 - **null 字段 MUST 保留为 JSON `null`，MUST NOT 省略该键**——agent 要能区分"键不存在"（工具出错）与"值为 null"（进程还没起来）
 - 数组 MUST 输出 `[]` 而非省略
 
-### 3.9 异常处理(HARD CONTRACT)
+- **失败返回 MUST NOT 依赖 `structuredContent`**：MCP Server 只在"注册表开关 `mcp.server.structured.tool.output` 打开
+  **且 `isError == false`**"时才输出 `structuredContent`（`McpSessionHandlerKt.toSdkToolCallResult` 的字节码里
+  就是 `ifeq` + `ifne` 两道跳转）。所以错误结果在 wire 上只有 `isError: true` + `content[0].text`。
+  推论：**错误文案 MUST 自洽**——配置名、当前状态、候选名、建议动作这些关键信息 MUST 全部写在文本里，
+  MUST NOT 只放在 `structuredContent` 里（那样 agent 永远看不到）。
+  失败仍 MUST 用 `McpToolCallResult.error(说明文本, 结构化JSON)`（成功路径同形，且服务器将来若放开错误结构化输出即可直接用）
+- 上面"null 键保留"的约定只对**成功**返回有意义（错误返回根本没有结构化部分）
+
+### 3.8 异常处理(HARD CONTRACT)
 
 - 工具执行期间抛出的任何异常 MUST 被捕获并转成 `McpToolCallResult.error("Tool <name> failed: <原因>")`
 - MUST NOT 把异常抛给 MCP Server（那样 agent 只能看到不可读的失败）
+
+### 3.9 与内置 MCP Server 的契约对齐(HARD CONTRACT)
+
+MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项目"。解析依据只有两个：
+
+1. header `IJ_MCP_SERVER_PROJECT_PATH`
+2. 调用参数 `projectPath`
+
+两者都没有时，它在工具代码之外直接返回 `Unable to determine the target project for the current MCP tool call`
+——**即使当时只打开了一个项目**（实测：只开一个项目、不带参数调内置 `get_run_configurations` 同样被拒）。
+
+- 三个工具的输入 schema **MUST** 声明可选的 `projectPath`（string），且 **MUST NOT** 放进 `required`
+  （有 header 时它是可选的；内置 58 个工具里 54 个声明了它，全都不放进 `required`）
+- `projectPath` 的**描述 MUST 与内置工具逐字一致**（见 `RunLifecycleSchemas.PROJECT_PATH_DESCRIPTION`），
+  这样 agent 对"这个参数是什么"的认知与调内置工具时完全一致
+- 三个工具 **MUST** 声明 `outputSchema`：既然返回了 `structuredContent`，就 MUST 声明它的结构
+- `outputSchema` 里可为 null 的字段 MUST 写成 `["<类型>", "null"]`（单类型声明会让严格客户端在
+  "进程还在跑所以 `exitCode` 为 null"这种正常返回上校验失败）
 
 ---
 
@@ -389,4 +461,4 @@ diagnostics:
 
 ## 版本与变更
 
-见 [`CHANGELOG.md`](./CHANGELOG.md)。当前版本 `0.1.0`。
+见 [`CHANGELOG.md`](./CHANGELOG.md)。当前版本 `0.0.1`。

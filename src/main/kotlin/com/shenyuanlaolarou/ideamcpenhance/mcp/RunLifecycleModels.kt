@@ -45,6 +45,14 @@ data class RunInstanceState(
 ) {
     /** 是否处于"已经要求停、但还没停下来"的中间态——`stop` 超时后需要 force 的就是这些。 */
     val stuckTerminating: Boolean get() = terminating && !running
+
+    /**
+     * 是否落在"启动中 / 停止中"这类中间态。
+     *
+     * 这正是 IDE 的 **Rerun 按钮灰掉**的两种状态（见平台 `FakeRerunAction.isEnabled`：
+     * `ExecutionEnvironmentProxy.isStarting()` 与 `ProcessHandler.isProcessTerminating()`）。
+     */
+    val inTransientState: Boolean get() = terminating || (running && !startNotified)
 }
 
 /**
@@ -65,7 +73,23 @@ data class RunConfigurationState(
 
     /** 活着的实例个数。>1 就说明重复启动了（端口漂移的根因）。 */
     val runningInstanceCount: Int get() = instances.count { it.running }
+
+    /** 处于"启动中 / 停止中"中间态的第一个实例；没有就是 null。 */
+    val transientInstance: RunInstanceState? get() = instances.firstOrNull { it.inTransientState }
 }
+
+/**
+ * 只留活实例的投影。
+ *
+ * 给"只报现在什么在跑"的 `list_running_configurations` 用。切完之后返回里就不含任何"不在跑"的东西：
+ * 已结束的 Run 内容（Run 工具窗口留下的标签页）不再出现，于是 `running` 恒为 true、`exitCode` 恒为 null，
+ * 而 `runningInstanceCount` 也就等价于 `instances` 的长度。
+ *
+ * 与 `stop` / `rerun` 的区别是刻意的：那两个工具要报告"它实际动过哪些实例"，所以保留已结束的记录
+ * （退出码正是"停干净了没有"的证据）；而 list 回答的是"现在什么在跑"。
+ */
+fun RunConfigurationState.onlyRunningInstances(): RunConfigurationState =
+    copy(instances = instances.filter { it.running })
 
 /** `stop_run_configuration` 的结果。 */
 data class StopReport(
@@ -89,16 +113,56 @@ data class RerunReport(
     val mode: RerunMode,
     /** 重启前先停掉的实例数。 */
     val stoppedInstances: Int,
-    /** 重启/启动完成后仍在跑的实例数。 */
+    /** 新进程起来**并且注册进 Run 内容列表之后**，仍在跑的实例数。 */
     val runningAfter: Int,
     val instances: List<RunInstanceState>,
     val warnings: List<String>,
+    /** 新进程是否真的起来了。false 时看 [startFailure]，不要只看 [mode]。 */
+    val started: Boolean = false,
+    /** 启动失败的原因；成功时为 null。 */
+    val startFailure: String? = null,
+    /** 运行会话标识，字段语义与内置 `execute_run_configuration` 的 `sessionId` 一致。 */
+    val sessionId: String? = null,
+    /** 新进程输出的内联预览（最多 10000 字符，超出补 `<truncated>`），与官方 `output` 一致。 */
+    val output: String = "",
+    /** 完整日志文件路径，进程运行期间会持续增长，与官方 `fullOutputPath` 一致。 */
+    val fullOutputPath: String? = null,
+    /** 这次 rerun 的状态流转，见 [RunTransitionStep]。 */
+    val transition: List<RunTransitionStep> = emptyList(),
 )
+
+/**
+ * rerun 过程中的一个状态节点。
+ *
+ * 单独给出来是因为"重启"是个多步过程（先停旧的、再起新的、新的到底起没起），
+ * 只给一个最终结果，调用方无法判断卡在了哪一步、每步花了多久。
+ *
+ * @param elapsedMs 从发出 rerun 请求到走到这个节点所经过的毫秒数
+ */
+data class RunTransitionStep(
+    val phase: TransitionPhase,
+    val detail: String,
+    val elapsedMs: Long,
+)
+
+/** 状态流转的节点类型。 */
+enum class TransitionPhase(val jsonValue: String) {
+    /** 旧实例已停（实例数、退出码写在 detail 里）。 */
+    STOPPED("STOPPED"),
+
+    /** 新进程已创建并注册。 */
+    STARTED("STARTED"),
+
+    /** 启动请求发出但没起来（IDE 拒绝 / 超时）。 */
+    START_FAILED("START_FAILED"),
+}
 
 /**
  * rerun 的实际路径。
  *
  * 三个取值对应 IDE 里 Rerun 按钮的三种可观察行为，agent 可以据此判断"这次到底是重启了还是新起了"。
+ *
+ * 注意这只是"**发起了什么**"，"**新进程到底起没起**"看 [RerunReport.started]。
  */
 enum class RerunMode(val jsonValue: String) {
     /** 原本在跑 → 已停掉旧实例再启动，与界面 Rerun 一致。 */
@@ -107,7 +171,7 @@ enum class RerunMode(val jsonValue: String) {
     /** 原本没在跑 → 直接启动。 */
     STARTED("STARTED"),
 
-    /** 存在同名但身份不明的实例，或启动被 IDE 拒绝 → 什么都没做。 */
+    /** 连启动都发不出去（构造不出 ExecutionEnvironment）→ 什么都没做。 */
     NO_OP("NO_OP"),
 }
 
@@ -194,11 +258,27 @@ internal fun StopReport.toJson(): JsonObject = buildJsonObject {
     }
 }
 
+internal fun RunTransitionStep.toJson(): JsonObject = buildJsonObject {
+    put("phase", phase.jsonValue)
+    put("detail", detail)
+    put("elapsedMs", elapsedMs)
+}
+
 internal fun RerunReport.toJson(): JsonObject = buildJsonObject {
     put("configurationName", configurationName)
     put("mode", mode.jsonValue)
+    put("started", started)
+    put("startFailure", startFailure)
     put("stoppedInstances", stoppedInstances)
     put("runningAfter", runningAfter)
+    put("sessionId", sessionId)
+    put("output", output)
+    put("fullOutputPath", fullOutputPath)
+    putJsonArray("transition") {
+        for (step in transition) {
+            add(step.toJson())
+        }
+    }
     putJsonArray("instances") {
         for (instance in instances) {
             add(instance.toJson())

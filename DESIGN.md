@@ -11,7 +11,7 @@
 一个 JetBrains IDE 插件，由两个**互不依赖**的能力组成：
 
 1. **复制 prompt**：两个编辑器右键菜单，把选区 / 当前文件诊断变成 LLM-ready 文本进剪贴板
-2. **Run Lifecycle MCP 工具**：四个 MCP 工具，补齐内置 MCP Server 缺失的 Run Configuration 生命周期能力
+2. **Run Lifecycle MCP 工具**：三个 MCP 工具，补齐内置 MCP Server 缺失的 Run Configuration 生命周期能力
 
 **设计目标**（按优先级）：
 
@@ -36,7 +36,7 @@ src/main/kotlin/com/shenyuanlaolarou/ideamcpenhance/
     ├── RunLifecycleModels.kt           ← 纯数据 + 纯函数：状态快照 → JSON
     ├── RunLifecycleSchemas.kt          ← 工具描述符 / 输入 schema / 参数解析
     ├── RunConfigAccess.kt              ← 平台 API：RunManager / RunContentManager / ProcessHandler
-    └── RunLifecycleToolsProvider.kt    ← 四个 McpTool：解析参数 → 调接线层 → 包结果
+    └── RunLifecycleToolsProvider.kt    ← 三个 McpTool：解析参数 → 调接线层 → 包结果
 ```
 
 | 层                                                            | 允许                                                 | 禁止                      |
@@ -117,7 +117,7 @@ else if (!handler.isProcessTerminated) {
 
 **不能用 `getDisplayName()`**：那是 UI 文本，多实例时会被加 "(2)" 之类后缀，拿它和配置名比对必然失配——而"同一配置有几个实例"恰恰是要回答的核心问题。
 
-### 3.5 决策 3：`rerun` 走 `restartRunProfile(ExecutionEnvironment)`，而不是 `ExecutionUtil.restartIfActive(descriptor)`
+### 3.5 决策 3：`rerun` 自己接 `ProgramRunner.Callback` 同步等启动，而不是 `restartRunProfile` / `ExecutionUtil.restartIfActive`
 
 `ExecutionUtil.restartIfActive(descriptor)` 看起来正合适，但它内部是：
 
@@ -129,28 +129,67 @@ if (env != null) restart(env);
 
 **从 UI 组件的 DataContext 里捞环境**——这依赖 Run 工具窗口的组件树，在 MCP 这条无头路径上不可靠。
 
-因此本插件自己构造环境：
+`ExecutionManager.restartRunProfile(ExecutionEnvironment)` 是 Rerun 按钮走的路径，但它是**发射后不管**的：调用后立刻
+快照，新实例的 `RunContentDescriptor` 还没注册，`runningAfter` 必然读到 0。实测过一次：
+
+```json
+{
+  "mode": "STARTED",
+  "runningAfter": 0,
+  "instances": [
+    { "executionId": 5, "running": false },
+    { "executionId": 7, "running": false }
+  ]
+}
+```
+
+而人话摘要写着 "Started ... — it was not running."；1 秒后再查还是空，4 秒后新实例（`executionId 8, pid 28247`）才出现。
+agent 完全会把它读成"启动失败"，进而重复启动或误报。
+
+内置 MCP 的 `execute_run_configuration` 没有这个问题：它的文档明确写
+_"When `waitForExit=false`, waits only for the process to start, then returns immediately"_。
+它的实现放在 `com.intellij.mcpserver.util.Execution_utilKt`，核心是
+`ProgramRunnerUtil.executeConfigurationAsync(env, false, true, callback)` + 一个 `ProgramRunner.Callback`：
+在 `processStarted` 里拿 `descriptor.processHandler`、`addProcessListener`、`startNotify()`，
+把 stdout/stderr 同时写进内存预览和 `ij_run__*.log`。
+
+**本插件照搬这条机制，但只用公开平台 API**：
 
 ```kotlin
 ExecutionEnvironmentBuilder
     .createOrNull(DefaultRunExecutor.getRunExecutorInstance(), settings)
     ?.activeTarget()      // 与界面按 Run 时选中的 target 一致，而不是硬编码某个 ExecutionTarget
     ?.build()
-ExecutionManager.getInstance(project).restartRunProfile(environment)
+// → startRunAndAwait(): executeConfigurationAsync(..., callback) → 等 pid 可读 → 等第一段输出 → 等 Run 内容注册
 ```
+
+**为什么不直接调官方的 `Execution_utilKt`**：它在 `com.intellij.mcpserver.util` 下，没有文档承诺，
+且 `StartedRunConfigurationExecution` 是包内可见的（`final class`，非 public），
+把插件链接到它等于绑死在一个随时会变的内部实现上。用公开 API 复刻能拿到完全一样的可观察行为，
+代价只是多几十行代码。
 
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
 
-### 3.6 决策 4：四个工具的粒度
+**为什么不用 `ProcessAdapter` 挂监听**：它在 2026.2 已废弃，而 `ProcessListener` 的方法现在全都有默认实现，
+直接实现接口即可（`RunOutputCollector.listener`）。
 
-| 工具                  | 为什么需要                                                                                       |
-| --------------------- | ------------------------------------------------------------------------------------------------ |
-| `list_..._with_state` | 内置的 `get_run_configurations` 只给**静态配置信息**（名字、是否支持启动参数覆盖），不给运行状态 |
-| `get_..._status`      | 停 / 重启之前先看一眼，避免盲操作；也能确认上一次启动到底起没起                                  |
-| `stop_...`            | 补最关键的缺口；且**停掉全部实例**——只停最新的那个等于没修端口漂移                               |
-| `rerun_...`           | 改完代码重启，是本插件存在的首要理由                                                             |
+**日志文件前缀故意用 `ij_rerun__` 而不是官方的 `ij_run__`**：两者内容与生命周期语义一样，
+同目录下能一眼看出哪个是本插件的 rerun 产生的。
+
+### 3.6 决策 4：三个工具的粒度
+
+| 工具               | 为什么需要                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_running_...` | 内置的 `get_run_configurations` 只给**静态配置信息**（名字、是否支持启动参数覆盖），不给运行状态；本插件只报在跑的，整份返回里不含任何已结束的实例 |
+| `stop_...`         | 补最关键的缺口；且**停掉全部实例**——只停最新的那个等于没修端口漂移                                                                                 |
+| `rerun_...`        | 改完代码重启，是本插件存在的首要理由                                                                                                               |
 
 `stop` 幂等（对没在跑的配置返回"无需停止"而非报错），`rerun` 不幂等（每次都是新的一次启动）。
+
+**第四个工具 `get_..._status` 被砍掉了**（曾经存在过）：它按名字查单个配置的状态，但经实测判定冗余 ——
+"名字纠错"`stop` / `rerun` 本来就有（同一套 `findSettingsByName` + `unknownConfiguration`），
+"看实时状态"由 `list_running_...` 覆盖（项目里并发的作业本来就不多，全量拉一次很便宜），
+它剩下的唯一价值只是"省一次全量拉取"。工具少一个，agent 少一次选择。
 
 ### 3.7 决策 5：null 键保留不省略
 
@@ -181,6 +220,35 @@ for (handler in handlers) { handler.waitFor(剩余时间) }
 ### 3.10 决策 8：为什么用 `McpToolsProvider` 而不是 `McpToolset`
 
 见 `AGENTS.md` 的「MCP 扩展点的真实形状」。简述：`McpToolset` 那条路是反射式的，要挂 kotlinx-serialization 的编译器插件，返回类型必须 `@Serializable`；`McpToolsProvider` 让我们手写 schema 与输出 JSON，可读可测，且不让 MCP 的构建配置污染 prompt 那一半。
+
+### 3.11 决策 9：`projectPath` 与 `outputSchema` 必须和内置工具对齐
+
+两件事都是实测出来的差距，不是风格偏好。
+
+**`projectPath`**：MCP Server 在派发到工具之前先解析目标项目，依据只有 header `IJ_MCP_SERVER_PROJECT_PATH`
+或参数 `projectPath`。原以为"只打开一个项目"就够了——实测**不够**：不带参数调内置 `get_run_configurations`
+（此时只开着一个项目）同样被拒。于是：
+
+| 客户端配置        | 内置工具 | 本插件（修前）               |
+| ----------------- | -------- | ---------------------------- |
+| 有 header、无参数 | ✅       | ✅                           |
+| 无 header、无参数 | ❌       | ❌                           |
+| 无 header、有参数 | ✅       | ⚠️ 能跑，但 agent 不知道要传 |
+
+内置 58 个工具里 **54 个**声明了 `projectPath`，没声明的恰好只有本插件那 4 个。补上之后两条路都通。
+
+还有一个反直觉的服务器行为：**客户端给了 header 时，Server 会把所有工具的 `projectPath` 从 schema 里摘掉**
+（官方工具一样，实测 56/56 都被摘）；只有没给 header 时才保留。这不是 bug，而是"会话级已经定好了目标项目，
+就不必再让每次调用重复指定"。副作用是**验证时必须用不带 header 的 `tools/list`**，否则会误以为没声明。
+
+**注意：这一点我们不需要自己去解析参数。** 客户端传了 `projectPath` 时，Server 已经把它解析进 `McpCallInfo`，
+`coroutineContext.projectOrNull` 拿到的就是正确的项目。所以这一条纯粹是 schema 补齐，零实现改动。
+
+**`outputSchema`**：3 个工具本来就用 `McpToolCallResult.text(摘要, 结构化JSON)` 返回，
+线上 `content[].text` 与 `structuredContent` 都填好了（与内置工具的返回形态一致）。
+缺的只是**声明**——内置 42/58 声明了 `outputSchema`。MCP 规范要求"返回 structuredContent 就应声明 outputSchema"，
+否则严格客户端无法校验/类型化，可能直接忽略 `structuredContent`。可空字段（`pid` / `exitCode` / `startFailure` …）
+必须写成 `["integer", "null"]`，否则客户端会在"进程还在跑"这种正常返回上校验失败。
 
 ---
 
@@ -226,9 +294,9 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 | `prompt/actions/CopyAsPromptAction.kt`               | 平台 | 选区 action                                                                                                                           |
 | `prompt/actions/CopyDiagnosticsAction.kt`            | 平台 | 诊断 action                                                                                                                           |
 | `mcp/RunLifecycleModels.kt`                          | 纯   | `RunInstanceState` / `RunConfigurationState` / `StopReport` / `RerunReport` / `RerunMode` / `UnknownConfigurationReport` + `toJson()` |
-| `mcp/RunLifecycleSchemas.kt`                         | 纯   | 四个 `McpToolDescriptor` + 输入 schema + 参数解析工具函数                                                                             |
+| `mcp/RunLifecycleSchemas.kt`                         | 纯   | 三个 `McpToolDescriptor` + 输入 schema + 参数解析工具函数                                                                             |
 | `mcp/RunConfigAccess.kt`                             | 平台 | `descriptorsByConfigurationName` / `snapshotOf` / `stopHandler` / `stopDescriptors` / `buildRunEnvironment` / `restartRunProfile`     |
-| `mcp/RunLifecycleToolsProvider.kt`                   | 编排 | `RunLifecycleToolsProvider` + `BaseRunTool` + 四个工具                                                                                |
+| `mcp/RunLifecycleToolsProvider.kt`                   | 编排 | `RunLifecycleToolsProvider` + `BaseRunTool` + 三个工具                                                                                |
 | `resources/META-INF/plugin.xml`                      | —    | 插件描述 + 2 个 action + 可选依赖声明                                                                                                 |
 | `resources/META-INF/mcpserver.xml`                   | —    | 可选依赖专属：`mcpServer.mcpToolsProvider` 注册                                                                                       |
 | `resources/META-INF/EULA.txt` / `PRIVACY_POLICY.txt` | —    | Marketplace 法务文本                                                                                                                  |

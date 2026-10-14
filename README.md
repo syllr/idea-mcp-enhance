@@ -29,14 +29,27 @@ JetBrains 2026.2 内置的 MCP Server（`com.intellij.mcpServer`）已经提供�
 
 ## Run Lifecycle MCP 工具
 
-前提：目标 IDE 为 2026.2+，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的四个工具不会出现在工具列表里，prompt 功能不受影响。
+前提：目标 IDE 为 2026.2+，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的三个工具不会出现在工具列表里，prompt 功能不受影响。
 
-| 工具                                 | 类型   | 作用                                                                                   |
-| ------------------------------------ | ------ | -------------------------------------------------------------------------------------- |
-| `list_run_configurations_with_state` | 只读   | 列出全部 Run Configuration，**附带实时运行状态**（是否在跑、PID、退出码、executionId） |
-| `get_run_configuration_status`       | 只读   | 查单个配置的运行状态；先精确匹配配置名，再忽略大小写，失败时返回候选名                 |
-| `stop_run_configuration`             | 破坏性 | 停掉该配置的**所有**实例（修掉"起两个实例"的老问题），可等待其真正退出                 |
-| `rerun_run_configuration`            | 破坏性 | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**                                 |
+| 工具                          | 类型   | 作用                                                                                                               |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| `list_running_configurations` | 只读   | 只列**正在跑**的配置及其**活实例**（实例数、PID、executionId、是否正在终止）；没有在跑的就返回空                   |
+| `stop_run_configuration`      | 破坏性 | 停掉该配置的**所有**实例（修掉"起两个实例"的老问题），可等待其真正退出                                             |
+| `rerun_run_configuration`     | 破坏性 | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**；同步等到新进程真的起来，并回传启动日志、会话标识与状态流转 |
+
+MCP 客户端配置（与 IDE 官方文档一致）：
+
+```json
+{
+  "type": "streamable-http",
+  "url": "http://127.0.0.1:<MCP Server 的端口>/stream",
+  "headers": { "IJ_MCP_SERVER_PROJECT_PATH": "<项目根目录的绝对路径>" }
+}
+```
+
+这个 header 不能省：MCP Server 在派发工具之前要先解析"针对哪个项目"，它只认这个 header 或调用参数 `projectPath`
+（**只打开一个项目是不够的**）。三个工具都声明了可选的 `projectPath`，所以没配 header 的客户端也能用，
+但每次调用都得带上它。
 
 设计约束：
 
@@ -97,7 +110,7 @@ diagnostics:
 - 确认插件已启用（Settings/Preferences → Plugins）
 - 确认焦点在**编辑器**内（这两个 action 只出现在编辑器右键菜单）
 
-**问题：MCP 工具列表里看不到 Run Lifecycle 那四个**
+**问题：MCP 工具列表里看不到 Run Lifecycle 那三个**
 
 - 确认 IDE 是 2026.2+（本插件 `sinceBuild=262`，因为要编译内置 MCP Server 的 API）
 - 确认内置的 **MCP Server** 插件已安装并启用

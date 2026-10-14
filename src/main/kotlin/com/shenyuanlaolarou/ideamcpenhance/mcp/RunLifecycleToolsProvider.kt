@@ -1,10 +1,12 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.McpToolDescriptor
 import com.intellij.mcpserver.McpToolsProvider
 import com.intellij.mcpserver.projectOrNull
+import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -36,6 +38,12 @@ import kotlin.coroutines.coroutineContext
  * （`withContext(McpCallAdditionalDataElement(...))`），所以 `coroutineContext.projectOrNull`
  * 对**直接实现**的工具同样有效，不需要自己去找"当前打开的项目"。
  *
+ * 但有个前提：MCP Server 得先解析出"这次调用针对哪个项目"。它只认两样东西——header
+ * `IJ_MCP_SERVER_PROJECT_PATH`，或调用参数里的 `projectPath`；两者都没有时它会在派发到工具之前
+ * 直接返回 `Unable to determine the target project`。所以三个工具的 schema 里都声明了
+ * `projectPath`（描述与内置工具逐字一致，见 `PROJECT_PATH_DESCRIPTION`）：
+ * 配了 header 的客户端不受影响，没配 header 的客户端也有了可用路径。
+ *
  * ## 注册方式
  *
  * 由 `META-INF/mcpserver.xml` 注册，该文件只在可选依赖 `com.intellij.mcpServer` 存在时才会被读取
@@ -46,7 +54,6 @@ class RunLifecycleToolsProvider : McpToolsProvider {
 
     override fun getTools(): List<McpTool> = listOf(
         ListRunConfigurationsTool(),
-        GetRunConfigurationStatusTool(),
         StopRunConfigurationTool(),
         RerunRunConfigurationTool(),
     )
@@ -68,7 +75,7 @@ private abstract class BaseRunTool : McpTool {
         errorResult("Tool ${descriptor.name} failed: $detail")
     }
 
-    protected abstract suspend fun body(args: JsonObject): McpToolCallResult
+    protected abstract suspend fun body(arguments: JsonObject): McpToolCallResult
 
     protected fun errorResult(message: String, structured: JsonObject? = null): McpToolCallResult =
         McpToolCallResult.error(message, structured)
@@ -99,7 +106,7 @@ private abstract class BaseRunTool : McpTool {
 }
 
 // ---------------------------------------------------------------------------
-// list_run_configurations_with_state
+// list_running_configurations
 // ---------------------------------------------------------------------------
 
 private class ListRunConfigurationsTool : BaseRunTool() {
@@ -108,48 +115,27 @@ private class ListRunConfigurationsTool : BaseRunTool() {
 
     override suspend fun body(arguments: JsonObject): McpToolCallResult {
         val project = currentProject() ?: return noProjectResult(LIST_TOOL_NAME)
-        val states = listRunConfigurationStates(project, arguments.optionalBoolean("includeTemplates", true))
-        val running = states.count { it.running }
+        // 没有模板开关：模板不是实例、永远不会在跑，"只返回在跑的"天然把它排除掉。
+        // 也顺手把每个配置的 instances[] 收成只剩活实例，于是整份返回里不含任何"不在跑"的东西。
+        val running = allConfigurationStates(project)
+            .filter { it.running }
+            .map { it.onlyRunningInstances() }
 
         return McpToolCallResult.text(
-            "Found ${states.size} run configuration(s); $running currently running.",
+            if (running.isEmpty()) {
+                "Nothing is running in this project."
+            } else {
+                "Found ${running.size} running run configuration(s)."
+            },
             buildJsonObject {
-                put("count", states.size)
-                put("runningCount", running)
+                put("runningCount", running.size)
                 putJsonArray("configurations") {
-                    for (state in states) {
+                    for (state in running) {
                         add(state.toJson())
                     }
                 }
             },
         )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// get_run_configuration_status
-// ---------------------------------------------------------------------------
-
-private class GetRunConfigurationStatusTool : BaseRunTool() {
-
-    override val descriptor: McpToolDescriptor = getRunConfigurationStatusDescriptor
-
-    override suspend fun body(arguments: JsonObject): McpToolCallResult {
-        val project = currentProject() ?: return noProjectResult(STATUS_TOOL_NAME)
-        val name = arguments.requiredString("configurationName") ?: return missingNameError()
-
-        val settings = findSettingsByName(project, name) ?: return unknownConfiguration(project, name)
-        val state = snapshotOf(project, settings)
-
-        val summary = buildString {
-            append('"').append(state.name).append("\" is ")
-            append(if (state.running) "running" else "not running")
-            append(" (").append(state.runningInstanceCount).append(" live instance(s)).")
-            if (state.runningInstanceCount > 1) {
-                append(" WARNING: more than one instance is live — this configuration was started more than once.")
-            }
-        }
-        return McpToolCallResult.text(summary, state.toJson())
     }
 }
 
@@ -225,11 +211,54 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         val name = arguments.requiredString("configurationName") ?: return missingNameError()
 
         val settings = findSettingsByName(project, name) ?: return unknownConfiguration(project, name)
-        val stopTimeoutMs = arguments.optionalInt("stopTimeoutMs", defaultWaitTimeoutMs())
 
+        // ① 平台级的中间态检查：IDE 在"启动中 / 停止中"会把 Rerun 按钮灰掉（`FakeRerunAction.isEnabled`
+        //    判的就是 `isStarting()` 与 `isProcessTerminating()`），这里照做。
+        val before = snapshotOf(project, settings)
+        before.transientInstance?.let { busy ->
+            return errorResult(
+                "\"${settings.name}\" is currently ${if (busy.terminating) "stopping" else "starting"}, " +
+                    "and the IDE disables Rerun in that state. Retry once it settles.",
+                before.toJson(),
+            )
+        }
+
+        // ② 插件级的并发守护：同一配置已有一次 rerun 在飞行中就直接报错。
+        //    放行到平台的后果实测过：这次调用会挂约 20 秒，然后拿到传输层的 HTTP 404
+        //    ——因为平台会为"对已在运行的配置再来一次"弹模态确认框，而无头路径上没人点它。
+        val inFlight = project.service<RunLifecycleInFlight>()
+        if (!inFlight.tryAcquire(settings.name)) {
+            return errorResult(
+                "A rerun of \"${settings.name}\" is already in progress. Wait for it to finish first.",
+                before.toJson(),
+            )
+        }
+        return try {
+            rerunNow(
+                project = project,
+                settings = settings,
+                stopTimeoutMs = arguments.optionalInt("stopTimeoutMs", defaultWaitTimeoutMs()),
+                startTimeoutMs = arguments.optionalInt("startTimeoutMs", defaultStartTimeoutMs()),
+            )
+        } finally {
+            inFlight.release(settings.name)
+        }
+    }
+
+    /** 真正的重启流程。单独拆出来，是为了让上面的并发守护能用一个 `try/finally` 干净地包住它。 */
+    private suspend fun rerunNow(
+        project: Project,
+        settings: RunnerAndConfigurationSettings,
+        stopTimeoutMs: Int,
+        startTimeoutMs: Int,
+    ): McpToolCallResult {
+
+        val startedAtNanos = System.nanoTime()
+        val transition = mutableListOf<RunTransitionStep>()
         val warnings = mutableListOf<String>()
-        val running = activeDescriptorsFor(project, settings.name)
 
+        // 第 1 步：停掉旧实例。这一步本身就是状态流转的第一个节点。
+        val running = activeDescriptorsFor(project, settings.name)
         var stopped = 0
         if (running.isNotEmpty()) {
             val outcome = stopDescriptors(running, stopTimeoutMs, force = true)
@@ -240,45 +269,93 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             if (outcome.forcedKills > 0) {
                 warnings += "${outcome.forcedKills} instance(s) had to be killed."
             }
+            transition += RunTransitionStep(
+                phase = TransitionPhase.STOPPED,
+                detail = describeStoppedInstances(stopped, outcome.forcedKills, outcome.instances),
+                elapsedMs = elapsedSince(startedAtNanos),
+            )
         }
 
+        // 第 2 步：起新的。构造不出执行环境就是"什么都没做"。
         val environment = buildRunEnvironment(project, settings)
         if (environment == null) {
             val after = snapshotOf(project, settings)
-            val report = RerunReport(
-                configurationName = settings.name,
-                mode = RerunMode.NO_OP,
-                stoppedInstances = stopped,
-                runningAfter = after.runningInstanceCount,
-                instances = after.instances,
-                warnings = warnings +
-                    "The IDE could not build an execution environment for this configuration; nothing was started.",
-            )
+            val failure = "The IDE could not build an execution environment for this configuration; nothing was started."
             return McpToolCallResult.text(
                 "Could not start \"${settings.name}\": no runner can launch this configuration type.",
-                report.toJson(),
+                RerunReport(
+                    configurationName = settings.name,
+                    mode = RerunMode.NO_OP,
+                    stoppedInstances = stopped,
+                    runningAfter = after.runningInstanceCount,
+                    instances = after.instances,
+                    warnings = warnings + failure,
+                    started = false,
+                    startFailure = "No runner can launch this configuration type.",
+                    transition = transition,
+                ).toJson(),
             )
         }
 
-        restartRunProfile(project, environment)
+        // 关键：同步等到新进程真的被创建、并且状态收敛成"确实在跑"才返回，
+        // 否则紧接着做快照必然读到 0 个在跑，调用方会误判成"启动失败"。
+        val start = startRunAndAwait(project, environment, settings, startTimeoutMs)
+        transition += RunTransitionStep(
+            phase = if (start.started) TransitionPhase.STARTED else TransitionPhase.START_FAILED,
+            detail = if (start.started) {
+                "execution ${start.executionId}" + (start.pid?.let { ", pid $it" }.orEmpty())
+            } else {
+                start.failure ?: "unknown failure"
+            },
+            elapsedMs = start.startElapsedMs,
+        )
+        if (!start.started) {
+            warnings += "The new process did not come up: ${start.failure}"
+        }
 
-        val mode = if (stopped > 0) RerunMode.RESTARTED else RerunMode.STARTED
-        val after = snapshotOf(project, settings)
+        // 直接用启动过程收敛出的快照：再自己拍一次会读到中间态（见 awaitLiveState 的 KDoc）
+        val after = start.state
         val report = RerunReport(
             configurationName = settings.name,
-            mode = mode,
+            mode = if (stopped > 0) RerunMode.RESTARTED else RerunMode.STARTED,
             stoppedInstances = stopped,
             runningAfter = after.runningInstanceCount,
             instances = after.instances,
             warnings = warnings,
+            started = start.started,
+            startFailure = start.failure,
+            sessionId = start.sessionId,
+            output = start.output,
+            fullOutputPath = start.fullOutputPath,
+            transition = transition,
         )
-        return McpToolCallResult.text(
-            when (mode) {
-                RerunMode.RESTARTED -> "Restarted \"${settings.name}\" (stopped $stopped running instance(s) first)."
-                RerunMode.STARTED -> "Started \"${settings.name}\" — it was not running."
-                RerunMode.NO_OP -> "Nothing was done for \"${settings.name}\"."
-            },
-            report.toJson(),
-        )
+        return McpToolCallResult.text(summaryOf(report), report.toJson())
+    }
+
+    /** 人读的一行摘要：把"停旧的 → 起新的"和每步耗时讲清楚。 */
+    private fun summaryOf(report: RerunReport): String = buildString {
+        append(if (report.mode == RerunMode.RESTARTED) "Restarted \"" else "Started \"")
+        append(report.configurationName).append('"')
+        if (report.stoppedInstances > 0) {
+            append(" (stopped ").append(report.stoppedInstances).append(" old instance(s) first)")
+        }
+        append(": ")
+        if (report.started) {
+            val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.STARTED }
+            append("new process is up")
+            if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
+            append(" — ").append(report.runningAfter).append(" live instance(s).")
+        } else {
+            append("the new process did not come up — ").append(report.startFailure).append('.')
+        }
     }
 }
+
+/** 把"停了几个、退出码是多少、有没有强杀"压成一句可读的 detail。 */
+private fun describeStoppedInstances(requested: Int, forcedKills: Int, instances: List<RunInstanceState>): String {
+    val codes = instances.joinToString(", ") { it.exitCode?.toString() ?: "still running" }
+    return "stop requested for $requested instance(s); forced kills: $forcedKills; exit codes: $codes"
+}
+
+/** 从 rerun 请求发出算起的毫秒数。 */
+private fun elapsedSince(fromNanos: Long): Long = (System.nanoTime() - fromNanos) / 1_000_000
