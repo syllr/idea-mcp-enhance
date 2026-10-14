@@ -53,7 +53,6 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
     ├── RunLifecycleModels.kt      纯数据 + 纯函数：状态快照 → JSON
     ├── RunLifecycleSchemas.kt     工具描述符 / 输入 schema / 参数解析
     ├── RunConfigAccess.kt         平台接线：RunManager / RunContentManager / ProcessHandler
-    ├── RunLifecycleInFlight.kt    项目级 service：同一配置的 rerun 并发守护
     └── RunLifecycleToolsProvider.kt  三个 McpTool + 异常兜底
 ```
 
@@ -74,22 +73,22 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 ## WHERE TO LOOK
 
-| 想做的事                                 | 改哪里                                                                                                  |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 改 prompt 输出格式                       | `prompt/format/PromptFormat.kt` + 同步 `PromptFormatTest` + `SPEC.md §1/§2`                             |
-| 改菜单项文案 / 出现位置                  | `src/main/resources/META-INF/plugin.xml` 的 `<action>` / `<add-to-group>`                               |
-| 改 action 的启用条件                     | 各 action 的 `update()`                                                                                 |
-| 改文件路径写法（相对/绝对）              | `prompt/actions/EditorPromptContext.kt` 的 `promptFilePath()`                                           |
-| 改诊断采集范围 / 过滤规则                | `prompt/actions/EditorPromptContext.kt` 的 `collectDiagnostics()`（先读 `DESIGN.md §3.1`）              |
-| 改 MCP 工具的名字 / 描述 / 入参          | `mcp/RunLifecycleSchemas.kt` 的三个 `*Descriptor` + `RunLifecycleSchemaTest`                            |
-| 改 MCP 工具返回的 JSON 字段              | `mcp/RunLifecycleModels.kt` 的 `toJson()`                                                               |
-| 改 MCP 的停止实现                        | `mcp/RunConfigAccess.kt` 的 `stopHandler` / `stopDescriptors`                                           |
-| 改 MCP 的启动 / 重启实现                 | `mcp/RunConfigAccess.kt` 的 `startRunAndAwait`（`ProgramRunner.Callback` + 输出采集）                   |
-| 改启动后回传的日志 / 状态流转            | `mcp/RunConfigAccess.kt` 的 `RunOutputCollector` + `mcp/RunLifecycleModels.kt` 的 `RerunReport`         |
-| 改 rerun / stop 的可重入语义             | `mcp/RunLifecycleModels.kt` 的 `inTransientState` / `transientInstance` + `mcp/RunLifecycleInFlight.kt` |
-| 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数           |
-| 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                   |
-| 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                   |
+| 想做的事                                 | 改哪里                                                                                                                                                                                                     |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 改 prompt 输出格式                       | `prompt/format/PromptFormat.kt` + 同步 `PromptFormatTest` + `SPEC.md §1/§2`                                                                                                                                |
+| 改菜单项文案 / 出现位置                  | `src/main/resources/META-INF/plugin.xml` 的 `<action>` / `<add-to-group>`                                                                                                                                  |
+| 改 action 的启用条件                     | 各 action 的 `update()`                                                                                                                                                                                    |
+| 改文件路径写法（相对/绝对）              | `prompt/actions/EditorPromptContext.kt` 的 `promptFilePath()`                                                                                                                                              |
+| 改诊断采集范围 / 过滤规则                | `prompt/actions/EditorPromptContext.kt` 的 `collectDiagnostics()`（先读 `DESIGN.md §3.1`）                                                                                                                 |
+| 改 MCP 工具的名字 / 描述 / 入参          | `mcp/RunLifecycleSchemas.kt` 的三个 `*Descriptor` + `RunLifecycleSchemaTest`                                                                                                                               |
+| 改 MCP 工具返回的 JSON 字段              | `mcp/RunLifecycleModels.kt` 的 `toJson()`                                                                                                                                                                  |
+| 改 MCP 的停止实现                        | `mcp/RunConfigAccess.kt` 的 `stopHandler` / `stopDescriptors`                                                                                                                                              |
+| 改 MCP 的启动 / 重启实现                 | `mcp/RunConfigAccess.kt` 的 `startRunAndAwait`（`ProgramRunner.Callback` + 输出采集）                                                                                                                      |
+| 改启动后回传的日志 / 状态流转            | `mcp/RunConfigAccess.kt` 的 `RunOutputCollector` + `mcp/RunLifecycleModels.kt` 的 `RerunReport`                                                                                                            |
+| 改 rerun / stop 的可重入语义             | `mcp/RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent`（状态判定层）+ 平台启动门（`ExecutionManager.isStarting(environment)`） |
+| 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                              |
+| 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                                      |
+| 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                                      |
 
 ## HARD RULES
 
@@ -186,7 +185,10 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - **MCP Server 的项目解析只认两样东西**：header `IJ_MCP_SERVER_PROJECT_PATH`，或调用参数 `projectPath`。**"只打开了一个项目"不算**——实测不带参数调内置 `get_run_configurations` 同样被拒（`Unable to determine the target project`）。因此三个工具的 schema 必须声明 `projectPath`（可为空、不进 `required`），否则没配 header 的客户端一个工具都用不了
 - **服务器会按客户端配置裁剪 schema**：客户端给了 header 时，它会把**所有**工具的 `projectPath` 参数从 schema 里摘掉（官方工具也一样）；只在没给 header 时才保留。所以验"有没有声明 projectPath"必须用**不带 header**的 `tools/list`，否则会误判成"没声明"
 - **启动 Run Configuration 是异步的**：`ExecutionManager.restartRunProfile(env)` 发射后不管，紧接着做快照必然读到 `runningAfter = 0`、`instances[]` 里只有旧的已死实例。必须走 `ProgramRunnerUtil.executeConfigurationAsync(env, false, true, callback)` + `ProgramRunner.Callback`，在 `processStarted` 里拿到 `descriptor` 才算"起来了"（内置 `execute_run_configuration` 也是这么做的）
-- **`executeConfigurationAsync` 对"已在运行的同名配置"会弹模态确认框**（`RunManagerConfig.isRestartRequiresConfirmation()` / `CONFIRM_RERUN_KEY`）。GUI 上碰不到它（中间态时 Rerun 按钮是灰的，见 `FakeRerunAction.isEnabled` 判的 `isStarting()` / `isProcessTerminating()`），但 MCP 无头路径上没人点它 → 这次调用会**挂约 20 秒后拿到传输层 HTTP 404 空响应**。实测边界：**同配置**并发 rerun 才会撞；不同配置并发、rerun 与 stop 并发、以及 rerun 进行中调 list 都正常。所以 `rerun` 必须自己先挡：中间态拒绝 + 按配置名的在飞守护（`RunLifecycleInFlight`，项目级 service，不能用 `object` 里的静态状态）
+- **`executeConfigurationAsync` 的第一句就是平台自己的门**：`if (!manager.isStarting(environment)) { … }` —— 同配置 + 同 executor + 同 runner 正在启动时，这次提交被**静默丢弃**（回调都不装，既不回 `processStarted` 也不回 `processNotStarted`）。`isStarting` 读的是 `inProgress`，而 `inProgress` 是 `executeConfiguration` 一进来就加、**进程创建并 `startNotify` 之后才减**（`ExecutionManagerImpl.kt` 里 `inProgress.update { it - inProgressEntry }` 紧跟 `processHandler.startNotify()`）⇒ **碰撞窗口 = 整个启动过程**，**包含 before-launch 的构建时长**（实测：给配置挂一个永不退出的 before-launch 后，第二次 rerun 0 秒返回 "another start is already in progress"；我早先说"窗口只有进程创建那几十毫秒"是错的）。**平台永远不会起两个实例**，所以"防双实例"不需要我们做；`rerun` 只需在发起前用同一个条件问一次，把"静默丢弃"换成立刻、精确的错误
+- **单次工具调用的时长必须远小于 MCP Server 的会话耐心**（实测约 **15 秒**：`Pending StreamableHttp transport timed out` → `Removing session`）。请求悬着超过它，会话会被移除，工具算完也送不回结果 → 客户端拿到 **HTTP 404 空响应**。实测边界：8 秒能送达、20 秒不能；**官方工具也一样**（30 秒的 `execute_run_configuration` 实测 30.1 秒后空 404），而它的 `timeout` 默认就是 10000。所以 `startTimeoutMs` 默认取 10000（**与原生 `execute_run_configuration` 的 `timeout` 默认值一致**）。注意 `rerun` 的总时长是三段相加（stop + start + 输出窗口），"慢停 + 慢启"会超过上限——**凡是给工具加"等待"的地方，都要把总时长和这个上限一起算**
+- **before-launch 步骤可以查出来**：`RunConfiguration.getBeforeRunTasks()`（公开默认方法）。平台在它们跑完之前**不产出 Run 内容**（实测：给 `node-server` 挂一个永不退出的 before-launch 后，`list` 里只有那个 before-launch 配置有实例、`node-server` 什么都没有）。所以启动超时的文案必须点明这一点，而不是让人以为启动失败
+- **`rerun` 的三道前置判定互补，别删其中任一道**：① 中间态拒绝（含"Run 内容已出现、进程还没挂上"这一档；覆盖用户手动点按钮）② 旧实例没停干净就不启动 ③ 平台启动门（`isStarting(environment)`，把"静默丢弃"换成 0 秒精确错误）。**都不依赖本插件自建的内存状态**
 - **`ProcessAdapter` 在 2026.2 已废弃**：`ProcessListener` 的方法现在全都有默认实现，直接实现接口、只覆写 `onTextAvailable` 即可
 - **错误结果里没有 `structuredContent`**：`McpSessionHandlerKt.toSdkToolCallResult` 的字节码是
   `getStructuredToolOutputEnabled() ifeq … ; isError() ifne …` —— 即只有"注册表开关 `mcp.server.structured.tool.output` 打开**且** `isError == false`"才会输出结构化内容。所以给 `McpToolCallResult.error(text, json)` 传的第二个参数在 wire 上**看不到**：**错误文案必须自洽**（关键信息一律写进 text）
@@ -198,6 +200,9 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性**（覆写 `getXxx()` 不会变成 `val`），调用要写 `.getTools()`
 - **`HighlightInfo` 在 `...daemon.impl` 包里，但只是 `@ApiStatus.NonExtendable`**，可以用
 - **daemon 高亮存在 document 级 `DocumentMarkupModel`**，不是 `editor.markupModel`。读错地方会得到空列表（不报错，静默失败）
+- **平台会为了"这个配置能不能跑"弹模态对话框，那会永久卡死 EDT**（实测用 `jstack` 抓到：`ExecutionManagerImpl.executeConfiguration` → `RunDialog.editConfiguration` → `DialogWrapper.show`）。触发条件是 `RunManagerImpl.canRunConfiguration(environment)` 为 false，即 `settings.checkSettings(executor)` 抛 `IndexNotReadyException`（IDE 还在建索引，刚打开大项目时很常见）或 `RuntimeConfigurationError`（配置本身有致命问题）。无头场景没人点那个对话框 ⇒ EDT 被占住 ⇒ 我们 `withContext(Dispatchers.EDT)` 的提交再也回不来，请求一直悬着、会话被移除、调用方拿到空 404。**所以 `startRunAndAwait` 必须先用同一个公开方法 `RunnerAndConfigurationSettings.checkSettings(executor)` 提前问一次**，把这两种情况转成立刻、可读的结构化错误。注意 `checkSettings` **不检查 before-launch**（`checkSettingsBeforeRun()` 默认空实现），但**这不是缺陷**：before-launch 配错了是使用姿势问题，执行时就会暴露、用户自己会去改。**工具侧 MUST 主动判断"现在是不是有模态对话框在等用户"**：扫本 JVM 的 `Window.getWindows()`，找可见且带模态语义的 `Dialog`（`isModal || modalityType != MODELESS`），命中就立刻返回"这需要用户去 IDE 处理"。**时机和顺序很关键**：这套判断（对话框 / `checkSettings` / `isStarting`）必须在**停旧实例之前**先问一次，并在**真正提交之前**再问一次——先停后判会"把在跑的应用白白杀掉，然后才告诉用户需要你去 IDE 处理"（实测过这个坏顺序：重排后同样的场景 0.02 秒返回错误，且旧实例仍然活着）。**别用 `DialogWrapper.findInstanceFromFocus()`**——它读 `KeyboardFocusManager.getFocusOwner()`，IDE 窗口没被聚焦时（agent 在跑、窗口在后台）是 null，实测判断直接落空、白等满 `startTimeoutMs`。这一层比 `checkSettings` 更通用：后者只拦"平台因为这个配置而不能跑"，前者拦"别的对话框占着 EDT"（例如用户自己开的设置窗、上一次调用留下的编辑框）。**而且 MUST NOT 为"提交到 EDT"新增超时**：它与"等进程创建"共用 `startTimeoutMs`。上限必须留着——完全不留的话工具永远返回不了任何东西，AI 拿到空 404，就没法把"请用户去 IDE 处理"转告出去，而那正是这类卡点唯一的出路（实测：用内置 `execute_run_configuration` 打一个脚本不存在的配置，平台真的会弹 "Edit Configuration" 把 EDT 占住；此时我们的 rerun 会**立刻**（实测 0.03 秒，走主动判断）返回"这需要用户到 IDE 里处理"，而 `list_running_configurations` 仍然 0.01 秒可用，所以文案里"先查状态再重试"的建议成立）
+- **`rerun` 有异步模式 `waitForStart = false`**（对齐原生 `execute_run_configuration` 的 `waitForExit`）：只提交启动请求就返回，`started` / `runningAfter` 为 `null`（"不知道"），`transition[]` 以 `START_SUBMITTED` 收尾，调用方用 `list_running_configurations` 轮询。给"before-launch 比会话耐心还长"的配置用——那种情况同步等下去只会把结果丢成空 404。**别把 `null` 和 `false` 混起来**：`false` 是"失败"，会让 agent 去重试
+- **`stop` 必须处理"启动在飞"**：`rerun` 异步模式（`waitForStart = false`）提交完就返回，此时 Run 内容可能还没建、进程还没挂上；这时 `stop` 直接报 "not running; nothing to stop" 是**假话**——进程随后就会起来（实测：stop 返回成功 3 秒后进程在跑、端口占着）。正确做法是先用 `hasPendingRunContent` / `ExecutionManager.isStarting(env)` 判断"有启动在飞"，再**有界等待**（`PENDING_START_ATTACH_TIMEOUT_MS`，2000ms）让它挂上进程后照常停；等不到就如实说明"启动仍在飞、什么都没停"。加上 `stop` 自己的 `waitTimeoutMs`（默认 5000），最坏总时长约 7 秒，仍在会话耐心之内
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本
 
 ## REFERENCES

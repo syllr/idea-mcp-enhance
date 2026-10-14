@@ -168,6 +168,28 @@ ExecutionEnvironmentBuilder
 把插件链接到它等于绑死在一个随时会变的内部实现上。用公开 API 复刻能拿到完全一样的可观察行为，
 代价只是多几十行代码。
 
+**提交前必须先过三道判断**（都用公开 API，不自己造状态；第三道是兜底）。**调用时机**：`rerunNow` 在**停旧实例之前**先问一次（否则会先把在跑的应用杀掉、再告诉用户去 IDE 处理），`startRunAndAwait` 在**真正提交之前**再问一次（状态可能在停止期间变化）：
+
+1. `settings.checkSettings(executor)` —— 平台在 `ExecutionManagerImpl.executeConfiguration` 里先问
+   `RunManagerImpl.canRunConfiguration`（实现就是它），为 false 时**弹 `RunDialog.editConfiguration`
+   模态对话框**。无头 / agent 场景没人点它，EDT 会被永久占住，我们那次
+   `withContext(Dispatchers.EDT)` 的提交就再也回不来（`jstack` 实测抓到这个栈）。所以提前问一次，
+   把 `IndexNotReadyException` / `RuntimeConfigurationError` 转成立刻、可读的结构化错误。
+2. `ExecutionManager.isStarting(environment)` —— `executeConfigurationAsync` 的第一句就是它，
+   命中时这次提交被**静默丢弃**（连回调都不装）。`inProgress` 从 `executeConfiguration` 一进来就加、
+   进程创建并 `startNotify` 之后才减，所以**整个启动过程（含 before-launch 构建）都算"启动中"**，
+   这个门能覆盖"构建中又发一次 rerun"的长窗口。
+
+3. `DialogWrapper.findInstanceFromFocus()?.isModal` —— "现在是不是有模态对话框在等用户"。
+   这是**通用**的 EDT 卡点检测（`checkSettings` 只管"这个配置能不能跑"），命中就立刻返回
+   "这需要用户去 IDE 处理"。留着一层 `startTimeoutMs` 上限作为最后的网：完全不留的话工具永远
+   返回不了任何东西，AI 拿到空 404，就没法把"请用户去 IDE 处理"转告出去——而那正是这类卡点唯一的出路。
+
+**`waitForStart = false`（异步提交）**：只走第 1、2 道门 + `executeConfigurationAsync`，不等回调就返回。
+它存在的唯一理由是 before-launch 比 MCP Server 的会话耐心（实测约 15 秒）还长——那种情况同步等下去，
+结果必然丢成空 404。此时 `started` / `runningAfter` 必须是 `null`（"不知道"），
+绝不能拿提交瞬间的快照冒充结果（那正是上面那个 P1 的病根）。
+
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
 
 **为什么不用 `ProcessAdapter` 挂监听**：它在 2026.2 已废弃，而 `ProcessListener` 的方法现在全都有默认实现，

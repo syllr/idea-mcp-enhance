@@ -79,6 +79,97 @@ data class RunConfigurationState(
 }
 
 /**
+ * rerun 的**前置拒绝原因**（`null` = 可以继续）。纯函数，便于单测。
+ *
+ * 两个来源：
+ * - [transient]：快照里已经能看到的中间态实例（启动中 / 停止中）——与 GUI 判断 Rerun 按钮可用的那两种状态同源
+ * - [hasPendingRunContent]：Run 内容已经创建、但进程还没挂上。**快照看不到它**
+ *   （`toInstanceState` 对 `processHandler == null` 返回 null，那条会被整个丢掉），
+ *   而"人手动按下 Run 之后的那一小段"恰好落在这一档上，所以必须单独判一次
+ *
+ * 注意：这里刻意**不**维护"本插件正在 rerun 哪个配置"的内存标志。理由见 `SPEC.md` 的可重入条款：
+ * 那种标志只挡得住"我们自己并发调用"，挡不住用户去点 GUI，而且覆盖窗口只有几毫秒，
+ * 为它引入一份需要小心释放的状态不划算。
+ */
+internal fun rerunBlockedReason(
+    configurationName: String,
+    transient: RunInstanceState?,
+    hasPendingRunContent: Boolean,
+): String? = when {
+    transient != null -> "\"$configurationName\" is currently ${if (transient.terminating) "stopping" else "starting"}, " +
+        "and the IDE disables Rerun in that state. Retry once it settles."
+
+    hasPendingRunContent -> "\"$configurationName\" is currently starting (its process is not up yet), " +
+        "and the IDE disables Rerun in that state. Retry once it settles."
+
+    else -> null
+}
+
+/**
+ * 启动等待超时时的说明文案（纯函数，便于单测）。
+ *
+ * 关键点是**不要只说"超时了"**：如果这个配置配了 before-launch 步骤（构建 / 另一个 run configuration），
+ * 那它很可能正卡在那一步上——平台在 before-launch 跑完之前不会产出 Run 内容，
+ * 所以"还没启动"是正常现象，调用方该做的是把 `startTimeoutMs` 调大，而不是重试。
+ *
+ * @param beforeLaunchSteps 该配置配了几个 before-launch 步骤（`RunConfiguration.getBeforeRunTasks()`）
+ */
+internal fun startTimeoutReason(
+    configurationName: String,
+    timeoutMs: Int,
+    beforeLaunchSteps: Int,
+): String = buildString {
+    append("The IDE did not report \"")
+    append(configurationName)
+    append("\" as started or failed within ")
+    append(timeoutMs)
+    append("ms.")
+    if (beforeLaunchSteps > 0) {
+        append(" This configuration has ")
+        append(beforeLaunchSteps)
+        append(" before-launch step(s) (a build, or another run configuration): they run before the IDE creates the Run content, ")
+        append("so one of them may still be running. Either raise `startTimeoutMs` if you need to wait for it ")
+        append("(keep the whole call under roughly 15s, otherwise the answer may never reach you), ")
+        append("or call again with `waitForStart = false` and poll `list_running_configurations` instead.")
+    } else {
+        append(" The process was not reported as started; the IDE may have ignored this start request, ")
+        append("or the configuration simply takes longer to launch. Raise `startTimeoutMs` to wait longer.")
+    }
+}
+
+/**
+ * "平台正在等用户交互（模态对话框占着 EDT）"时的说明文案（纯函数，便于单测）。
+ *
+ * 这是**用户的卡点**，不是瞬时故障：工具自己重试多少次都没用，必须由 AI 转告用户去 IDE 里处理。
+ * 所以文案 MUST 明确点名这一点，并给出"处理完再调一次"的下一步；同时提醒重试前先查状态
+ * （排队中的提交可能稍后才真的发生）。
+ *
+ * 刻意**不带毫秒数**：主动判断（`modalDialogBlockingUser`）时根本没有等，带上时间只会误导。
+ */
+internal fun userMustActReason(configurationName: String): String =
+    "This requires the user to act in the IDE: the IDE's UI thread is busy, most likely waiting for the user " +
+        "(a modal dialog such as \"Edit Configuration\", or a settings window they opened), so it cannot start " +
+        "\"$configurationName\" for you right now. " +
+        "Tell the user to finish that dialog in the IDE (fix the configuration, then press Run — or press Cancel), " +
+        "and call this tool again afterwards. Before retrying, check `list_running_configurations`: " +
+        "a request that was already queued may still be delivered late."
+
+/**
+ * 停完旧实例之后**能不能把新进程启起来**（`null` = 可以）。
+ *
+ * 没停干净就坚决不启：那正是"同一配置留两个实例"的病根，也正是平台会弹出
+ * "重启需要确认"模态框的条件（在 MCP 无头路径上没人点它 → 调用挂到传输层超时）。
+ */
+internal fun startBlockedReason(configurationName: String, stillRunning: Int): String? =
+    if (stillRunning <= 0) {
+        null
+    } else {
+        "\"$configurationName\" still has $stillRunning instance(s) alive after the stop request, " +
+            "so no new process was started — that is exactly the state that would leave two instances " +
+            "of the same configuration running. Stop it first, or check what is holding it."
+    }
+
+/**
  * 只留活实例的投影。
  *
  * 给"只报现在什么在跑"的 `list_running_configurations` 用。切完之后返回里就不含任何"不在跑"的东西：
@@ -114,11 +205,23 @@ data class RerunReport(
     /** 重启前先停掉的实例数。 */
     val stoppedInstances: Int,
     /** 新进程起来**并且注册进 Run 内容列表之后**，仍在跑的实例数。 */
-    val runningAfter: Int,
+    /**
+     * 新进程起来后仍在跑的实例数；`null` 表示**没等**（`waitForStart = false`），不是 0。
+     *
+     * 这里刻意不用 0：提交后立刻拍到的快照必然是 0，把它当结果回报会重演
+     * "`runningAfter` 恒为 0 却写着已启动"那个自相矛盾的老毛病。
+     */
+    val runningAfter: Int?,
     val instances: List<RunInstanceState>,
     val warnings: List<String>,
-    /** 新进程是否真的起来了。false 时看 [startFailure]，不要只看 [mode]。 */
-    val started: Boolean = false,
+    /**
+     * 新进程是否真的起来了。
+     *
+     * - `true` / `false`：等到了结果（false 时看 [startFailure]，不要只看 [mode]）
+     * - `null`：**不知道** —— 启动请求已提交但没等（`waitForStart = false`），
+     *   进程可能还在 before-launch 阶段。与仓库约定一致："值为 null = 进程还没起来"
+     */
+    val started: Boolean? = false,
     /** 启动失败的原因；成功时为 null。 */
     val startFailure: String? = null,
     /** 运行会话标识，字段语义与内置 `execute_run_configuration` 的 `sessionId` 一致。 */
@@ -152,6 +255,15 @@ enum class TransitionPhase(val jsonValue: String) {
 
     /** 新进程已创建并注册。 */
     STARTED("STARTED"),
+
+    /**
+     * 启动请求已提交，但**没有等它起来**（`waitForStart = false`）。
+     *
+     * 与 [STARTED] / [START_FAILED] 的区别是"**不知道**"：提交后立刻返回，
+     * 进程可能还在 before-launch（构建 / 另一个配置）阶段，也可能刚起来。
+     * 真实状态要用 `list_running_configurations` 查。
+     */
+    START_SUBMITTED("START_SUBMITTED"),
 
     /** 启动请求发出但没起来（IDE 拒绝 / 超时）。 */
     START_FAILED("START_FAILED"),

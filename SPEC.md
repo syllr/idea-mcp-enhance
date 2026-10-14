@@ -241,6 +241,12 @@ diagnostics:
 - `force = true` 且超时后 MUST 对仍在终止中的 `KillableProcess` 调用 `killProcess()`
 - `configurationName` 缺失 → `isError = true`，`structuredContent.argument = "configurationName"`
 - 该配置没在跑 → `isError = false`（这是正常状态，不是错误），`matchedInstances = 0`
+- **"启动在飞" MUST 特殊处理(HARD CONTRACT)**：该配置有"已提交但还没产出进程"的启动时
+  （`rerun` 的异步模式刚返回、或别的工具/人手刚发起），MUST 先**有界等待**
+  （`PENDING_START_ATTACH_TIMEOUT_MS`，2000ms）让它挂上进程再照常停；等不到 MUST 如实说明
+  "启动仍在飞、什么都没停、稍后可能起来，请再调一次或先查状态"，**MUST NOT 报
+  `is not running; nothing to stop`** —— 那是假话：进程随后就会起来，而调用方以为已经停掉了
+  （实测：stop 返回成功 3 秒后进程在跑）
 - **可重入(HARD CONTRACT)** —— 重复 stop MUST 幂等成功，MUST NOT 因为"它已经停了"报错；
   并发 stop MUST 也各自安全（后到的一个通常看到"没在跑"，同样返回成功）。
   理由：agent 在"确保它停掉"的意图下重复调用是完全正常的，不该让它去分辨"是失败还是本来就没跑"
@@ -264,11 +270,12 @@ diagnostics:
 
 入参：
 
-| 参数                | 类型    | 必填 | 默认    |
-| ------------------- | ------- | ---- | ------- |
-| `configurationName` | string  | 是   | —       |
-| `stopTimeoutMs`     | integer | 否   | `5000`  |
-| `startTimeoutMs`    | integer | 否   | `20000` |
+| 参数                | 类型    | 必填 | 默认   |
+| ------------------- | ------- | ---- | ------ |
+| `configurationName` | string  | 是   | —      |
+| `stopTimeoutMs`     | integer | 否   | `5000` |
+| `startTimeoutMs`    | integer | 否   | `10000` |
+| `waitForStart`      | boolean | 否   | `true` |
 
 行为 —— MUST 与 IDE 的 Rerun 按钮有同样的可观察效果：
 
@@ -278,8 +285,34 @@ diagnostics:
 | 没有实例在跑       | 直接启动                                           | `STARTED`   |
 | IDE 造不出执行环境 | 什么都不做，`warnings[]` 说明原因                  | `NO_OP`     |
 
-- **MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；MUST NOT 发出启动请求后立刻做快照
-  —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"
+- **`waitForStart = true`（默认）时 MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；
+  MUST NOT 发出启动请求后立刻做快照 —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"
+- **`waitForStart = false` 时 MUST 只提交、立刻返回**，且结果必须**如实表达"不知道"**：
+  `started = null`、`runningAfter = null`、`startFailure = null`、`sessionId = null`、`output = ""`，
+  `transition[]` 以 `START_SUBMITTED` 收尾，`warnings[]` 带固定文案（说明结果未知、要用
+  `list_running_configurations` 轮询）。MUST NOT 用 `started = false` 冒充"不知道"——那会让 agent 去重试，
+  反而可能起出第二个实例。这个模式存在的唯一理由：before-launch（构建 / 另一个配置）比服务器会话耐心还长时，
+  任何等待都会把结果丢成空 404，只有"提交 + 自己轮询"可行。参数名 MUST 对齐原生 `execute_run_configuration` 的 `waitForExit`
+- **启动前的三道判断的"时机" MUST 是：停旧实例之前先问一次，真正提交之前再问一次**（HARD CONTRACT）：
+  ① 现在是否有模态对话框在等用户（扫 `Window.getWindows()` 里可见且带模态语义的 `Dialog`；
+  **MUST NOT 用 `DialogWrapper.findInstanceFromFocus()`**——它读 `getFocusOwner()`，IDE 窗口没被聚焦时是 null，
+  实测判断会落空）② 这个配置现在能不能跑（`checkSettings`）③ 平台是否已经在启动它（`isStarting`）。
+  **先问再停**是为了不让用户白掉一次服务：否则会"先把在跑的应用杀掉，再告诉用户需要你去 IDE 处理"（实测过这个坏顺序）。
+  **提交前再问一次**是因为状态会在"停止 + 构建执行环境"期间变化（用户中途打开对话框、别人抢先启动）。
+  第 ① 层是**通用**的 EDT 卡点检测：`checkSettings` 只拦得住"平台因为**这个配置**而不能跑"，拦不住"**别的**对话框占着 EDT"
+- **不能跑的时候 MUST 结构化拒绝，MUST NOT 让它走到"弹对话框"那条路**：平台在
+  `ExecutionManagerImpl.executeConfiguration` 里先问 `RunManagerImpl.canRunConfiguration`（实现是
+  `settings.checkSettings(executor)`），为 false 时**弹 `RunDialog.editConfiguration` 模态对话框**。
+  agent / 无头场景里没人点它 ⇒ EDT 被永久占住 ⇒ 我们那次 `withContext(Dispatchers.EDT)` 提交再也回不来，
+  请求一直悬着、会话被移除、调用方拿到空 404（比"启动失败"还糟）。因此 MUST 用**同一个公开方法**
+  `RunnerAndConfigurationSettings.checkSettings(executor)` 提前问一次：`IndexNotReadyException`（IDE 在建索引，
+  刚打开大项目时很常见）与 `RuntimeConfigurationError`（配置本身有致命问题）都要转成立刻、可读的结构化错误。
+  `checkSettings` 不覆盖 before-launch（`checkSettingsBeforeRun()` 默认空实现），这**不是缺陷**：before-launch 配错了
+  是使用姿势问题，执行时就会暴露。另外 **MUST NOT 为"提交到 EDT"这一步新增超时**：它与"等进程创建"共用同一个
+  `startTimeoutMs` 预算（默认 10000）。但 MUST 保留这个上限——完全不留的话工具永远返回不了任何东西，
+  AI 拿到空 404，**也就没法把"请用户去 IDE 处理"转告出去**，而那正是这类卡点唯一的出路。
+  超时文案 MUST 区分"卡在哪一步"：卡在提交 ⇒ 多半是平台在弹模态对话框等用户交互，
+  MUST 要求 AI 转告用户去 IDE 里处理（并提醒排队中的提交可能稍后才真的发生）；卡在等进程 ⇒ 走 before-launch 那套文案
 - MUST NOT 用"拿到第一段输出就返回"来缩短等待：第一段通常是回显的启动命令行，MUST 采满窗口再返回
 - MUST 用 `ProgramRunner.Callback` 接住 `processStarted` / `processNotStarted`
   （经 `ProgramRunnerUtil.executeConfigurationAsync`），与内置 `execute_run_configuration` 同一条路
@@ -287,23 +320,53 @@ diagnostics:
 - `output` MUST 是新进程输出的内联预览，上限 10000 字符，超出时补 `<truncated>`
 - `fullOutputPath` MUST 指向完整日志文件，进程运行期间持续增长
 - `sessionId` 语义 MUST 与内置工具一致：单活实例用配置名，多活实例用 `<名字>#<executionId>`
-- `transition[]` MUST 按时间顺序给出状态节点（`STOPPED` / `STARTED` / `START_FAILED`）并带每步耗时；
+- `transition[]` MUST 按时间顺序给出状态节点（`STOPPED` / `STARTED` / `START_SUBMITTED` / `START_FAILED`）并带每步耗时；
   停掉的旧实例的退出码 MUST 出现在第一个节点的 `detail` 里
 - `STARTED` 节点的 `elapsedMs` MUST 是"到进程真的被创建"的时间，MUST NOT 把返回前采集日志的固定窗口算进去
   （否则摘要会写成"启动用了 2 秒"，而实际是等日志等了 2 秒）
-- 判断"新进程到底起没起" MUST 看 `started`，MUST NOT 只看 `mode`
+- 判断"新进程到底起没起" MUST 看 `started`，MUST NOT 只看 `mode`；`started` 是可空布尔，
+  `null` = "没等，不知道"（与仓库既有约定一致："值为 null = 进程还没起来"）
 - MUST NOT 改写项目的启动命令，MUST NOT 按命令行模式匹配，MUST NOT 依赖固定监听端口
-- 旧实例超时未退出时 MUST 仍然启动新实例，并在 `warnings[]` 里说明
-- **可重入性(HARD CONTRACT)** —— 两条守护都必须有，且都必须返回 `isError = true` 而不是放行到平台：
-  1. 目标配置处于**中间态**（`terminating`，或已创建进程但还没 `startNotified`）时 MUST 拒绝，理由必须写明
-     "IDE 在这个状态下会禁用 Rerun"；这正是 GUI 把 Rerun 按钮灰掉的那两种状态
-     （平台 `FakeRerunAction.isEnabled` 判的就是 `isStarting()` 与 `isProcessTerminating()`）
-  2. **同一配置**已有一次 rerun 正在飞行中时 MUST 拒绝，并提示等它结束
-- 第 2 条不是可选的：放行到平台的实测后果是——平台会为"对已在运行的配置再来一次"弹**模态确认框**，
-  而 MCP 这条无头路径上没人点它，于是这次调用挂约 **20 秒后拿到传输层 HTTP 404 空响应**（见 `RunLifecycleInFlight` 的 KDoc）
-- 守护的粒度 MUST 是"每个项目 + 每个配置名"：实测**不同配置**并发 rerun 都正常，只有**同配置**才会撞；
-  MUST NOT 做成全局互斥（那会连正当的"重启 B 的同时重启 A"也挡掉）
-- 占用 MUST 在 `finally` 里释放，否则该配置名会被永久占住、再也 rerun 不了
+- **中间态 MUST 拒绝**（与 GUI 把 Rerun 按钮灰掉的状态同源：`FakeRerunAction.isEnabled` 判
+  `isStarting()` / `isProcessTerminating()`），且必须覆盖**两档**：
+  1. 快照里能看到的中间态实例：`terminating`，或已创建进程但还没 `startNotified`
+  2. **Run 内容已创建、但进程还没挂上**（`processHandler == null`）——这一档在快照里是被丢掉的
+     （`toInstanceState` 对无 handler 的条目返回 null），而人手按下 Run 之后的那一小段恰好落在这里
+
+  拒绝 MUST 用 `isError = true` + 自洽文案（写明配置名与是启动中还是停止中，并建议稍后重试）。
+  这一层读的是平台里的**真实状态**，因此 MUST 同时覆盖"用户在 IDE 里手动点 Run/Rerun"与
+  "内置 `execute_run_configuration`"这两种非本插件的发起来源
+
+- **发起启动前 MUST 先过平台自己的那道门**：`ProgramRunnerUtil.executeConfigurationAsync` 的源码是
+  `if (!manager.isStarting(environment)) { …executeConfiguration… }` —— 即"同配置 + 同 executor + 同 runner
+  正在启动"时，这次提交会被**静默丢弃**（连回调都不装），既不回成功也不回失败。
+  因此 `rerun` MUST 在真正发起之前用**同一个条件**（公开 API `ExecutionManager.isStarting(environment)`）
+  问一次，命中就立刻返回 `isError = true` + 自洽文案。
+  这样 MUST NOT 依赖本插件自建的"在飞"内存状态——平台状态对"谁发起的"一视同仁，手动点击起的运行同样算数
+- 碰撞窗口 = `inProgress` 的存活期 = **整个启动过程**：`executeConfiguration` 一进来就加 `inProgress`，
+  直到进程创建、`startNotify` 之后才减（源码里是 `inProgress.update { it - inProgressEntry }` 紧跟
+  `processHandler.startNotify()`）。而 before-launch 任务是在这中间跑的 ⇒ **构建期间 `isStarting` 就是 true**
+  （实测：给配置挂一个永不退出的 before-launch 后，第二次 rerun 立刻拿到"another start is already in progress"，
+  0 秒返回）。所以这个门能覆盖"构建中又发一次 rerun"这种长窗口场景，命中时给的是 0 秒的精确错误，
+  而不是让调用方干等到自己的超时（默认值下"慢停 + 慢启"的总时长还会超过会话耐心，结果直接丢成空 404）
+- 三层判定 MUST 保持互补：① 中间态（含"Run 内容已出现、进程还没挂上"）② 旧实例没停干净就不启动
+  ③ 平台启动门。三者读的都是平台状态，MUST NOT 合并、也 MUST NOT 用其中一层声称覆盖了全部并发来源
+- **旧实例没停干净时 MUST NOT 启动新进程**：那正是"同一配置留两个实例"的病根。此时 MUST 照常返回结构化结果：
+  `started = false`、`startFailure` 写明原因、`transition[]` 以 `START_FAILED` 收尾
+- **`startTimeoutMs` 的默认值 MUST 取 10000，与原生一致(HARD CONTRACT)**：内置
+  `execute_run_configuration` 的 `timeout` 默认就是 `10000`（`ExecutionToolset` 字节码里的 `sipush 10000`）。
+  调用方 MAY 覆盖它（例如某个配置的 before-launch 要先编译几十秒）
+- **单次调用的时长 MUST 留在服务器的耐心之内(HARD CONTRACT)**：实测一个请求悬着超过约 **15 秒**，
+  MCP Server 会先移除会话（`Pending StreamableHttp transport timed out` → `Removing session`），
+  于是工具算完也送不回结果，客户端拿到的是 **HTTP 404 空响应**。实测边界：8 秒能正常送达、20 秒不能；
+  **官方工具也一样**（`execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后空 404）。
+  注意 `rerun` 的总时长是三段相加（`stopTimeoutMs` + `startTimeoutMs` + 输出窗口），
+  所以"慢停 + 慢启"的组合会超过这个上限；工具描述 MUST 提醒调用方这一点，
+  并建议这类配置把 `stopTimeoutMs` 调小
+- **启动超时的文案 MUST 点明原因**：先用 `RunConfiguration.getBeforeRunTasks()` 查这个配置配了几个
+  before-launch 步骤；有就 MUST 说明"它们跑完之前平台不会产出 Run 内容，所以'还没启动'是正常现象"，
+  并给出"调大 `startTimeoutMs`"的建议；没有就 MUST 说明另一种可能（启动被忽略 / 启动更慢）。
+  文案 MUST 带上**实际生效的毫秒数**（MUST NOT 写死）
 - 输出 JSON：
 
 ```json

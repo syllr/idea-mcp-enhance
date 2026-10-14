@@ -153,7 +153,21 @@ private class StopRunConfigurationTool : BaseRunTool() {
 
         val settings = findSettingsByName(project, name) ?: return unknownConfiguration(project, name)
 
-        val descriptors = activeDescriptorsFor(project, settings.name)
+        var descriptors = activeDescriptorsFor(project, settings.name)
+        // "启动在飞"（异步提交刚返回、或别的工具/人手刚发起）：此时直接报"没在跑"是假话——
+        // Run 内容可能还没建、进程还没挂上，但它随后就会起来。先有界地等它挂上，再照常停。
+        var pendingStartWarning: String? = null
+        if (descriptors.isEmpty() && startInFlight(project, settings)) {
+            if (awaitPendingStart(project, settings, PENDING_START_ATTACH_TIMEOUT_MS)) {
+                descriptors = activeDescriptorsFor(project, settings.name)
+            } else {
+                pendingStartWarning =
+                    "A start of \"${settings.name}\" is already in flight but has not produced a process yet " +
+                        "(nothing was stopped). It may come up shortly — call this tool again, or check " +
+                        "`list_running_configurations`, to confirm."
+            }
+        }
+
         if (descriptors.isEmpty()) {
             val idle = StopReport(
                 configurationName = settings.name,
@@ -162,9 +176,12 @@ private class StopRunConfigurationTool : BaseRunTool() {
                 forcedKills = 0,
                 timedOut = false,
                 instances = emptyList(),
-                warnings = emptyList(),
+                warnings = listOfNotNull(pendingStartWarning),
             )
-            return McpToolCallResult.text("\"${settings.name}\" is not running; nothing to stop.", idle.toJson())
+            return McpToolCallResult.text(
+                pendingStartWarning ?: "\"${settings.name}\" is not running; nothing to stop.",
+                idle.toJson(),
+            )
         }
 
         val waitTimeoutMs = arguments.optionalInt("waitTimeoutMs", defaultWaitTimeoutMs())
@@ -172,6 +189,7 @@ private class StopRunConfigurationTool : BaseRunTool() {
         val outcome = stopDescriptors(descriptors, waitTimeoutMs, force)
 
         val warnings = buildList {
+            if (pendingStartWarning != null) add(pendingStartWarning)
             if (outcome.stillRunning > 0) {
                 add("${outcome.stillRunning} instance(s) still running after ${waitTimeoutMs}ms.")
             }
@@ -212,71 +230,44 @@ private class RerunRunConfigurationTool : BaseRunTool() {
 
         val settings = findSettingsByName(project, name) ?: return unknownConfiguration(project, name)
 
-        // ① 平台级的中间态检查：IDE 在"启动中 / 停止中"会把 Rerun 按钮灰掉（`FakeRerunAction.isEnabled`
-        //    判的就是 `isStarting()` 与 `isProcessTerminating()`），这里照做。
+        // 前置判定 ①：中间态就不许 rerun —— 与 IDE 把 Rerun 按钮灰掉的那两种状态同源
+        // （`FakeRerunAction.isEnabled` 判 `isStarting()` / `isProcessTerminating()`）。
+        // 这一层覆盖"任何已可见的中间态"，因此**也包括用户在 IDE 里手动点出来**的运行。
         val before = snapshotOf(project, settings)
-        before.transientInstance?.let { busy ->
-            return errorResult(
-                "\"${settings.name}\" is currently ${if (busy.terminating) "stopping" else "starting"}, " +
-                    "and the IDE disables Rerun in that state. Retry once it settles.",
-                before.toJson(),
-            )
+        rerunBlockedReason(
+            configurationName = settings.name,
+            transient = before.transientInstance,
+            hasPendingRunContent = hasPendingRunContent(project, settings.name),
+        )?.let { reason ->
+            return errorResult(reason, before.toJson())
         }
 
-        // ② 插件级的并发守护：同一配置已有一次 rerun 在飞行中就直接报错。
-        //    放行到平台的后果实测过：这次调用会挂约 20 秒，然后拿到传输层的 HTTP 404
-        //    ——因为平台会为"对已在运行的配置再来一次"弹模态确认框，而无头路径上没人点它。
-        val inFlight = project.service<RunLifecycleInFlight>()
-        if (!inFlight.tryAcquire(settings.name)) {
-            return errorResult(
-                "A rerun of \"${settings.name}\" is already in progress. Wait for it to finish first.",
-                before.toJson(),
-            )
-        }
-        return try {
-            rerunNow(
-                project = project,
-                settings = settings,
-                stopTimeoutMs = arguments.optionalInt("stopTimeoutMs", defaultWaitTimeoutMs()),
-                startTimeoutMs = arguments.optionalInt("startTimeoutMs", defaultStartTimeoutMs()),
-            )
-        } finally {
-            inFlight.release(settings.name)
-        }
+        // 前置判定 ② 在平台侧：见 `startRunAndAwait`（用平台自己的 `isStarting(environment)` 门）。
+        return rerunNow(
+            project = project,
+            settings = settings,
+            stopTimeoutMs = arguments.optionalInt("stopTimeoutMs", defaultWaitTimeoutMs()),
+            startTimeoutMs = arguments.optionalInt("startTimeoutMs", defaultStartTimeoutMs()),
+            waitForStart = arguments.optionalBoolean("waitForStart", true),
+        )
     }
 
-    /** 真正的重启流程。单独拆出来，是为了让上面的并发守护能用一个 `try/finally` 干净地包住它。 */
+    /** 真正的重启流程。单独拆出来，是为了让上面的两层前置判定能用一个 `try/finally` 干净地包住它。 */
     private suspend fun rerunNow(
         project: Project,
         settings: RunnerAndConfigurationSettings,
         stopTimeoutMs: Int,
         startTimeoutMs: Int,
+        waitForStart: Boolean,
     ): McpToolCallResult {
 
         val startedAtNanos = System.nanoTime()
         val transition = mutableListOf<RunTransitionStep>()
         val warnings = mutableListOf<String>()
 
-        // 第 1 步：停掉旧实例。这一步本身就是状态流转的第一个节点。
-        val running = activeDescriptorsFor(project, settings.name)
-        var stopped = 0
-        if (running.isNotEmpty()) {
-            val outcome = stopDescriptors(running, stopTimeoutMs, force = true)
-            stopped = outcome.requestedStops
-            if (outcome.stillRunning > 0) {
-                warnings += "${outcome.stillRunning} instance(s) did not exit within ${stopTimeoutMs}ms; starting anyway."
-            }
-            if (outcome.forcedKills > 0) {
-                warnings += "${outcome.forcedKills} instance(s) had to be killed."
-            }
-            transition += RunTransitionStep(
-                phase = TransitionPhase.STOPPED,
-                detail = describeStoppedInstances(stopped, outcome.forcedKills, outcome.instances),
-                elapsedMs = elapsedSince(startedAtNanos),
-            )
-        }
-
-        // 第 2 步：起新的。构造不出执行环境就是"什么都没做"。
+        // 第 0 步：先把"能不能启动"问清楚，**再决定要不要停旧的**。
+        // 顺序很重要：如果先停后判，用户在跑的应用会被白白杀掉，然后才被告知"需要你去 IDE 处理"
+        // （模态对话框占着 EDT / 配置本身跑不起来 / 别人正在启动它）。
         val environment = buildRunEnvironment(project, settings)
         if (environment == null) {
             val after = snapshotOf(project, settings)
@@ -286,7 +277,7 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                 RerunReport(
                     configurationName = settings.name,
                     mode = RerunMode.NO_OP,
-                    stoppedInstances = stopped,
+                    stoppedInstances = 0,
                     runningAfter = after.runningInstanceCount,
                     instances = after.instances,
                     warnings = warnings + failure,
@@ -296,20 +287,76 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                 ).toJson(),
             )
         }
+        startBlockedByPlatformReason(project, environment, settings)?.let { reason ->
+            // 什么都还没做（没停、没启），所以直接按"前置判定"的形式给错误结果
+            return errorResult(reason, snapshotOf(project, settings).toJson())
+        }
 
-        // 关键：同步等到新进程真的被创建、并且状态收敛成"确实在跑"才返回，
+        // 第 1 步：停掉旧实例。这一步本身就是状态流转的第一个节点。
+        val running = activeDescriptorsFor(project, settings.name)
+        var stopped = 0
+        if (running.isNotEmpty()) {
+            val outcome = stopDescriptors(running, stopTimeoutMs, force = true)
+            stopped = outcome.requestedStops
+            if (outcome.forcedKills > 0) {
+                warnings += "${outcome.forcedKills} instance(s) had to be killed."
+            }
+            transition += RunTransitionStep(
+                phase = TransitionPhase.STOPPED,
+                detail = describeStoppedInstances(stopped, outcome.forcedKills, outcome.instances),
+                elapsedMs = elapsedSince(startedAtNanos),
+            )
+
+            // 没停干净就坚决不启新的：那正是"同一配置留两个实例"的病根，
+            // 也正是平台会弹出"重启需要确认"模态框的条件（无头路径上没人点它 → 调用挂到传输层超时）。
+            startBlockedReason(settings.name, outcome.stillRunning)?.let { reason ->
+                val after = snapshotOf(project, settings)
+                transition += RunTransitionStep(
+                    phase = TransitionPhase.START_FAILED,
+                    detail = reason,
+                    elapsedMs = elapsedSince(startedAtNanos),
+                )
+                return McpToolCallResult.text(
+                    reason,
+                    RerunReport(
+                        configurationName = settings.name,
+                        mode = RerunMode.RESTARTED,
+                        stoppedInstances = stopped,
+                        runningAfter = after.runningInstanceCount,
+                        instances = after.instances,
+                        warnings = warnings + reason,
+                        started = false,
+                        startFailure = reason,
+                        transition = transition,
+                    ).toJson(),
+                )
+            }
+        }
+
+        // 第 2 步：起新的（执行环境在第 0 步已经构建好并验过）。
+        // 关键：默认同步等到新进程真的被创建、并且状态收敛成"确实在跑"才返回，
         // 否则紧接着做快照必然读到 0 个在跑，调用方会误判成"启动失败"。
-        val start = startRunAndAwait(project, environment, settings, startTimeoutMs)
+        // `waitForStart = false` 时只提交、不等：那种配置的 before-launch 比服务器的会话耐心还长，
+        // 等下去只会把结果丢成空 404；提交完让调用方自己轮询 `list_running_configurations` 才是可行解。
+        val start = startRunAndAwait(project, environment, settings, startTimeoutMs, waitForStart = waitForStart)
         transition += RunTransitionStep(
-            phase = if (start.started) TransitionPhase.STARTED else TransitionPhase.START_FAILED,
-            detail = if (start.started) {
-                "execution ${start.executionId}" + (start.pid?.let { ", pid $it" }.orEmpty())
-            } else {
-                start.failure ?: "unknown failure"
+            phase = when {
+                !start.awaited -> TransitionPhase.START_SUBMITTED
+                start.started -> TransitionPhase.STARTED
+                else -> TransitionPhase.START_FAILED
+            },
+            detail = when {
+                !start.awaited ->
+                    "start request submitted, not awaited (waitForStart = false); " +
+                        "the IDE creates the Run content only after the before-launch steps finish"
+                start.started -> "execution ${start.executionId}" + (start.pid?.let { ", pid $it" }.orEmpty())
+                else -> start.failure ?: "unknown failure"
             },
             elapsedMs = start.startElapsedMs,
         )
-        if (!start.started) {
+        if (!start.awaited) {
+            warnings += NOT_AWAITED_WARNING
+        } else if (!start.started) {
             warnings += "The new process did not come up: ${start.failure}"
         }
 
@@ -319,10 +366,11 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             configurationName = settings.name,
             mode = if (stopped > 0) RerunMode.RESTARTED else RerunMode.STARTED,
             stoppedInstances = stopped,
-            runningAfter = after.runningInstanceCount,
+            // 没等就用 null：提交后立刻拍到的快照必然是 0，把它当结果回报会重演那个自相矛盾的老毛病
+            runningAfter = if (start.awaited) after.runningInstanceCount else null,
             instances = after.instances,
             warnings = warnings,
-            started = start.started,
+            started = if (start.awaited) start.started else null,
             startFailure = start.failure,
             sessionId = start.sessionId,
             output = start.output,
@@ -340,16 +388,33 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             append(" (stopped ").append(report.stoppedInstances).append(" old instance(s) first)")
         }
         append(": ")
-        if (report.started) {
-            val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.STARTED }
-            append("new process is up")
-            if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
-            append(" — ").append(report.runningAfter).append(" live instance(s).")
-        } else {
-            append("the new process did not come up — ").append(report.startFailure).append('.')
+        when (report.started) {
+            true -> {
+                val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.STARTED }
+                append("new process is up")
+                if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
+                append(" — ").append(report.runningAfter).append(" live instance(s).")
+            }
+            // 失败原因本身就是完整句子（通常已带句点），这里统一收口，避免出现 ".."
+            false -> append("the new process did not come up — ").append(report.startFailure.orEmpty().trimEnd('.')).append('.')
+            // 没等：必须说清"不知道"，而不是暗示失败——否则 agent 会去重试，反而起出第二个实例
+            null -> append(
+                "the start was submitted but not awaited — the outcome is unknown; " +
+                    "poll `list_running_configurations` to see when the process is up.",
+            )
         }
     }
 }
+
+/**
+ * `waitForStart = false` 时的固定警告：把"不知道"说清楚。
+ *
+ * 必须出现在 `warnings[]` 里，因为 `started = null` 是个新状态，调用方（尤其是 agent）
+ * 很容易把它当成失败去重试——那会撞上平台的启动门，或者干脆起出第二个实例。
+ */
+private const val NOT_AWAITED_WARNING =
+    "The start was submitted but not awaited (waitForStart = false): the outcome is unknown until the " +
+        "before-launch steps finish. Poll `list_running_configurations` to see when the process is up."
 
 /** 把"停了几个、退出码是多少、有没有强杀"压成一句可读的 detail。 */
 private fun describeStoppedInstances(requested: Int, forcedKills: Int, instances: List<RunInstanceState>): String {

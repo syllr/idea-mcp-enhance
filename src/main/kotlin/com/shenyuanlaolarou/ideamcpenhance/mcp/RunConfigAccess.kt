@@ -1,10 +1,14 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import com.intellij.execution.ExecutionManager
 import com.intellij.execution.KillableProcess
 import com.intellij.execution.ProgramRunnerUtil
 import com.intellij.execution.RunManager
 import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.execution.configurations.RunConfiguration
+import com.intellij.execution.configurations.RuntimeConfigurationError
+import com.intellij.execution.configurations.RuntimeConfigurationException
+import com.intellij.execution.Executor
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
@@ -17,12 +21,16 @@ import com.intellij.execution.ui.RunContentManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.IndexNotReadyException
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.util.Key
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.awt.Dialog
+import java.awt.Window
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -73,11 +81,138 @@ internal fun findSettingsByName(project: Project, configurationName: String): Ru
     return all.firstOrNull { it.name.equals(configurationName, ignoreCase = true) }
 }
 
+/** 该配置配了几个 before-launch 步骤（构建 / 另一个 run configuration 等）。用于超时文案。 */
+internal fun beforeLaunchStepCount(settings: RunnerAndConfigurationSettings): Int =
+    settings.configuration.beforeRunTasks.size
+
+/**
+ * 复刻平台自己的"这个配置现在能不能跑"判断（`RunManagerImpl.canRunConfiguration` → `checkSettings`）。
+ *
+ * 返回值非空 = **不能跑**，且平台会因此**弹模态对话框**（`RunDialog.editConfiguration`）。
+ * 两种命中情况的处置**不同**，文案必须分开说清：
+ * - `RuntimeConfigurationError`：配置本身有致命问题（例如脚本文件不存在）⇒ **这是用户的卡点**，
+ *   必须让 AI 转告用户去 IDE 里改配置，工具自己重试多少次都没用
+ * - `IndexNotReadyException`：IDE 还在建索引（dumb mode）⇒ **不需要用户做任何事**，等索引跑完再调即可
+ *
+ * 第三种 `RuntimeConfigurationException`（只是警告）平台自己也当"可以跑"，这里同样放过。
+ */
+internal fun cannotRunReason(settings: RunnerAndConfigurationSettings, executor: Executor?): String? =
+    try {
+        settings.checkSettings(executor)
+        null
+    } catch (_: IndexNotReadyException) {
+        "The IDE is still indexing this project, so starting \"${settings.name}\" would make it ask to edit the " +
+            "configuration instead of running it. Nothing needs the user here — wait for indexing to finish and call again."
+    } catch (error: RuntimeConfigurationError) {
+        "This requires the user to act in the IDE: the IDE refuses to run \"${settings.name}\" " +
+            "(${error.localizedMessage ?: "invalid settings"}), and starting it by hand would open the same " +
+            "\"Edit Configuration\" dialog. Nothing was started. Tell the user to fix it in the IDE, then call this tool again."
+    } catch (_: RuntimeConfigurationException) {
+        // 平台自己也是"吞掉当通过"：警告不阻止启动
+        null
+    }
+
+/**
+ * 平台侧"现在是不是有模态对话框在等用户"的**直接判断**。
+ *
+ * 为什么需要它：`checkSettings` 只能拦"平台因为**这个配置**而不能跑"那两种情况，
+ * 拦不住"**别的**模态对话框正占着 EDT"（例如用户自己打开了设置、或者上一次调用留下的
+ * `RunDialog.editConfiguration`）。那时我们的提交会被永远排不上队，工具就再也回不来。
+ * 有了这个判断就能**立刻**返回"这需要用户去 IDE 处理"，而不是先干等到超时。
+ *
+ * 实现上**不能依赖焦点**：`DialogWrapper.findInstanceFromFocus()` 读的是
+ * `KeyboardFocusManager.getFocusOwner()`，而 IDE 窗口没被聚焦时（agent 在跑、窗口在后台）
+ * 那个值可能是 null —— 实测就是这样，判断落空、白等满 `startTimeoutMs`。
+ * 所以这里直接扫本 JVM 的窗口列表（AWT 静态方法，任意线程可调），
+ * 找**可见且带模态语义**的 `Dialog`：`isModal` 或 `modalityType != MODELESS`
+ * （IDEA 有些对话框只设 `modalityType` 而不设 `isModal`）。
+ *
+ * 判断不出来（AWT 异常 / 无头环境）就当"没有"：后面的超时兜底会接住。
+ */
+internal fun modalDialogBlockingUser(): Boolean =
+    try {
+        Window.getWindows().any { window ->
+            window is Dialog &&
+                window.isVisible &&
+                (window.isModal || window.modalityType != Dialog.ModalityType.MODELESS)
+        }
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (_: Exception) {
+        false
+    }
+
+/**
+ * 启动前的三道判断，按"越便宜、越能立刻下结论"排序，返回 `null` = 可以启动：
+ *
+ * 1. **现在是否有模态对话框在等用户**（`modalDialogBlockingUser`）—— 有就立刻返回"这需要用户去 IDE 处理"
+ * 2. **这个配置现在能不能跑**（`cannotRunReason` = 平台自己的 `checkSettings`）—— 平台会为此弹编辑对话框
+ * 3. **平台是否已经在启动它**（`isStarting`）—— 命中时 `executeConfigurationAsync` 会静默丢弃这次提交
+ *
+ * 调用点有两处，**缺一不可**：
+ * - `rerunNow` 在**停旧实例之前**先问一次：否则用户会先被停掉在跑的应用，然后才被告知"需要你去 IDE 处理"，
+ *   等于白白让服务下线一次
+ * - `startRunAndAwait` 在**真正提交之前**再问一次：状态可能在"停止 + 构建执行环境"期间变化
+ *   （例如停止过程中用户打开了对话框、或者别人抢先启动了这个配置）
+ */
+internal fun startBlockedByPlatformReason(
+    project: Project,
+    environment: ExecutionEnvironment,
+    settings: RunnerAndConfigurationSettings,
+): String? {
+    if (modalDialogBlockingUser()) {
+        return userMustActReason(settings.name)
+    }
+    cannotRunReason(settings, environment.executor)?.let { return it }
+    if (ExecutionManager.getInstance(project).isStarting(environment)) {
+        return "Another start of \"${settings.name}\" is already in progress, so the IDE would ignore this one. " +
+            "Wait for it to settle and call again."
+    }
+    return null
+}
+
+/** 该配置是否有"**已提交但还没产出进程**"的启动（异步提交、或别的工具/人手刚发起）。 */
+internal fun startInFlight(project: Project, settings: RunnerAndConfigurationSettings): Boolean {
+    if (hasPendingRunContent(project, settings.name)) return true
+    val environment = buildRunEnvironment(project, settings) ?: return false
+    return ExecutionManager.getInstance(project).isStarting(environment)
+}
+
+/**
+ * 等"在飞的启动"产出可停的进程。返回 `true` = 等到了（可以照常停），`false` = 超时（仍没进程）。
+ *
+ * 为什么需要它：`rerun` 的异步模式（`waitForStart = false`）提交完就返回，此时 Run 内容可能还没建、
+ * 进程还没挂上。这时 `stop` 直接报 "not running; nothing to stop" 是**假话**——进程随后就会起来，
+ * 调用方却以为已经停掉了（实测过：stop 返回成功 3 秒后进程在跑）。等一小段再停才是正确语义。
+ */
+internal suspend fun awaitPendingStart(
+    project: Project,
+    settings: RunnerAndConfigurationSettings,
+    timeoutMs: Long,
+): Boolean {
+    val deadline = deadlineNanos(timeoutMs)
+    while (System.nanoTime() < deadline) {
+        if (activeDescriptorsFor(project, settings.name).isNotEmpty()) return true
+        delay(PENDING_START_POLL_INTERVAL_MS)
+    }
+    return activeDescriptorsFor(project, settings.name).isNotEmpty()
+}
+
 /** 该配置名下**仍在跑**（或正在终止）的 Run 内容。 */
 internal fun activeDescriptorsFor(project: Project, configurationName: String): List<RunContentDescriptor> =
     descriptorsByConfigurationName(project)[configurationName]
         .orEmpty()
         .filter { it.processHandler?.isProcessTerminated == false }
+
+/**
+ * 该配置名下是否有**已经创建、但进程还没挂上的 Run 内容**。
+ *
+ * 这是中间态判定的一个盲点：`snapshotOf` 会丢掉 `processHandler == null` 的 Run 内容
+ * （见 [toInstanceState] 的注释），于是一个"刚被点起来的 run"在快照里什么都不像——
+ * 而人手从按下 Run 到进程真正建好之间的那一档，恰好落在这里。
+ */
+internal fun hasPendingRunContent(project: Project, configurationName: String): Boolean =
+    descriptorsByConfigurationName(project)[configurationName].orEmpty().any { it.processHandler == null }
 
 /** 配置 + 其实例状态 → 纯数据快照。 */
 internal fun snapshotOf(project: Project, settings: RunnerAndConfigurationSettings): RunConfigurationState {
@@ -245,6 +380,9 @@ internal fun buildRunEnvironment(project: Project, settings: RunnerAndConfigurat
  *
  * @param settings 目标配置。既用来取名字（日志文件名 / sessionId），也用来在启动后取"收敛快照"
  * @param startTimeoutMs 从"发出启动请求"到"等到进程被创建"的上限；超时返回 [StartOutcome.failure]
+ * @param waitForStart `false` = 只提交启动请求就返回（不等进程创建）。
+ *   用于"这个配置的 before-launch 要构建很久"的场景：那种情况下任何等待都会撞上 MCP Server
+ *   的会话耐心，等不到结果；提交完让调用方自己轮询 `list_running_configurations` 才是可行解
  * @param outputGraceMs 进程起来后再采集这么久的输出才返回。server 类配置永不退出，只能给它一个固定窗口；
  *   这段时间就是"启动日志"（`output` 内联预览）能拿到多少的代价。日志文件 [StartOutcome.fullOutputPath]
  *   不受这个窗口限制，会在进程整个生命周期里持续增长
@@ -254,6 +392,7 @@ internal suspend fun startRunAndAwait(
     environment: ExecutionEnvironment,
     settings: RunnerAndConfigurationSettings,
     startTimeoutMs: Int,
+    waitForStart: Boolean = true,
     outputGraceMs: Long = DEFAULT_OUTPUT_GRACE_MS,
 ): StartOutcome {
     val sessionName = settings.name
@@ -277,18 +416,76 @@ internal suspend fun startRunAndAwait(
         }
     }
 
-    withContext(Dispatchers.EDT) {
-        ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
+    // 三道判断（模态对话框 / 这个配置能不能跑 / 平台是否已经在启动它）——见 [startBlockedByPlatformReason]。
+    // 这里 MUST 再问一次：调用方（`rerunNow`）在停旧实例之前已经问过一次，但状态可能在
+    // "停止 + 构建执行环境"期间变化（停止过程中用户打开了对话框、或者别人抢先启动了这个配置）。
+    startBlockedByPlatformReason(project, environment, settings)?.let { reason ->
+        return failedStart(
+            project = project,
+            settings = settings,
+            outputPath = outputPath,
+            startedAtNanos = startedAtNanos,
+            reason = reason,
+        )
     }
 
-    val settledResult = withTimeoutOrNull(startTimeoutMs.toLong().coerceAtLeast(1L)) { settled.await() }
-        ?: return failedStart(
-            project,
-            settings,
-            outputPath,
-            startedAtNanos,
-            "The IDE did not report a started or failed run within ${startTimeoutMs}ms.",
+    // 预算**不新增**：提交（EDT 那一步）+ 等进程创建 共用调用方的 startTimeoutMs。
+    // 提交正常只要几毫秒；它会被卡住通常是因为**平台在等用户交互**（模态对话框，例如
+    // `RunDialog.editConfiguration`），也可能是索引竞态。完全不留上限的话工具就永远返回不了任何东西，
+    // AI 拿到空 404、也就没法把"请用户去 IDE 处理"转告出去——而那正是这类卡点唯一的出路。
+    val budgetMs = startTimeoutMs.toLong().coerceAtLeast(1L)
+
+    // 只提交、不等：调用方拿 `started = null`（不知道），之后用 `list_running_configurations` 查。
+    // 收集器仍然挂在回调上，所以进程真起来之后日志文件照常增长（调用方可以稍后去读）。
+    if (!waitForStart) {
+        val accepted = withTimeoutOrNull(budgetMs) {
+            withContext(Dispatchers.EDT) {
+                ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
+            }
+            true
+        }
+        if (accepted == null) {
+            return failedStart(
+                project = project,
+                settings = settings,
+                outputPath = outputPath,
+                startedAtNanos = startedAtNanos,
+                reason = userMustActReason(settings.name),
+            )
+        }
+        return StartOutcome(
+            executionId = null,
+            pid = null,
+            sessionId = null,
+            output = "",
+            fullOutputPath = outputPath?.toString(),
+            startElapsedMs = elapsedMsSince(startedAtNanos),
+            failure = null,
+            state = snapshotOf(project, settings),
+            submittedOnly = true,
         )
+    }
+
+    var submitted = false
+    val settledResult = withTimeoutOrNull(budgetMs) {
+        withContext(Dispatchers.EDT) {
+            ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
+        }
+        submitted = true
+        settled.await()
+    } ?: return failedStart(
+        project,
+        settings,
+        outputPath,
+        startedAtNanos,
+        // 超时点在"提交"还是"等进程"上，处置完全不同：前者多半是在等用户点对话框，
+        // 后者是 before-launch 还在跑（构建 / 另一个配置）。
+        if (submitted) {
+            startTimeoutReason(settings.name, startTimeoutMs, beforeLaunchStepCount(settings))
+        } else {
+            userMustActReason(settings.name)
+        },
+    )
 
     val descriptor = settledResult.getOrElse { error ->
         return failedStart(
@@ -338,6 +535,8 @@ internal suspend fun startRunAndAwait(
  *   注意这里刻意**不含**后续采集启动日志的固定窗口——否则摘要会写成
  *   "启动用了 2 秒"，而实际是等日志等了 2 秒
  * @param state 启动收敛之后该配置的真实状态。调用方应直接用它，不要再自己拍一次快照（会读到中间态）
+ * @param submittedOnly `true` = 只提交了启动请求、没有等（`waitForStart = false`）。
+ *   此时 [executionId] / [pid] / [sessionId] 全为 null，[state] 只是提交那一刻的快照
  */
 internal data class StartOutcome(
     val executionId: Long?,
@@ -348,9 +547,13 @@ internal data class StartOutcome(
     val startElapsedMs: Long,
     val failure: String?,
     val state: RunConfigurationState,
+    val submittedOnly: Boolean = false,
 ) {
     /** 新进程是否真的起来了。 */
     val started: Boolean get() = failure == null && executionId != null
+
+    /** 启动了但**没等**：结果未知（与 [started] = false 是两回事）。 */
+    val awaited: Boolean get() = !submittedOnly
 }
 
 /**
@@ -502,6 +705,17 @@ private fun createRunOutputFile(sessionName: String): Path? = runCatching {
 
 /** 轮询间隔：等进程起来、等输出、等 Run 内容注册都用它。 */
 private const val START_POLL_INTERVAL_MS = 50L
+
+/** 等"在飞的启动"挂上进程时的轮询间隔。 */
+private const val PENDING_START_POLL_INTERVAL_MS = 50L
+
+/**
+ * `stop` 遇到"启动在飞"时，最多等多久让它挂上进程。
+ *
+ * 有界是必须的：等不到就如实说"启动仍在飞"，而不是把调用悬着。
+ * 加上 `stop` 自己的 `waitTimeoutMs`（默认 5000），最坏总时长约 7 秒，仍在服务器会话耐心之内。
+ */
+internal const val PENDING_START_ATTACH_TIMEOUT_MS = 2_000L
 
 /** 等"新实例确实在跑"的快照的上限。实测收敛需要 1~3 秒。 */
 private const val LIVE_STATE_TIMEOUT_MS = 5_000L

@@ -199,6 +199,12 @@ class RunLifecycleSchemaTest {
         typesOf(rerun, "sessionId")
         typesOf(rerun, "fullOutputPath")
 
+        // waitForStart = false 时这两个是 null（"不知道"），不是 0 / false —— 声明成非空会让严格客户端校验失败
+        fun typeListOf(properties: JsonObject, key: String): List<String> =
+            properties[key]!!.jsonObject["type"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals("started 应声明为可空", listOf("boolean", "null"), typeListOf(rerun, "started"))
+        assertEquals("runningAfter 应声明为可空", listOf("integer", "null"), typeListOf(rerun, "runningAfter"))
+
         // configurations[] 的 items → 它的 instances[] → 那个 items 的属性
         val configurationItems = toolByName(LIST_TOOL_NAME).descriptor.outputSchema!!
             .propertiesSchema["configurations"]!!.jsonObject["items"]!!.jsonObject["properties"]!!.jsonObject
@@ -218,6 +224,23 @@ class RunLifecycleSchemaTest {
         assertTrue(schema.propertiesSchema.containsKey("startTimeoutMs"))
         assertTrue(schema.propertiesSchema.containsKey("stopTimeoutMs"))
         assertEquals(setOf("configurationName"), schema.requiredProperties)
+    }
+
+    @Test
+    fun `rerun 可以只提交不等启动`() {
+        // before-launch 比服务器会话耐心还长的配置，只能走"提交即返回 + 自己轮询"这条路。
+        // 参数命名刻意对齐原生 execute_run_configuration 的 waitForExit。
+        val schema = toolByName(RERUN_TOOL_NAME).descriptor.inputSchema
+        val waitForStart = schema.propertiesSchema["waitForStart"]!!.jsonObject
+        assertEquals("boolean", waitForStart["type"]!!.jsonPrimitive.content)
+        assertFalse(
+            "waitForStart 必须可选：默认 true（同步等），不传就是现在的语义",
+            schema.requiredProperties.contains("waitForStart"),
+        )
+        assertTrue(
+            "描述里必须说明它是给'before-launch 很久'用的，且之后要轮询",
+            waitForStart["description"]!!.jsonPrimitive.content.contains("list_running_configurations"),
+        )
     }
 
     // ---------- 参数解析 ----------
@@ -332,6 +355,119 @@ class RunLifecycleSchemaTest {
         assertNull(
             "全都不在中间态时没有可挑的",
             RunConfigurationState("Main", "Application", false, "uid", listOf(up, done)).transientInstance,
+        )
+    }
+
+    @Test
+    fun `中间态会被判定为不可 rerun`() {
+        val stopping = RunInstanceState(1, "dev", running = false, terminating = true, startNotified = true, pid = 5L, exitCode = null)
+        val starting = RunInstanceState(2, "dev", running = true, terminating = false, startNotified = false, pid = null, exitCode = null)
+
+        val stopReason = rerunBlockedReason("console > dev", transient = stopping, hasPendingRunContent = false)
+        assertTrue("应被拦下", stopReason != null)
+        assertTrue(stopReason!!, stopReason.contains("stopping"))
+        assertTrue(stopReason, stopReason.contains("console > dev"))
+
+        val startReason = rerunBlockedReason("console > dev", transient = starting, hasPendingRunContent = false)
+        assertTrue("应被拦下", startReason != null)
+        assertTrue(startReason!!, startReason.contains("starting"))
+    }
+
+    @Test
+    fun `Run 内容已出现但进程还没挂上也算启动中`() {
+        // 这一档快照看不到（toInstanceState 会丢掉没有 handler 的条目），必须单独判一次；
+        // 人手从按下 Run 到进程建好之间正好落在这一档
+        val reason = rerunBlockedReason("Main", transient = null, hasPendingRunContent = true)
+        assertTrue("应被拦下", reason != null)
+        assertTrue(reason!!, reason.contains("starting"))
+        assertTrue(reason, reason.contains("process is not up yet"))
+    }
+
+    @Test
+    fun `一切正常时不拦 rerun`() {
+        assertNull(rerunBlockedReason("Main", transient = null, hasPendingRunContent = false))
+        assertNull(
+            "正常在跑的实例不算中间态",
+            rerunBlockedReason("Main", transient = null, hasPendingRunContent = false),
+        )
+    }
+
+    @Test
+    fun `旧实例没停干净时不许启动新进程`() {
+        assertNull(startBlockedReason("Main", stillRunning = 0))
+
+        val reason = startBlockedReason("Main", stillRunning = 2)
+        assertTrue("应被拦下", reason != null)
+        assertTrue(reason!!, reason.contains("2 instance(s) alive"))
+        assertTrue(reason, reason.contains("Main"))
+    }
+
+    @Test
+    fun `启动等待的默认值与原生一致`() {
+        // 原生 execute_run_configuration 的 timeout 默认就是 10000（ExecutionToolset 字节码里的 sipush 10000）。
+        // 注意：整次调用是"停旧 + 等启动 + 采日志"三段相加，所以慢停 + 慢启的组合会超过服务器的会话耐心
+        // （实测约 15 秒）——那种组合下调用方会拿到空 404。要更保险，可以把 stopTimeoutMs 调小。
+        assertEquals(10_000, defaultStartTimeoutMs())
+        assertEquals(5_000, defaultWaitTimeoutMs())
+    }
+
+    @Test
+    fun `超时文案在配置有 before-launch 时点明原因`() {
+        // 有 before-launch 步骤时，平台要等它跑完才产出 Run 内容 ⇒ "还没启动"是正常现象，
+        // 文案必须点出这一点，并给出两条可行路径（调大 startTimeoutMs / 改走异步），
+        // 而不是让人以为启动失败了。
+        val withSteps = startTimeoutReason("console > dev", 10_000, beforeLaunchSteps = 2)
+        assertTrue(withSteps, withSteps.contains("console > dev"))
+        assertTrue("必须带上实际生效的毫秒数", withSteps.contains("10000ms"))
+        assertTrue("必须点明有 before-launch 步骤", withSteps.contains("2 before-launch step(s)"))
+        assertTrue("必须给出第一条路：调大 startTimeoutMs", withSteps.contains("`startTimeoutMs`"))
+        assertTrue("必须给出第二条路：改走异步", withSteps.contains("`waitForStart = false`"))
+        assertTrue("必须说清异步之后怎么查状态", withSteps.contains("list_running_configurations"))
+
+        val withoutSteps = startTimeoutReason("Main", 3_000, beforeLaunchSteps = 0)
+        assertTrue(withoutSteps, withoutSteps.contains("3000ms"))
+        assertFalse("没有 before-launch 时不要瞎说", withoutSteps.contains("before-launch"))
+        assertTrue(withoutSteps, withoutSteps.contains("Raise `startTimeoutMs`"))
+    }
+
+    @Test
+    fun `模态对话框占住 EDT 时要点明这是用户的卡点`() {
+        // 这种情况多半是平台在弹模态对话框等用户交互（例如 Edit Configuration）。
+        // 文案必须让 AI 知道"要让用户去 IDE 处理"，而不是当成瞬时故障自己重试；
+        // 同时提醒"排队中的提交可能稍后才真的发生"（withContext 的取消不影响已排队的 runnable）。
+        val reason = userMustActReason("console > dev")
+        assertTrue(reason, reason.contains("console > dev"))
+        assertTrue("必须点明是模态对话框在等用户", reason.contains("modal dialog"))
+        assertTrue("必须要求 AI 转告用户去 IDE 里处理", reason.contains("Tell the user to finish that dialog in the IDE"))
+        assertTrue("必须给出重试前的动作", reason.contains("`list_running_configurations`"))
+        assertTrue("必须提醒可能稍后才真的提交", reason.contains("delivered late"))
+    }
+
+    @Test
+    fun `rerun 没等启动时 started 为 null 而不是 false`() {
+        // 这是异步模式的核心契约：`null` = "不知道"，与 `false` = "失败" 必须可区分，
+        // 否则 agent 会把"还在构建"读成失败去重试，反而起出第二个实例。
+        val json = RerunReport(
+            configurationName = "console > dev",
+            mode = RerunMode.STARTED,
+            stoppedInstances = 0,
+            runningAfter = null,
+            instances = emptyList(),
+            warnings = listOf("The start was submitted but not awaited (waitForStart = false)."),
+            started = null,
+            startFailure = null,
+            transition = listOf(
+                RunTransitionStep(TransitionPhase.START_SUBMITTED, "start request submitted, not awaited", 12),
+            ),
+        ).toJson()
+
+        assertEquals("started 必须是 null（不知道），不是 false（失败）", JsonNull, json["started"])
+        assertEquals("runningAfter 必须是 null，不是 0", JsonNull, json["runningAfter"])
+        assertEquals("没等就没有失败原因", JsonNull, json["startFailure"])
+        assertTrue("null 键也必须保留", json.containsKey("started") && json.containsKey("runningAfter"))
+        assertEquals(
+            "START_SUBMITTED",
+            (json["transition"] as JsonArray)[0].jsonObject["phase"]!!.jsonPrimitive.content,
         )
     }
 
@@ -468,9 +604,9 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `状态流转的三个节点都有机器可读值`() {
+    fun `状态流转的四个节点都有机器可读值`() {
         assertEquals(
-            listOf("STOPPED", "STARTED", "START_FAILED"),
+            listOf("STOPPED", "STARTED", "START_SUBMITTED", "START_FAILED"),
             TransitionPhase.entries.map { it.jsonValue },
         )
     }

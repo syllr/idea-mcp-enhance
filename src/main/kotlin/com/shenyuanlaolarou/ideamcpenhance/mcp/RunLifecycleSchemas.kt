@@ -191,7 +191,7 @@ private val RUN_TRANSITION_STEP_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
     put("description", JsonPrimitive("One observed step of the restart, in chronological order."))
     put("properties", properties(
-        "phase" to property("string", "STOPPED, STARTED or START_FAILED."),
+        "phase" to property("string", "STOPPED, STARTED, START_SUBMITTED or START_FAILED."),
         "detail" to property("string", "Human-readable detail for this step, e.g. instance count and exit codes."),
         "elapsedMs" to property("integer", "Milliseconds from issuing the rerun request to reaching this step."),
     ))
@@ -364,16 +364,29 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     require changing how the project starts the application — unlike the usual workaround of wrapping
     the start command in a `pkill && start` script, which only ever works for one language.
 
-    Re-entrancy mirrors the IDE's Rerun button, which is greyed out in these two cases:
-    - the configuration is currently **starting** or **stopping** (a transient state)
-    - another rerun of the **same** configuration is still in flight
+    Re-entrancy mirrors the IDE's Rerun button. The call fails fast with a structured error when a restart
+    does not make sense right now:
+    - the configuration is **stopping**, or **starting** (a run was requested but its process is not up yet)
+    - its previous instances could not be stopped — then nothing new is started, because that is exactly the
+      state that would leave two instances of the same configuration running
+    - the IDE itself is already starting this configuration (its own gate, `isStarting(environment)`) — a
+      second start submitted inside that window is silently dropped by the IDE, so this call reports it
+      instead of being ignored
 
-    In both cases this call fails fast with a structured error rather than reaching the platform — the
-    platform would show a modal "restart?" confirmation that nobody can answer on this path. Calling it
-    again after each call has returned is always fine. Rerunning a *different* configuration in parallel
-    is allowed.
+    All three checks read the IDE's own state, so they cover starts triggered by hand in the IDE or by the
+    built-in `execute_run_configuration` just as well. What the third one is really about:
+    `ProgramRunnerUtil.executeConfigurationAsync` starts with `if (!manager.isStarting(environment))`, so a
+    start submitted while the same configuration/executor/runner is already starting is **silently dropped** —
+    no success callback and no failure callback. The IDE never runs two processes, so the configuration stays
+    consistent either way; this check only turns that silent drop into an immediate, explicit error.
 
     Use this after editing source code of a process that has no hot reload.
+
+    By default this call is synchronous: it waits until the new process is created (and collects a short
+    output window), so `started` is a real answer. If the configuration has a before-launch step that
+    takes longer than the MCP server's patience (roughly 15 seconds), pass `waitForStart = false`: the
+    start is then submitted and the call returns immediately with `started = null`, leaving the real
+    state to `list_running_configurations`.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.rerun_run_configuration",
@@ -389,7 +402,22 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             ),
             "startTimeoutMs" to property(
                 "integer",
-                "How long to wait for the new process to be created, in milliseconds. Defaults to 20000. Values <= 0 fall back to the default.",
+                "How long to wait for the new process to be created, in milliseconds. Defaults to 10000 — the same " +
+                    "default as the built-in `execute_run_configuration`'s `timeout`. Raise it when this configuration " +
+                    "has before-launch steps that take a while (a build, or another run configuration): the IDE creates " +
+                    "the Run content only after they finish. Keep the whole call short though — the MCP server drops a " +
+                    "session when a request stays unanswered for roughly 15 seconds, and then the caller gets an empty " +
+                    "HTTP 404 instead of this tool's answer. For a before-launch step that takes longer than that, use " +
+                    "`waitForStart = false` instead of a huge value here.",
+            ),
+            "waitForStart" to property(
+                "boolean",
+                "Defaults to true: submit the start and wait until the new process is created, then report " +
+                    "`started` / `output`. Set it to false when a before-launch step (a build, or another run " +
+                    "configuration) takes longer than the MCP server's patience: the start is submitted and this tool " +
+                    "returns right away with `started = null` (unknown) and a `START_SUBMITTED` transition step; " +
+                    "poll `list_running_configurations` for the real state. Mirrors the built-in " +
+                    "`execute_run_configuration`'s `waitForExit` switch.",
             ),
             "projectPath" to projectPathProperty(),
         ),
@@ -399,10 +427,19 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
         properties = properties(
             "configurationName" to property("string", "Resolved run configuration name."),
             "mode" to property("string", "What was attempted: RESTARTED, STARTED or NO_OP."),
-            "started" to property("boolean", "Whether a new process really came up. Read this, not `mode`."),
+            "started" to nullableProperty(
+                "boolean",
+                "Whether a new process really came up. Read this, not `mode`. `true`/`false` when the start was " +
+                    "awaited; `null` when `waitForStart = false` was used — then the outcome is unknown and " +
+                    "`list_running_configurations` has the real state.",
+            ),
             "startFailure" to nullableProperty("string", "Why the new process did not come up; null when `started` is true."),
             "stoppedInstances" to property("integer", "Number of old instances a stop request was sent to."),
-            "runningAfter" to property("integer", "Live instance count after the new process was up and registered."),
+            "runningAfter" to nullableProperty(
+                "integer",
+                "Live instance count after the new process was up and registered; null when `waitForStart = false` " +
+                    "(not awaited), not 0.",
+            ),
             "sessionId" to nullableProperty("string", "Run session identifier of the new process."),
             "output" to property("string", "Inline preview of the new process output, at most 10000 characters."),
             "fullOutputPath" to nullableProperty("string", "Path of the full raw output log; it keeps growing while the process is alive."),
@@ -431,10 +468,19 @@ internal const val DEFAULT_WAIT_TIMEOUT_MS = 5_000
 /**
  * 默认启动等待上限。
  *
- * 比停止窗口宽得多：常见配置要先跑构建（`npm install` / `mvn compile` / `go build`），
- * 几十秒都有可能；窗口太短会把"慢慢能起来"误判成失败。
+ * **取 10000，与原生一致**：内置 `execute_run_configuration` 的 `timeout` 默认就是 `10000`
+ * （`ExecutionToolset` 字节码里的 `sipush 10000`）。调用方可以覆盖它——比如某个配置的 before-launch
+ * 要先编译几十秒——但**整次调用的时长要留在服务器的耐心之内**：
+ *
+ * 实测一个请求悬着超过约 15 秒，MCP Server 会先移除会话（`Pending StreamableHttp transport timed out`
+ * → `Removing session`），于是工具算完也送不回结果，客户端拿到 **HTTP 404 空响应**。
+ * 实测量到的边界：8 秒的调用能正常送达、20 秒的不能；**连官方工具也一样** ——
+ * `execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后拿到空 404。
+ *
+ * 所以这个值不是"越大越好"：它只决定"我们等多久就放弃并如实报告"，放弃得早一点反而能拿到
+ * 一个可读的结构化错误，而不是让整个回答丢失。
  */
-internal const val DEFAULT_START_TIMEOUT_MS = 20_000
+internal const val DEFAULT_START_TIMEOUT_MS = 10_000
 
 internal fun defaultWaitTimeoutMs(): Int = DEFAULT_WAIT_TIMEOUT_MS
 
