@@ -1,0 +1,14 @@
+<!--
+  可选依赖（内置的 MCP Server 插件 com.intellij.mcpServer）加载时才读取。
+
+  这里注册的工具提供者会被 MCP Server 的 ReflectionToolsProvider / McpToolsListProvider
+  自动发现，Open Code 那边不需要任何改动。
+
+  扩展点全名：com.intellij.mcpServer.mcpToolsProvider
+-->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <mcpServer.mcpToolsProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
+    </extensions>
+</idea-plugin>

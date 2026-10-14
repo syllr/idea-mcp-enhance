@@ -1,0 +1,31 @@
+Privacy Policy
+
+Last updated: October 14, 2026
+
+This plugin ("IDE MCP Enhance") does not store, transmit, or collect any data.
+
+Data Handling
+-------------
+- **No data is stored.** The plugin writes no files, no configuration, no database.
+- **No data is transmitted.** The plugin contains no networking code of its own.
+- **No telemetry.** Nothing is collected or reported.
+
+Two Features, Two Data Boundaries
+---------------------------------
+1. **Copy as Prompt / Copy Diagnostics as Prompt** — read IDE data (selected text,
+   file diagnostics) and write the formatted result to the **system clipboard**.
+   Nothing else. Clipboard content may contain your source code; it is handed to
+   the operating system clipboard service and to no one else. You decide where it
+   is pasted.
+
+2. **Run Lifecycle MCP tools** — these are MCP tools served by the IDE's built-in
+   MCP Server plugin. They read Run Configuration state and, when you (or the AI
+   agent acting for you) ask, stop or restart processes you started from the IDE.
+   They do **not** read file contents. They are only reachable when you have
+   explicitly enabled the MCP server in the IDE; without that, the tools do not
+   exist and the plugin is completely inert.
+
+Contact
+-------
+For privacy concerns, please contact:
+Email: shenyuanlaolarou@users.noreply.github.com

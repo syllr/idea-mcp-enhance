@@ -1,0 +1,46 @@
+<!-- 插件配置文件。read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.shenyuanlaolarou.ideamcpenhance</id>
+    <name>IDE MCP Enhance</name>
+    <vendor email="shenyuanlaolarou@users.noreply.github.com" url="https://github.com/syllr/idea-mcp-enhance">shenyuanlaolarou</vendor>
+
+    <description><![CDATA[
+        <p>把 IDE 里的信息变成 prompt 文本，并给 JetBrains 内置的 MCP Server 补上 Run Configuration 的生命周期能力。</p>
+        <ul>
+            <li><b>Copy as Prompt</b> —— 选中代码带上文件路径与行号复制到剪贴板</li>
+            <li><b>Copy Diagnostics as Prompt</b> —— 当前文件的编译错误 / 警告整理成清单</li>
+            <li><b>Run Lifecycle MCP 工具</b> —— 列出/查询/停止/重启 Run Configuration（需要内置的 MCP Server 插件）</li>
+        </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <!--
+      MCP Server（IDE 内置插件）。用 optional + config-file：没装 MCP Server 的 IDE 上，
+      本插件的 prompt 功能照常工作，只是不会注册 MCP 工具。
+      config-file 里引用的类全部来自 MCP Server，不会在可选依赖缺失时被加载。
+    -->
+    <depends optional="true" config-file="mcpserver.xml">com.intellij.mcpServer</depends>
+
+    <actions>
+
+        <!-- 选区 → prompt -->
+        <action id="com.shenyuanlaolarou.ideamcpenhance.CopyAsPrompt"
+                class="com.shenyuanlaolarou.ideamcpenhance.prompt.actions.CopyAsPromptAction"
+                text="Copy as Prompt"
+                description="Copy selected code as a prompt (file path, line range and code block)">
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="$Copy"/>
+        </action>
+
+        <!-- 当前文件的诊断 → prompt -->
+        <action id="com.shenyuanlaolarou.ideamcpenhance.CopyDiagnosticsAsPrompt"
+                class="com.shenyuanlaolarou.ideamcpenhance.prompt.actions.CopyDiagnosticsAction"
+                text="Copy Diagnostics as Prompt"
+                description="Copy errors and warnings of the current file as a prompt">
+            <add-to-group group-id="EditorPopupMenu" anchor="after"
+                          relative-to-action="com.shenyuanlaolarou.ideamcpenhance.CopyAsPrompt"/>
+        </action>
+
+    </actions>
+</idea-plugin>

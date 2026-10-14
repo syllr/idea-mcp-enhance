@@ -1,0 +1,19 @@
+.DS_Store
+.gradle
+.idea
+.intellijPlatform
+.kotlin
+.qodana
+build
+cert/
+.run/
+local.properties
+.opencode/
+.opencode.json
+.playwright-mcp/
+.sisyphus/
+.omo/
+
+# JVM fatal error logs (HS_ERR_* generated when JVM crashes)
+hs_err_pid*.log
+replay_pid*.log
