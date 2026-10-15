@@ -1,17 +1,19 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import com.intellij.execution.RunManager
 import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.McpToolDescriptor
 import com.intellij.mcpserver.McpToolsProvider
 import com.intellij.mcpserver.projectOrNull
-import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -56,6 +58,7 @@ class RunLifecycleToolsProvider : McpToolsProvider {
         ListRunConfigurationsTool(),
         StopRunConfigurationTool(),
         RerunRunConfigurationTool(),
+        CreateRunConfigurationTool(),
     )
 }
 
@@ -211,6 +214,165 @@ private class StopRunConfigurationTool : BaseRunTool() {
             "Requested ${outcome.requestedStops} stop(s) on \"${settings.name}\"; " +
                 if (report.timedOut) "${outcome.stillRunning} still running after ${waitTimeoutMs}ms."
                 else "all instances terminated.",
+            report.toJson(),
+        )
+    }
+}
+
+private class CreateRunConfigurationTool : BaseRunTool() {
+
+    override val descriptor: McpToolDescriptor = createRunConfigurationDescriptor
+
+    override suspend fun body(arguments: JsonObject): McpToolCallResult {
+        val project = currentProject() ?: return noProjectResult(CREATE_TOOL_NAME)
+        val name = arguments.requiredString("configurationName") ?: return missingNameError()
+        val scriptPath = arguments.optionalString("scriptPath")
+        val scriptText = arguments.optionalString("scriptText")
+        val cloneFromName = arguments.optionalString("cloneFrom")
+
+        val given = listOfNotNull(
+            scriptPath?.let { "scriptPath" },
+            scriptText?.let { "scriptText" },
+            cloneFromName?.let { "cloneFrom" },
+        )
+        if (given.size != 1) {
+            return errorResult(
+                "Give exactly one of `scriptPath` / `scriptText` / `cloneFrom` " +
+                    "(got: ${if (given.isEmpty()) "none" else given.joinToString(" + ")}).",
+                null,
+            )
+        }
+
+        // 名字必须自由：平台自己不做唯一化，重名会让两个配置同名（`findConfigurationByName` 之后只能拿到一个）
+        RunManager.getInstance(project).findConfigurationByName(name)?.let {
+            val suggestion = RunManager.getInstance(project).suggestUniqueName(name, null)
+            return errorResult(
+                "A run configuration named \"$name\" already exists. Nothing was created — " +
+                    "call this tool again with a free name such as \"$suggestion\".",
+                null,
+            )
+        }
+
+        val storagePath = resolveRunConfigurationPath(project, name, arguments.optionalString("filePath"))
+            ?: return errorResult(
+                "Could not resolve the project root, so there is nowhere to store the new configuration.",
+                null,
+            )
+
+        // 克隆源：必须存在、不是模板、且本身就是 Shell 类型
+        val source = cloneFromName?.let { requested ->
+            val settings = findSettingsByName(project, requested)
+                ?: return unknownConfiguration(project, requested)
+            if (settings.isTemplate) {
+                return errorResult(
+                    "\"${settings.name}\" is a template, not a real configuration, so it cannot be cloned. " +
+                        "Pick a concrete configuration (see `get_run_configurations`).",
+                    null,
+                )
+            }
+            if (settings.type.id != SHELL_CONFIGURATION_TYPE_ID) {
+                return errorResult(
+                    "\"${settings.name}\" is a ${settings.type.displayName} configuration, not a Shell one — " +
+                        "this tool only creates Shell Script configurations, so it can only clone Shell ones. " +
+                        "Use `scriptPath` / `scriptText` to create a fresh Shell configuration instead.",
+                    null,
+                )
+            }
+            settings
+        }
+
+        // 目标文件已存在就拒绝：没有 delete 工具，不悄悄覆盖用户在 IDE 里改好的文件
+        if (Files.exists(Path.of(storagePath))) {
+            return errorResult(
+                "A file already exists at $storagePath. Nothing was created or overwritten — " +
+                    "delete it in the IDE (there is deliberately no delete tool) or pass another `filePath`.",
+                null,
+            )
+        }
+
+        val warnings = mutableListOf<String>()
+
+        // 文件内容：克隆 = 读源文件改名；新建 = 按 spec 生成（纯字符串操作，不经过平台 API）
+        val content: String
+        val createdFrom: String
+        val clonedSteps: Int
+        if (source != null) {
+            val sourcePath = source.pathIfStoredInArbitraryFileInProject
+                ?: return errorResult(
+                    "\"${source.name}\" is not stored as a project file, so there is no file to copy. " +
+                        "This tool only clones configurations stored under `.run/`.",
+                    null,
+                )
+            val sourceXml = runCatching { Files.readString(Path.of(sourcePath)) }.getOrNull()
+                ?: return errorResult(
+                    "Could not read \"${source.name}\" from $sourcePath, so nothing was created.",
+                    null,
+                )
+            content = cloneRunConfigurationXml(sourceXml, source.name, name)
+                ?: return errorResult(
+                    "Could not find the configuration tag in $sourcePath, so nothing was created.",
+                    null,
+                )
+            createdFrom = "clone:${source.name}"
+            clonedSteps = source.configuration.beforeRunTasks.size
+            if (clonedSteps > 0) {
+                warnings += "Its $clonedSteps before-launch step(s) were copied from " +
+                    "\"${source.name}\", so starting it will run those first."
+            }
+        } else {
+            val spec = ShellRunSpec(
+                scriptPath = scriptPath,
+                scriptText = scriptText,
+                scriptOptions = arguments.optionalString("scriptOptions"),
+                workingDirectory = arguments.optionalString("workingDirectory"),
+                interpreterPath = arguments.optionalString("interpreterPath"),
+                interpreterOptions = arguments.optionalString("interpreterOptions"),
+                executeInTerminal = arguments.optionalBoolean("executeInTerminal", false),
+                envs = arguments.stringMap("envs"),
+                passParentEnvs = arguments.optionalBoolean("passParentEnvs", true),
+            )
+            if (scriptPath != null && !scriptFileExists(project, scriptPath)) {
+                warnings += "The script file \"$scriptPath\" does not exist yet — " +
+                    "the configuration is still created, but it cannot run until the file exists."
+            }
+            content = shellRunConfigurationXml(name, spec)
+            createdFrom = if (scriptPath != null) "script:$scriptPath" else "script-text"
+            clonedSteps = 0
+        }
+
+        if (!writeRunConfigurationFile(storagePath, content)) {
+            return errorResult(
+                "Could not write $storagePath, so nothing was created.",
+                null,
+            )
+        }
+
+        // 等 IDE 的文件监听注册它；注册上就用平台自己的 checkSettings 问"能不能跑"
+        val registered = awaitConfigurationRegistered(project, name)
+        val blocked = registered?.let { cannotRunReason(it, null) }
+        if (registered == null) {
+            warnings += "The file was written but the IDE has not loaded it yet — " +
+                "check again shortly with `list_running_configurations`."
+        }
+        val report = CreateReport(
+            configurationName = name,
+            type = registered?.type?.id ?: SHELL_CONFIGURATION_TYPE_ID,
+            typeDisplayName = registered?.type?.displayName ?: "Shell Script",
+            createdFrom = createdFrom,
+            storagePath = storagePath,
+            uniqueID = registered?.uniqueID ?: "Shell Script.$name",
+            canRun = blocked == null && registered != null,
+            canRunBlockedReason = blocked ?: if (registered == null)
+                "The file was written but the IDE has not loaded it yet, so this cannot be checked right now."
+            else null,
+            beforeLaunchSteps = registered?.configuration?.beforeRunTasks?.size ?: clonedSteps,
+            warnings = warnings,
+        )
+        return McpToolCallResult.text(
+            "Created Shell configuration \"$name\" at $storagePath. " +
+                if (registered == null) "The IDE has not loaded it yet — check again shortly."
+                else if (blocked == null) "It can run right now."
+                else "It cannot run yet: $blocked",
             report.toJson(),
         )
     }

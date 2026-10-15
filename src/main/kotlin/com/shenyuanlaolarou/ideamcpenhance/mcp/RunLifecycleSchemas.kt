@@ -462,6 +462,147 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     annotations(readOnly = false, destructive = true, idempotent = false),
 )
 
+// ---------------------------------------------------------------------------
+// 4. create_shell_run_configuration
+// ---------------------------------------------------------------------------
+
+internal val CREATE_TOOL_NAME = "create_shell_run_configuration"
+
+internal val createRunConfigurationDescriptor = McpToolDescriptor(
+    CREATE_TOOL_NAME,
+    "Create Shell Run Configuration",
+    """
+    Create a new **Shell Script** run configuration as a **project-level** run configuration, i.e. stored as a
+    `.run/<name>.run.xml` file inside the project (the same place the IDE's "Store as project file"
+    checkbox writes to, so it is shared through VCS and visible to the whole team).
+
+    Why this exists: a Shell run configuration carries the project's environment (working directory,
+    environment variables, interpreter), so an agent that needs to run project commands with that
+    environment creates one with this tool and then starts it with `rerun_run_configuration`.
+
+    Only Shell Script configurations can be created — there is no `type` parameter. Give exactly one of:
+
+    - `scriptPath` — run a script file (e.g. `scripts/dev.sh`, relative to the project root or absolute).
+      The file should exist, otherwise the result reports `canRun = false` with the reason.
+    - `scriptText` — run an inline script instead of a file.
+    - `cloneFrom` — duplicate an existing Shell configuration (its script, options, environment and
+      before-launch steps are all copied, so the new one is immediately runnable). The source must
+      itself be a Shell configuration.
+
+    Optional shell details: `scriptOptions` (arguments), `workingDirectory` (defaults to the
+    template default when omitted), `interpreterPath` (e.g. `/bin/zsh`; omitted = template default),
+    `interpreterOptions`, `envs` (extra environment variables as a JSON object; merged over the
+    inherited environment unless `passParentEnvs` is false), `passParentEnvs` (default true),
+    `executeInTerminal` (default false).
+
+    `filePath` decides where the file goes (relative to the project root, or absolute). By default
+    the file is named after the configuration, in the project's `.run/` directory — matching what the
+    IDE itself does. Pass it explicitly when you want a different location or file name.
+
+    This tool writes that file directly and the IDE picks it up live (its `*.run.xml` watcher
+    registers the new configuration, usually within a second or two). The result reports whether
+    the IDE has loaded it yet and whether the platform accepts running it.
+
+    The name must be free; when it is taken the call fails and suggests a unique one
+    (`RunManager.suggestUniqueName` semantics). Templates cannot be cloned.
+
+    There is deliberately no delete tool: deleting a configuration stays a user action in the IDE.
+    After creating, use `rerun_run_configuration` to start it and `list_running_configurations` to
+    see it running.
+    """.trimIndent(),
+    RUN_LIFECYCLE_CATEGORY,
+    "com.shenyuanlaolarou.ideamcpenhance.mcp.create_shell_run_configuration",
+    schema(
+        properties = properties(
+            "configurationName" to property(
+                "string",
+                "Name of the new run configuration. Must not collide with an existing one.",
+            ),
+            "scriptPath" to property(
+                "string",
+                "Script file to run (relative to the project root, or absolute). Give exactly one of " +
+                    "`scriptPath` / `scriptText` / `cloneFrom`.",
+            ),
+            "scriptText" to property(
+                "string",
+                "Inline script to run instead of a file. Give exactly one of " +
+                    "`scriptPath` / `scriptText` / `cloneFrom`.",
+            ),
+            "cloneFrom" to property(
+                "string",
+                "Name of an existing Shell configuration to duplicate (its script, options, environment and " +
+                    "before-launch steps are copied, so the result is immediately runnable). Give exactly one of " +
+                    "`scriptPath` / `scriptText` / `cloneFrom`.",
+            ),
+            "scriptOptions" to property(
+                "string",
+                "Arguments passed to the script. Omit for none.",
+            ),
+            "workingDirectory" to property(
+                "string",
+                "Directory the script runs in (relative to the project root, or absolute). " +
+                    "Omit for the template default.",
+            ),
+            "interpreterPath" to property(
+                "string",
+                "Interpreter to run it with (e.g. `/bin/zsh`). Omit for the template default.",
+            ),
+            "interpreterOptions" to property(
+                "string",
+                "Options passed to the interpreter. Omit for none.",
+            ),
+            "envs" to property(
+                "object",
+                "Extra environment variables as a JSON object of string to string " +
+                    "(e.g. `{\"PORT\": \"3201\"}`). They are merged over the inherited environment unless " +
+                    "`passParentEnvs` is false.",
+            ),
+            "passParentEnvs" to property(
+                "boolean",
+                "Whether the script inherits the IDE's environment. Defaults to true.",
+            ),
+            "executeInTerminal" to property(
+                "boolean",
+                "Run it in a terminal instead of the Run tool window. Defaults to false.",
+            ),
+            "filePath" to property(
+                "string",
+                "Where to store it: a path relative to the project root (e.g. `.run/my-app.run.xml`) or an absolute " +
+                    "path. Defaults to `.run/<configurationName>.run.xml` in the project — the same rule the IDE uses.",
+            ),
+            "projectPath" to projectPathProperty(),
+        ),
+        required = setOf("configurationName"),
+    ),
+    schema(
+        properties = properties(
+            "configurationName" to property("string", "Name of the created run configuration."),
+            "type" to property("string", "Always `ShConfigurationType`: this tool only creates Shell configurations."),
+            "typeDisplayName" to property("string", "Always `Shell Script`."),
+            "createdFrom" to property(
+                "string",
+                "How it was created: `script:<path>` / `script-text` / `clone:<source name>`.",
+            ),
+            "storagePath" to property("string", "Absolute path of the `.run.xml` file the configuration was stored in."),
+            "shared" to property("boolean", "Always true for this tool: it is a project-level configuration."),
+            "uniqueID" to property("string", "The IDE's internal id of this configuration."),
+            "canRun" to property(
+                "boolean",
+                "Whether the platform's own `checkSettings` accepts running it right now. Note this is only the " +
+                    "platform's check.",
+            ),
+            "canRunBlockedReason" to nullableProperty(
+                "string",
+                "Why it cannot run yet; null when `canRun` is true. E.g. the script file does not exist.",
+            ),
+            "beforeLaunchSteps" to property("integer", "How many before-launch steps it carries (copied when cloning)."),
+            "warnings" to WARNINGS_SCHEMA,
+        ),
+        required = setOf("configurationName", "type", "typeDisplayName", "createdFrom", "storagePath", "shared", "uniqueID", "canRun"),
+    ),
+    annotations(readOnly = false, destructive = false, idempotent = false),
+)
+
 /** 默认等待窗口。给 MCP 的调用设一个上限，避免 agent 卡在一个永不退出的进程上。 */
 internal const val DEFAULT_WAIT_TIMEOUT_MS = 5_000
 
@@ -497,3 +638,14 @@ internal fun JsonObject.boolOrNull(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
 
 internal fun JsonObject.obj(key: String): JsonObject? = this[key]?.jsonObject
+
+/**
+ * 取一个"字符串到字符串"的 JSON 对象（环境变量用）。
+ *
+ * 非字符串的值直接跳过（不报错）：agent 传数字 `{"PORT": 3201}` 是常见写法，
+ * 为这种小事拒绝整个调用不值；真有问题 `checkSettings` 那边会拦。
+ */
+internal fun JsonObject.stringMap(key: String): Map<String, String> =
+    obj(key)?.entries?.mapNotNull { (k, v) ->
+        (v as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { k to it }
+    }?.toMap().orEmpty()

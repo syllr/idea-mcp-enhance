@@ -411,3 +411,43 @@ internal fun UnknownConfigurationReport.toJson(): JsonObject = buildJsonObject {
         }
     }
 }
+
+/**
+ * `create_shell_run_configuration` 的返回。
+ *
+ * @param createdFrom `script:<路径>` / `script-text` / `clone:<源配置名>` —— 调用方靠它知道怎么建出来的
+ * @param canRun 用平台自己的 `checkSettings` 问出来的"现在能不能跑"
+ */
+data class CreateReport(
+    val configurationName: String,
+    val type: String,
+    val typeDisplayName: String,
+    val createdFrom: String,
+    val storagePath: String,
+    val uniqueID: String,
+    val canRun: Boolean,
+    val canRunBlockedReason: String?,
+    val beforeLaunchSteps: Int,
+    val warnings: List<String>,
+) {
+    /** 本工具只产出项目级配置（落 `.run/` 目录下的 run.xml），所以恒为 true。 */
+    val shared: Boolean get() = true
+}
+
+internal fun CreateReport.toJson(): JsonObject = buildJsonObject {
+    put("configurationName", configurationName)
+    put("type", type)
+    put("typeDisplayName", typeDisplayName)
+    put("createdFrom", createdFrom)
+    put("storagePath", storagePath)
+    put("shared", shared)
+    put("uniqueID", uniqueID)
+    put("canRun", canRun)
+    put("canRunBlockedReason", canRunBlockedReason)
+    put("beforeLaunchSteps", beforeLaunchSteps)
+    putJsonArray("warnings") {
+        for (warning in warnings) {
+            add(JsonPrimitive(warning))
+        }
+    }
+}
