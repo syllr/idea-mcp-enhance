@@ -142,12 +142,12 @@ diagnostics:
 
 ### 3.2 工具清单(HARD CONTRACT)
 
-| 工具名                        | 只读 | 破坏性 | 幂等 |
-| ----------------------------- | ---- | ------ | ---- |
-| `list_running_configurations` | ✓    | ✗      | ✓    |
-| `stop_run_configuration`      | ✗    | ✓      | ✓    |
-| `create_shell_run_configuration` | ✗ | ✗   | ✗    |
-| `rerun_run_configuration`     | ✗    | ✓      | ✗    |
+| 工具名                           | 只读 | 破坏性 | 幂等 |
+| -------------------------------- | ---- | ------ | ---- |
+| `list_running_configurations`    | ✓    | ✗      | ✓    |
+| `stop_run_configuration`         | ✗    | ✓      | ✓    |
+| `create_shell_run_configuration` | ✗    | ✗      | ✗    |
+| `rerun_run_configuration`        | ✗    | ✓      | ✗    |
 
 每个工具 MUST：
 
@@ -275,18 +275,18 @@ diagnostics:
 
 入参：
 
-| 参数                 | 类型    | 必填 | 默认    | 说明                                                                                |
-| -------------------- | ------- | ---- | ------- | ----------------------------------------------------------------------------------- |
-| `configurationName`  | string  | 是   | —       | 新配置名，必须与现有配置不重名                                                      |
-| `scriptPath`         | string  | 否   | —       | 跑一个脚本文件（相对项目根或绝对路径）；与 `scriptText` / `cloneFrom` 三选一        |
-| `scriptText`         | string  | 否   | —       | 直接跑一段内联脚本；与 `scriptPath` / `cloneFrom` 三选一                            |
-| `cloneFrom`          | string  | 否   | —       | 克隆一个已有的 **Shell** 配置（脚本 + 环境 + before-launch 一起拷）；与前两者三选一 |
-| `scriptOptions`      | string  | 否   | —       | 传给脚本的参数                                                                      |
-| `workingDirectory`   | string  | 否   | —       | 脚本的工作目录；不给就是模板默认值                                                  |
-| `interpreterPath`    | string  | 否   | —       | 解释器（如 `/bin/zsh`）；不给就是模板默认值                                         |
-| `interpreterOptions` | string  | 否   | —       | 传给解释器的参数                                                                    |
-| `envs`               | object  | 否   | —       | 额外的环境变量（string 到 string）；非字符串的值跳过                                |
-| `projectPath`        | string  | 否   | —       | 见「项目解析」                                                                      |
+| 参数                 | 类型   | 必填 | 默认 | 说明                                                                                |
+| -------------------- | ------ | ---- | ---- | ----------------------------------------------------------------------------------- |
+| `configurationName`  | string | 是   | —    | 新配置名，必须与现有配置不重名                                                      |
+| `scriptPath`         | string | 否   | —    | 跑一个脚本文件（相对项目根或绝对路径）；与 `scriptText` / `cloneFrom` 三选一        |
+| `scriptText`         | string | 否   | —    | 直接跑一段内联脚本；与 `scriptPath` / `cloneFrom` 三选一                            |
+| `cloneFrom`          | string | 否   | —    | 克隆一个已有的 **Shell** 配置（脚本 + 环境 + before-launch 一起拷）；与前两者三选一 |
+| `scriptOptions`      | string | 否   | —    | 传给脚本的参数                                                                      |
+| `workingDirectory`   | string | 否   | —    | 脚本的工作目录；不给就是模板默认值                                                  |
+| `interpreterPath`    | string | 否   | —    | 解释器（如 `/bin/zsh`）；不给就是模板默认值                                         |
+| `interpreterOptions` | string | 否   | —    | 传给解释器的参数                                                                    |
+| `envs`               | object | 否   | —    | 额外的环境变量（string 到 string）；非字符串的值跳过                                |
+| `projectPath`        | string | 否   | —    | 见「项目解析」                                                                      |
 
 行为：
 
@@ -541,6 +541,11 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 - 产物: `./gradlew buildPlugin` → `build/distributions/idea-mcp-enhance-<版本>.zip`
 - 调试运行: `./gradlew runIde`
 - **首次发布 MUST 网页手动上传**（Marketplace 对未创建过的插件 id 不接受 Gradle 上传）
+- **面向 Marketplace 的两个字段 MUST 是英文(HARD CONTRACT)**：JetBrains Marketplace 硬校验"描述的前 40 个
+  字符必须是英文"，审核也要求英文为主要语言。因此
+  `<description>` MUST 直接写在 `src/main/resources/META-INF/plugin.xml`（MUST NOT 从中文文档拼出来），
+  `<change-notes>` MUST 取自 `CHANGELOG.en.md` 的当前版本段落（缺该段落时构建 MUST 失败）；
+  仓库内部的中文文档（`README.md` / `CHANGELOG.md`）MUST NOT 被当作这两个字段的来源
 
 ### 5.2 依赖
 

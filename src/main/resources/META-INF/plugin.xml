@@ -4,13 +4,23 @@
     <name>IDE MCP Enhance</name>
     <vendor email="shenyuanlaolarou@users.noreply.github.com" url="https://github.com/syllr/idea-mcp-enhance">shenyuanlaolarou</vendor>
 
-    <description><![CDATA[
-        <p>把 IDE 里的信息变成 prompt 文本，并给 JetBrains 内置的 MCP Server 补上 Run Configuration 的生命周期能力。</p>
+    <!--
+      英文描述：description 标签会被 JetBrains Marketplace 当作插件的商店页文案，
+      服务端硬校验「前 40 个字符必须是英文」
+      （见 https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html）。
+      CDATA 紧跟 p 标签开头，避免描述以换行/缩进开头。
+    -->
+    <description><![CDATA[<p>IDE MCP Enhance turns IDE context into prompt text and adds the Run Configuration
+        lifecycle tools that the built-in MCP Server is missing.</p>
         <ul>
-            <li><b>Copy as Prompt</b> —— 选中代码带上文件路径与行号复制到剪贴板</li>
-            <li><b>Copy Diagnostics as Prompt</b> —— 当前文件的编译错误 / 警告整理成清单</li>
-            <li><b>Run Lifecycle MCP 工具</b> —— 列出/查询/停止/重启 Run Configuration（需要内置的 MCP Server 插件）</li>
+            <li><b>Copy as Prompt</b> - copy the selected code with its file path and line range, ready to paste into any chat.</li>
+            <li><b>Copy Diagnostics as Prompt</b> - copy the current file's errors and warnings as one clean list.</li>
+            <li><b>Run Lifecycle MCP tools</b> - <code>list_running_configurations</code>,
+                <code>stop_run_configuration</code>, <code>rerun_run_configuration</code> and
+                <code>create_shell_run_configuration</code>, driving the IDE's own process handlers:
+                no port guessing, no command-line matching, no changes to your start scripts.</li>
         </ul>
+        <p>Requires IntelliJ IDEA 2026.2 or newer with the bundled MCP Server plugin enabled.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

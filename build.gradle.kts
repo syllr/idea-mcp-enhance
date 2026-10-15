@@ -1,4 +1,3 @@
-import org.jetbrains.changelog.Changelog
 import org.jetbrains.changelog.markdownToHTML
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
@@ -63,29 +62,26 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
 
-        // 从 README.md 的 <!-- Plugin description --> 段落提取描述，供插件清单使用
-        description = providers.fileContents(layout.projectDirectory.file("README.md")).asText.map {
-            val start = "<!-- Plugin description -->"
-            val end = "<!-- Plugin description end -->"
+        // 描述不从这里拼：它直接写在 plugin.xml 的 <description> 里。
+        //
+        // 原因：<description> 是**面向 Marketplace 的资产**，服务端会校验"前 40 个字符必须是英文"
+        // （JetBrains Marketplace listing 文档 + 上传时的硬校验），而 README 是中文文档。
+        // 两边共用一份文本只会让"仓库文档语言"和"面向市场的语言"互相打架——现在各归各的：
+        // plugin.xml 里一份英文描述，README 里一份中文说明。
 
-            with(it.lines()) {
-                if (!containsAll(listOf(start, end))) {
-                    throw GradleException("Plugin description section not found in README.md:\n$start ... $end")
-                }
-                subList(indexOf(start) + 1, indexOf(end)).joinToString("\n").let(::markdownToHTML)
+        // <change-notes> 与 <description> 同理，是**面向 Marketplace 的英文资产**：从 CHANGELOG.en.md
+        // 取当前版本段落渲染。仓库内部的中文变更日志仍是 CHANGELOG.md（由 changelog 插件的
+        // patchChangelog 维护）——两个文件各自服务一种读者，谁也不去迁就谁。
+        // 缺段落就构建失败：发版时忘了写英文说明会被立刻拦下，而不是上传后收到退回邮件。
+        val englishChangelog = providers.fileContents(layout.projectDirectory.file("CHANGELOG.en.md")).asText
+        changeNotes = providers.gradleProperty("pluginVersion").zip(englishChangelog) { pluginVersion, markdown ->
+            val heading = "## [$pluginVersion]"
+            val lines = markdown.lines()
+            val start = lines.indexOfFirst { it.startsWith(heading) }
+            if (start < 0) {
+                throw GradleException("CHANGELOG.en.md 里找不到 $heading 段落：发版前必须先写上英文变更说明。")
             }
-        }
-
-        val changelog = project.changelog // 用局部变量保持 configuration cache 兼容
-        changeNotes = providers.gradleProperty("pluginVersion").map { pluginVersion ->
-            with(changelog) {
-                renderItem(
-                    (getOrNull(pluginVersion) ?: getUnreleased())
-                        .withHeader(false)
-                        .withEmptySections(false),
-                    Changelog.OutputType.HTML,
-                )
-            }
+            markdownToHTML(lines.drop(start + 1).takeWhile { !it.startsWith("## [") }.joinToString("\n"))
         }
 
         ideaVersion {

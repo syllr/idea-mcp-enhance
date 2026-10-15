@@ -22,6 +22,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 - 测试依赖: JUnit 4.13.2、opentest4j 1.3.0、IntelliJ Platform TestFramework
 - 静态分析: Qodana（linter `jetbrains/qodana-jvm-community:2024.3`，Gradle plugin `2025.3.1`）+ Kover 0.9.5 + CodeCov
 - `CHANGELOG.md` 由 `org.jetbrains.changelog` Gradle 插件（`patchChangelog` 任务）管理，**不要手改版本段落结构**
+- **`CHANGELOG.en.md` 是 Marketplace 用的英文变更日志**（`plugin.xml` 的 `<change-notes>` 唯一来源，见 `build.gradle.kts`）：英文面向商店、中文 `CHANGELOG.md` 面向仓库；**发版时两个文件都要加一段**，漏了英文那段构建会直接失败。同理，`<description>` 直接写在 `src/main/resources/META-INF/plugin.xml` 里且是英文——**不要**把 Marketplace 文案塞回 README / CHANGELOG 再拼出来
 
 ### 五个容易混淆的"名字"
 
@@ -73,22 +74,22 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 ## WHERE TO LOOK
 
-| 想做的事                                 | 改哪里                                                                                                                                                                                                     |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 改 prompt 输出格式                       | `prompt/format/PromptFormat.kt` + 同步 `PromptFormatTest` + `SPEC.md §1/§2`                                                                                                                                |
-| 改菜单项文案 / 出现位置                  | `src/main/resources/META-INF/plugin.xml` 的 `<action>` / `<add-to-group>`                                                                                                                                  |
-| 改 action 的启用条件                     | 各 action 的 `update()`                                                                                                                                                                                    |
-| 改文件路径写法（相对/绝对）              | `prompt/actions/EditorPromptContext.kt` 的 `promptFilePath()`                                                                                                                                              |
-| 改诊断采集范围 / 过滤规则                | `prompt/actions/EditorPromptContext.kt` 的 `collectDiagnostics()`（先读 `DESIGN.md §3.1`）                                                                                                                 |
-| 改 MCP 工具的名字 / 描述 / 入参          | `mcp/RunLifecycleSchemas.kt` 的三个 `*Descriptor` + `RunLifecycleSchemaTest`                                                                                                                               |
-| 改 MCP 工具返回的 JSON 字段              | `mcp/RunLifecycleModels.kt` 的 `toJson()`                                                                                                                                                                  |
-| 改 MCP 的停止实现                        | `mcp/RunConfigAccess.kt` 的 `stopHandler` / `stopDescriptors`                                                                                                                                              |
-| 改 MCP 的启动 / 重启实现                 | `mcp/RunConfigAccess.kt` 的 `startRunAndAwait`（`ProgramRunner.Callback` + 输出采集）                                                                                                                      |
-| 改启动后回传的日志 / 状态流转            | `mcp/RunConfigAccess.kt` 的 `RunOutputCollector` + `mcp/RunLifecycleModels.kt` 的 `RerunReport`                                                                                                            |
+| 想做的事                                 | 改哪里                                                                                                                                                                                              |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 改 prompt 输出格式                       | `prompt/format/PromptFormat.kt` + 同步 `PromptFormatTest` + `SPEC.md §1/§2`                                                                                                                         |
+| 改菜单项文案 / 出现位置                  | `src/main/resources/META-INF/plugin.xml` 的 `<action>` / `<add-to-group>`                                                                                                                           |
+| 改 action 的启用条件                     | 各 action 的 `update()`                                                                                                                                                                             |
+| 改文件路径写法（相对/绝对）              | `prompt/actions/EditorPromptContext.kt` 的 `promptFilePath()`                                                                                                                                       |
+| 改诊断采集范围 / 过滤规则                | `prompt/actions/EditorPromptContext.kt` 的 `collectDiagnostics()`（先读 `DESIGN.md §3.1`）                                                                                                          |
+| 改 MCP 工具的名字 / 描述 / 入参          | `mcp/RunLifecycleSchemas.kt` 的三个 `*Descriptor` + `RunLifecycleSchemaTest`                                                                                                                        |
+| 改 MCP 工具返回的 JSON 字段              | `mcp/RunLifecycleModels.kt` 的 `toJson()`                                                                                                                                                           |
+| 改 MCP 的停止实现                        | `mcp/RunConfigAccess.kt` 的 `stopHandler` / `stopDescriptors`                                                                                                                                       |
+| 改 MCP 的启动 / 重启实现                 | `mcp/RunConfigAccess.kt` 的 `startRunAndAwait`（`ProgramRunner.Callback` + 输出采集）                                                                                                               |
+| 改启动后回传的日志 / 状态流转            | `mcp/RunConfigAccess.kt` 的 `RunOutputCollector` + `mcp/RunLifecycleModels.kt` 的 `RerunReport`                                                                                                     |
 | 改 rerun / stop 的可重入语义             | `mcp/RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent`（状态判定层）+ 平台启动门（`ExecutionManager.isStarting(environment)`） |
-| 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                              |
-| 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                                      |
-| 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                                      |
+| 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                       |
+| 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                               |
+| 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                               |
 
 ## HARD RULES
 
