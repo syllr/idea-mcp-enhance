@@ -295,6 +295,12 @@ diagnostics:
   **MUST NOT 提供 `shared` / 本地工作区开关**
 - 默认落点 MUST 与 IDE 一致：`<项目根>/.run/<配置名>.run.xml`（配置叫什么，文件就叫什么）；
   落点由配置名唯一决定，MUST NOT 暴露成入参（配置一定是项目级的、一定在 `.run/` 里）
+- 工具描述 MUST 说明落点固定为 `<项目根>/.run/<配置名>.run.xml`、且恒为项目级，并 MUST 明确
+  要求 agent **只能经本工具创建 / 克隆**、**MUST NOT 自行创建或编辑该 `.run.xml` 文件**；
+  MUST NOT 复述 IDE 的存储实现细节（例如 "Store as project file" 复选框），
+  以免诱导 agent 绕过工具直接去改项目里的 `.run/` 文件（这两句由 `RunLifecycleSchemaTest` 钉住）
+- 工具描述 MUST 要求 agent **创建前先取得用户同意**，并 MUST 说明本工具面向项目的固定流程、不是跑一次性命令的手段
+  （理由：run configuration 是项目里的持久产物，一个项目通常只有几个；这三句由 `RunLifecycleSchemaTest` 钉住）
 - 其它固定项同样 MUST NOT 暴露：脚本恒定继承 IDE 的环境（`pass-parent-envs="true"`）、
   恒定跑在 Run 工具窗口而非终端（`EXECUTE_IN_TERMINAL=false`）
 - 文件形状 MUST 与 IDE 自己写的字节一致：8 个业务 option（`SCRIPT_*` / `INTERPRETER_*` /
@@ -413,7 +419,8 @@ diagnostics:
   **官方工具也一样**（`execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后空 404）。
   注意 `rerun` 的总时长是三段相加（`stopTimeoutMs` + `startTimeoutMs` + 输出窗口），
   所以"慢停 + 慢启"的组合会超过这个上限；工具描述 MUST 提醒调用方这一点，
-  并建议这类配置把 `stopTimeoutMs` 调小
+  并 MUST 给出唯一出路——**改用异步模式**（`waitForStart = false`）；
+  MUST NOT 建议调小 `stopTimeoutMs`（那只是更早放弃优雅退出、更早强杀，换不来可用结果）
 - **启动超时的文案 MUST 点明原因**：先用 `RunConfiguration.getBeforeRunTasks()` 查这个配置配了几个
   before-launch 步骤；有就 MUST 说明"它们跑完之前平台不会产出 Run 内容，所以'还没启动'是正常现象"，
   并给出"调大 `startTimeoutMs`"的建议；没有就 MUST 说明另一种可能（启动被忽略 / 启动更慢）。

@@ -82,6 +82,16 @@ class RunLifecycleSchemaTest {
             "必须写明一次性命令不该走这里",
             description.contains("one-off"),
         )
+        // 落点是写死的、且只能经本工具创建：必须明确禁止 agent 自行创建 / 编辑该文件，
+        // 否则 agent 看到路径后会绕过工具直接去改 `.run/` 下的文件。
+        assertTrue(
+            "必须写明不得自行创建 / 编辑该配置文件",
+            description.contains("Do not create or edit that file yourself"),
+        )
+        assertTrue(
+            "必须写明配置只能经本工具创建",
+            description.contains("created only through this tool"),
+        )
         // 反例：不能出现鼓励"需要跑命令就去建一个"的表述。
         assertFalse(
             "描述里不该再有'agent 需要跑命令就建一个'的表述",
@@ -94,6 +104,40 @@ class RunLifecycleSchemaTest {
                 description.contains("shared through VCS") ||
                 description.contains("whole team"),
         )
+    }
+
+    @Test
+    fun `stop 工具的说明要点明启动在飞这一档`() {
+        // 实测：异步提交后进程还没挂上时，stop 返回的是"成功但什么都没停"。
+        // 描述不写，agent 会把 matchedInstances 0 当成"已经停干净"（SPEC §3.5 的 HARD CONTRACT）。
+        val description = toolByName(STOP_TOOL_NAME).descriptor.description
+
+        assertTrue("必须写明有启动在飞的情况", description.contains("in flight"))
+        assertTrue(
+            "必须指向 list_running_configurations 复核",
+            description.contains("list_running_configurations"),
+        )
+    }
+
+    @Test
+    fun `rerun 工具的说明要点明整次调用的时长预算`() {
+        // SPEC §3.6：总时长 = stopTimeoutMs + startTimeoutMs + 输出窗口；慢停 + 慢启会超过服务器的会话耐心，
+        // 结果会丢成空 404。默认值（5000 + 10000 + 2000）本身就在边界上，所以描述必须提醒。
+        val description = toolByName(RERUN_TOOL_NAME).descriptor.description
+
+        assertTrue(
+            "必须点明 stopTimeoutMs 与 startTimeoutMs 一起构成总预算",
+            description.contains("stopTimeoutMs` + `startTimeoutMs"),
+        )
+        assertTrue(
+            "必须给出改成异步调用的出路",
+            description.contains("asynchronous mode"),
+        )
+        assertTrue(
+            "必须点明调小 stopTimeoutMs 不是解法",
+            description.contains("Do not shrink `stopTimeoutMs`"),
+        )
+        assertTrue("必须给出服务器耐心的量级", description.contains("roughly 15"))
     }
 
     @Test

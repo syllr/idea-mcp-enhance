@@ -218,24 +218,18 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     LIST_TOOL_NAME,
     "List Running Configurations",
     """
-    Report what is **actually running right now** in the current project.
+    Report what is **actually running right now** in this project: which configurations have live
+    processes, how many each, and with which process id.
 
-    Why this exists: the built-in `get_run_configurations` tells you which configurations exist but
-    says nothing about execution. After two calls to `execute_run_configuration` on the same
-    server-type configuration you end up with two processes and a port that drifted from 5173 to
-    5174, while the IDE still shows only the first tab as "running". This tool answers the question
-    the IDE's Run tool window answers: which configurations have live processes, how many each, and
-    with which process id.
+    Why this exists: the built-in `get_run_configurations` lists what exists but says nothing about
+    execution, and a configuration can be running with only one of its processes visible in the IDE
+    (`execute_run_configuration` spawns a new process on every call).
 
-    Everything in the result is live. Configurations with no running process are not returned at all
-    — that already covers run configuration templates, since a template is not an instance and can
-    never be running, so there is nothing to filter. Finished Run contents are left out of
-    `instances[]` as well. `runningInstanceCount` is therefore simply how many processes the
-    configuration currently has; greater than 1 means it was started more than once, which is exactly
-    how the port-drifting problem shows up.
+    Everything returned is live: configurations with no running process do not appear at all (which covers
+    templates), and `instances[]` holds live instances only — so a `runningInstanceCount` above 1 means the
+    configuration was started more than once.
 
-    Use this before `stop_run_configuration` / `rerun_run_configuration` to see what is up, and after
-    them to confirm the result.
+    Use this before `stop_run_configuration` / `rerun_run_configuration`, and after them to confirm.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_running_configurations",
@@ -269,23 +263,20 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
     """
     Stop **all** running instances of a run configuration and wait for them to actually exit.
 
-    Every instance is stopped, not just the newest one. That is the whole point of this tool: the
-    built-in `execute_run_configuration` spawns a new process on every call, so a configuration can
-    easily have several live instances while the IDE only shows one of them. Stopping just one would
-    leave the port still held.
+    Why this exists: every instance is stopped, not just the newest one — a configuration can easily have
+    several live processes while the IDE shows one, and stopping a single one would leave its port held.
+    The stop goes through the IDE's own `ProcessHandler`, so the Run tool window stays consistent (unlike
+    an external `pkill`).
 
-    The stop request goes through the IDE's own `ProcessHandler`, so the Run tool window and the
-    process state stay consistent — the opposite of an external `pkill`, which leaves the IDE thinking
-    the process is still alive.
+    Idempotent: a configuration that is not running stops successfully with nothing to do
+    (`matchedInstances: 0`, `isError: false`), so asking again never turns into an error. One case needs
+    care: when a start is **in flight** (submitted, its process not up yet) the tool waits briefly for it,
+    and if the process still does not appear it returns that same success **plus a warning** that a start
+    may come up shortly — do not read `matchedInstances: 0` as "definitely down", re-check with
+    `list_running_configurations`.
 
-    It is idempotent: stopping a configuration that is not running succeeds with nothing to do
-    (`matchedInstances: 0`, `isError: false`). Calling it again to make sure something is down never
-    turns into an error.
-
-    Parameters:
-    - `waitTimeoutMs` — how long to wait for the processes to exit. Defaults to 5000.
-    - `force` — if the processes are still terminating when the timeout expires, kill them outright.
-      Defaults to true. Set false when the process is expected to need a graceful shutdown.
+    The name is matched exactly first, then case-insensitively; when nothing matches, the error lists the
+    names that do exist.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.stop_run_configuration",
@@ -297,7 +288,9 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
             ),
             "waitTimeoutMs" to property(
                 "integer",
-                "How long to wait for the processes to exit, in milliseconds. Defaults to 5000. Values <= 0 fall back to the default.",
+                "How long to wait for the processes to exit, in milliseconds. Defaults to 5000. Values <= 0 fall " +
+                    "back to the default. A value beyond the MCP server's patience (roughly 15 seconds) never " +
+                    "produces an answer: the session is dropped before it is over.",
             ),
             "force" to property(
                 "boolean",
@@ -315,7 +308,11 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
             "forcedKills" to property("integer", "Number of instances that had to be killed after the wait timed out."),
             "timedOut" to property("boolean", "true when instances were still running after the wait window."),
             "allTerminated" to property("boolean", "true when no instance of this configuration is running any more."),
-            "instances" to arrayOf(RUN_INSTANCE_SCHEMA, "State of every matched instance after the stop attempt."),
+            "instances" to arrayOf(
+                RUN_INSTANCE_SCHEMA,
+                "State of every matched instance after the stop attempt; finished instances stay in the list " +
+                    "(their exit codes show how they ended).",
+            ),
             "warnings" to WARNINGS_SCHEMA,
         ),
         required = setOf(
@@ -344,49 +341,36 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     """
     Restart a run configuration — the same observable effect as the IDE's **Rerun** button.
 
-    Semantics:
-    - configuration is running → stop the running instances, then start again (`mode: RESTARTED`)
-    - configuration is not running → just start it (`mode: STARTED`)
-    - the IDE cannot launch this configuration type → nothing happens, `mode: NO_OP`
+    Semantics: running → stop the live instances, then start again (`mode: RESTARTED`); not running → just
+    start it (`mode: STARTED`); the IDE cannot launch this configuration type → nothing happens
+    (`mode: NO_OP`). Read `started` — not `mode` — to know whether a new process really came up;
+    `started: false` comes with `startFailure`. `transition[]` reports every step in order (what was
+    stopped, with its exit codes, then the new process, with timings).
 
-    The call is **synchronous with respect to the start**: a new process is launched and the tool waits
-    until it has really been created (then collects its output for a short window) before returning. So
-    read `started` — not `mode` — to know whether a new process is up. `started: false` comes with
-    `startFailure`. `transition[]` reports every step of the restart in order: the old instances that
-    were stopped (with their exit codes) and then the new process, each with the elapsed time.
+    The call waits until the new process really exists before returning, so `started` is a real answer.
 
-    Output handling mirrors the built-in `execute_run_configuration`:
-    - `output` — inline preview of the new process output, up to 10000 characters, `<truncated>` beyond that
-    - `fullOutputPath` — a log file that keeps growing while the process is alive
-    - `sessionId` — run session identifier, or `<name>#<executionId>` when several live instances share a name
+    A restart only makes sense from a settled state, so the call fails fast with a structured error when the
+    configuration is **stopping** or **starting** (a run was requested but its process is not up yet), when
+    its previous instances could not be stopped (nothing new is started then — that is the state that would
+    leave two instances running), or when the IDE itself is already starting it (the platform would silently
+    drop a second start, so this call reports it instead of being ignored). All three read the IDE's own
+    state, so starts made by hand or by the built-in `execute_run_configuration` are covered too.
 
-    It is language-agnostic (no command-line matching), needs no fixed listening port, and does not
-    require changing how the project starts the application — unlike the usual workaround of wrapping
-    the start command in a `pkill && start` script, which only ever works for one language.
+    Long before-launch steps (a build, or another run configuration) delay the Run content — the platform
+    creates it only after they finish. The whole call must stay inside the MCP server's patience (roughly 15
+    seconds; beyond that it drops the session and the caller gets an empty HTTP 404 instead of this answer):
+    the total is `stopTimeoutMs` + `startTimeoutMs` + a ~2 second output window, so a slow stop plus a slow
+    start already exceeds it. **Whenever the call is going to be that slow — long before-launch steps, or
+    instances that take a while to shut down — use the asynchronous mode instead of waiting**: with
+    `waitForStart = false` the start is submitted and the call returns right after it is submitted (the old
+    instances are still stopped first, within `stopTimeoutMs`), with `started = null` because the outcome is
+    unknown, so poll `list_running_configurations` for the real state. Do not shrink `stopTimeoutMs` to fit
+    the budget: that only gives up on a graceful shutdown sooner (whatever has not exited is killed).
 
-    Re-entrancy mirrors the IDE's Rerun button. The call fails fast with a structured error when a restart
-    does not make sense right now:
-    - the configuration is **stopping**, or **starting** (a run was requested but its process is not up yet)
-    - its previous instances could not be stopped — then nothing new is started, because that is exactly the
-      state that would leave two instances of the same configuration running
-    - the IDE itself is already starting this configuration (its own gate, `isStarting(environment)`) — a
-      second start submitted inside that window is silently dropped by the IDE, so this call reports it
-      instead of being ignored
-
-    All three checks read the IDE's own state, so they cover starts triggered by hand in the IDE or by the
-    built-in `execute_run_configuration` just as well. What the third one is really about:
-    `ProgramRunnerUtil.executeConfigurationAsync` starts with `if (!manager.isStarting(environment))`, so a
-    start submitted while the same configuration/executor/runner is already starting is **silently dropped** —
-    no success callback and no failure callback. The IDE never runs two processes, so the configuration stays
-    consistent either way; this check only turns that silent drop into an immediate, explicit error.
+    The name is matched exactly first, then case-insensitively; when nothing matches, the error lists the
+    names that do exist.
 
     Use this after editing source code of a process that has no hot reload.
-
-    By default this call is synchronous: it waits until the new process is created (and collects a short
-    output window), so `started` is a real answer. If the configuration has a before-launch step that
-    takes longer than the MCP server's patience (roughly 15 seconds), pass `waitForStart = false`: the
-    start is then submitted and the call returns immediately with `started = null`, leaving the real
-    state to `list_running_configurations`.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.rerun_run_configuration",
@@ -405,18 +389,16 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
                 "How long to wait for the new process to be created, in milliseconds. Defaults to 10000 — the same " +
                     "default as the built-in `execute_run_configuration`'s `timeout`. Raise it when this configuration " +
                     "has before-launch steps that take a while (a build, or another run configuration): the IDE creates " +
-                    "the Run content only after they finish. Keep the whole call short though — the MCP server drops a " +
-                    "session when a request stays unanswered for roughly 15 seconds, and then the caller gets an empty " +
-                    "HTTP 404 instead of this tool's answer. For a before-launch step that takes longer than that, use " +
-                    "`waitForStart = false` instead of a huge value here.",
+                    "the Run content only after they finish. Mind the whole call's budget, though — see the tool " +
+                    "description for what a slow stop plus a slow start does to it.",
             ),
             "waitForStart" to property(
                 "boolean",
                 "Defaults to true: submit the start and wait until the new process is created, then report " +
-                    "`started` / `output`. Set it to false when a before-launch step (a build, or another run " +
-                    "configuration) takes longer than the MCP server's patience: the start is submitted and this tool " +
-                    "returns right away with `started = null` (unknown) and a `START_SUBMITTED` transition step; " +
-                    "poll `list_running_configurations` for the real state. Mirrors the built-in " +
+                    "`started` / `output`. Set it to false when the whole call would outlast the MCP server's " +
+                    "patience (long before-launch steps, or a slow stop — see the tool description): the start is " +
+                    "submitted and the tool returns right after that, with `started = null` (unknown), so poll " +
+                    "`list_running_configurations` for the real state. Mirrors the built-in " +
                     "`execute_run_configuration`'s `waitForExit` switch.",
             ),
             "projectPath" to projectPathProperty(),
@@ -440,11 +422,18 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
                 "Live instance count after the new process was up and registered; null when `waitForStart = false` " +
                     "(not awaited), not 0.",
             ),
-            "sessionId" to nullableProperty("string", "Run session identifier of the new process."),
+            "sessionId" to nullableProperty(
+                "string",
+                "Run session identifier of the new process: the configuration name, or `<name>#<executionId>` " +
+                    "when several live instances share that name.",
+            ),
             "output" to property("string", "Inline preview of the new process output, at most 10000 characters."),
             "fullOutputPath" to nullableProperty("string", "Path of the full raw output log; it keeps growing while the process is alive."),
             "transition" to arrayOf(RUN_TRANSITION_STEP_SCHEMA, "Steps of this restart, in chronological order."),
-            "instances" to arrayOf(RUN_INSTANCE_SCHEMA, "All Run contents of this configuration after the restart."),
+            "instances" to arrayOf(
+                RUN_INSTANCE_SCHEMA,
+                "All Run contents of this configuration after the restart, finished ones included.",
+            ),
             "warnings" to WARNINGS_SCHEMA,
         ),
         required = setOf(
@@ -472,51 +461,31 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
     CREATE_TOOL_NAME,
     "Create Shell Run Configuration",
     """
-    Create a new **Shell Script** run configuration as a **project-level** run configuration, i.e. stored as a
-    `.run/<name>.run.xml` file inside the project (the same place the IDE's "Store as project file"
-    checkbox writes to).
+    Create a **project-level** Shell Script run configuration, then start it with
+    `rerun_run_configuration`.
 
-    Why this exists: a Shell run configuration carries the project's environment (working directory,
-    environment variables, interpreter), so a project command that needs that environment can be run by
-    starting one with `rerun_run_configuration`. This tool creates such a configuration for the commands
-    that are part of the project's **permanent workflow** — a build, a dependency install, a dev server.
-    It is not a way to run a one-off command; see the consent requirement below.
+    Where it lives is fixed: `<project>/.run/<configurationName>.run.xml`, always project-level.
+    **Do not create or edit that file yourself**: a configuration is created only through this tool.
+    There is no storage-path parameter, and no delete tool.
 
-    **Ask the user before creating anything.** A run configuration is a durable artefact: the file lands in
-    the project's `.run/` directory, and a project normally has only a handful of them. Creating one is a
-    heavyweight, deliberate act, not a consequence of a single command needing to run. Before calling this
-    tool, state which configuration you intend to create, what it will run and why it is worth keeping — then
-    wait for the user's agreement. If the command is a one-off, run it some other way instead.
+    Why this exists: a Shell configuration carries the project's environment (working directory,
+    environment variables, interpreter), so a project command that needs that environment can be started
+    through one. Use it for commands in the project's **permanent workflow** — a build, a dependency
+    install, a dev server — not for a one-off command.
 
-    Only Shell Script configurations can be created — there is no `type` parameter. Give exactly one of:
+    **Ask the user before creating anything.** A run configuration is a durable artefact and a project
+    normally has only a handful of them. State what you intend to create, what it will run and why it is
+    worth keeping, then wait for the user's agreement. For a one-off command, run it another way.
 
-    - `scriptPath` — run a script file (e.g. `scripts/dev.sh`, relative to the project root or absolute).
-      The file should exist, otherwise the result reports `canRun = false` with the reason.
-    - `scriptText` — run an inline script instead of a file.
-    - `cloneFrom` — duplicate an existing Shell configuration (its script, options, environment and
-      before-launch steps are all copied, so the new one is immediately runnable). The source must
-      itself be a Shell configuration.
+    Only Shell Script configurations can be created — there is no `type` parameter. Give exactly one of
+    `scriptPath` (a script file, which should exist — otherwise it is created but cannot run yet),
+    `scriptText` (an inline script) or `cloneFrom` (copy an existing Shell configuration; the source must be
+    a Shell configuration, not a template). The remaining parameters are documented on themselves.
 
-    Optional shell details: `scriptOptions` (arguments), `workingDirectory` (defaults to the
-    template default when omitted), `interpreterPath` (e.g. `/bin/zsh`; omitted = template default),
-    `interpreterOptions`, `envs` (extra environment variables as a JSON object; merged over the
-    environment the script inherits from the IDE).
-
-    Everything else is fixed and therefore not exposed: the file always lands in the project's
-    `.run/` directory named after the configuration, the script always inherits the IDE's
-    environment, and it always runs in the Run tool window rather than a terminal.
-
-
-    This tool writes that file directly and the IDE picks it up live (its `*.run.xml` watcher
-    registers the new configuration, usually within a second or two). The result reports whether
-    the IDE has loaded it yet and whether the platform accepts running it.
-
-    The name must be free; when it is taken the call fails and suggests a unique one
-    (`RunManager.suggestUniqueName` semantics). Templates cannot be cloned.
-
-    There is deliberately no delete tool: deleting a configuration stays a user action in the IDE.
-    After creating, use `rerun_run_configuration` to start it and `list_running_configurations` to
-    see it running.
+    Everything else is fixed: the script always inherits the IDE's environment and runs in the Run tool
+    window rather than a terminal. `canRun` in the result is the platform's own check — it is also false
+    while the IDE has not loaded the new file yet. The name must be free; when it is taken the call fails
+    and suggests a unique one.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.create_shell_run_configuration",

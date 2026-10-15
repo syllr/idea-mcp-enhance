@@ -29,7 +29,7 @@ JetBrains 2026.2 内置的 MCP Server（`com.intellij.mcpServer`）已经提供�
 
 ## Run Lifecycle MCP 工具
 
-前提：目标 IDE 为 2026.2+，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的三个工具不会出现在工具列表里，prompt 功能不受影响。
+前提：目标 IDE 为 2026.2+，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的四个工具不会出现在工具列表里，prompt 功能不受影响。
 
 | 工具                          | 类型   | 作用                                                                                                               |
 | ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
@@ -49,7 +49,7 @@ MCP 客户端配置（与 IDE 官方文档一致）：
 ```
 
 这个 header 不能省：MCP Server 在派发工具之前要先解析"针对哪个项目"，它只认这个 header 或调用参数 `projectPath`
-（**只打开一个项目是不够的**）。三个工具都声明了可选的 `projectPath`，所以没配 header 的客户端也能用，
+（**只打开一个项目是不够的**）。四个工具都声明了可选的 `projectPath`，所以没配 header 的客户端也能用，
 但每次调用都得带上它。
 
 设计约束：
@@ -111,7 +111,7 @@ diagnostics:
 - 确认插件已启用（Settings/Preferences → Plugins）
 - 确认焦点在**编辑器**内（这两个 action 只出现在编辑器右键菜单）
 
-**问题：MCP 工具列表里看不到 Run Lifecycle 那三个**
+**问题：MCP 工具列表里看不到 Run Lifecycle 那四个**
 
 - 确认 IDE 是 2026.2+（本插件 `sinceBuild=262`，因为要编译内置 MCP Server 的 API）
 - 确认内置的 **MCP Server** 插件已安装并启用
@@ -121,7 +121,7 @@ diagnostics:
 
 - 该配置确实没在跑。`rerun_run_configuration` 在这种情况下会直接启动它（这正是 Rerun 的语义）
 
-**问题：诊断只列出了 part 的问题 / 少了几条**
+**问题：诊断只列出了部分问题 / 少了几条**
 
 - 插件只采集 daemon 已经算出的高亮。如果某个文件刚打开、后台分析还没跑完，可能还没生成全部诊断——稍等片刻或让编辑器获得焦点后再复制
 - 插件只输出 **ERROR / WARNING** 两档（不含 INFO、弱警告、拼写提示等）
