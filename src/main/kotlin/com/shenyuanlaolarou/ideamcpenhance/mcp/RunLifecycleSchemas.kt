@@ -474,11 +474,19 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
     """
     Create a new **Shell Script** run configuration as a **project-level** run configuration, i.e. stored as a
     `.run/<name>.run.xml` file inside the project (the same place the IDE's "Store as project file"
-    checkbox writes to, so it is shared through VCS and visible to the whole team).
+    checkbox writes to).
 
     Why this exists: a Shell run configuration carries the project's environment (working directory,
-    environment variables, interpreter), so an agent that needs to run project commands with that
-    environment creates one with this tool and then starts it with `rerun_run_configuration`.
+    environment variables, interpreter), so a project command that needs that environment can be run by
+    starting one with `rerun_run_configuration`. This tool creates such a configuration for the commands
+    that are part of the project's **permanent workflow** — a build, a dependency install, a dev server.
+    It is not a way to run a one-off command; see the consent requirement below.
+
+    **Ask the user before creating anything.** A run configuration is a durable artefact: the file lands in
+    the project's `.run/` directory, and a project normally has only a handful of them. Creating one is a
+    heavyweight, deliberate act, not a consequence of a single command needing to run. Before calling this
+    tool, state which configuration you intend to create, what it will run and why it is worth keeping — then
+    wait for the user's agreement. If the command is a one-off, run it some other way instead.
 
     Only Shell Script configurations can be created — there is no `type` parameter. Give exactly one of:
 
@@ -554,7 +562,7 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
             "envs" to property(
                 "object",
                 "Extra environment variables as a JSON object of string to string " +
-                    "(e.g. `{\"PORT\": \"3201\"}`). They are merged over the inherited environment unless " +
+                    "(e.g. `{\"PORT\": \"3201\"}`). They are merged over the environment the script " +
                     "inherits from the IDE.",
             ),
             "projectPath" to projectPathProperty(),

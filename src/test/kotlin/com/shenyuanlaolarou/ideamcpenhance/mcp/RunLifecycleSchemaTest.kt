@@ -65,6 +65,38 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
+    fun `create 工具的说明要求先取得用户同意`() {
+        // 建 run configuration 是重操作：会落进项目 `.run/`（通常还会提交、全队共享），一个项目一般只有几个。
+        // 这条约束只写在描述里，模型看不到就等于没有 —— 所以用测试钉住它。
+        val description = toolByName(CREATE_TOOL_NAME).descriptor.description
+
+        assertTrue(
+            "必须写明创建前要征得用户同意",
+            description.contains("Ask the user before creating"),
+        )
+        assertTrue(
+            "必须写明它只用于项目的固定流程，不是跑一次性命令的手段",
+            description.contains("permanent workflow"),
+        )
+        assertTrue(
+            "必须写明一次性命令不该走这里",
+            description.contains("one-off"),
+        )
+        // 反例：不能出现鼓励"需要跑命令就去建一个"的表述。
+        assertFalse(
+            "描述里不该再有'agent 需要跑命令就建一个'的表述",
+            description.contains("agent that needs to run project commands with that environment creates one"),
+        )
+        // 反例：不要扯"提交给全队 / 走 VCS 共享"——落点在 `.run/`，提不提交只看用户想不想。
+        assertFalse(
+            "不要写提交 / VCS 共享之类的描述",
+            description.contains("usually committed") ||
+                description.contains("shared through VCS") ||
+                description.contains("whole team"),
+        )
+    }
+
+    @Test
     fun `envs 参数是对象类型`() {
         val schema = toolByName(CREATE_TOOL_NAME).descriptor.inputSchema
         val envs = schema.propertiesSchema["envs"]!!.jsonObject
