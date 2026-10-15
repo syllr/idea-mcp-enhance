@@ -20,7 +20,7 @@
                 <code>create_shell_run_configuration</code>, driving the IDE's own process handlers:
                 no port guessing, no command-line matching, no changes to your start scripts.</li>
         </ul>
-        <p>Requires IntelliJ IDEA 2026.2 or newer with the bundled MCP Server plugin enabled.</p>
+        <p>Requires IntelliJ IDEA 2026.2 with the bundled MCP Server plugin enabled.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

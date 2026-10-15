@@ -10,5 +10,13 @@
     <extensions defaultExtensionNs="com.intellij">
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
+
+        <!--
+          给每个新建的进程盖上"属于哪个 Run Configuration"。原因见
+          mcp/RunConfigurationStamping.kt：平台没有公开 API 能把 Run 内容归属到配置
+          （getRunConfigurationName / getRunningDescriptors 都是 @ApiStatus.Internal）。
+        -->
+        <postStartupActivity
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunConfigurationNameStamper"/>
     </extensions>
 </idea-plugin>

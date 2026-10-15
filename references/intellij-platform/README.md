@@ -6,16 +6,19 @@
 
 ## 1. 2026.1 → 2026.2 的 API 变化（踩过的坑）
 
-### `RunContentDescriptor` 没有 `getRunProfile()` 了
+### `RunContentDescriptor`：既没有 `getRunProfile()`，也没有公开的"配置归属"
 
-2026.1 有，2026.2 **删了**。现在只有：
+2026.1 有 `getRunProfile()`，2026.2 **删了**。现在能看到这些：
 
 ```java
-String getRunConfigurationName();     // ← 用这个把 Run 内容关联回配置
-String getRunConfigurationTypeId();
-long   getExecutionId();
-String getDisplayName();              // ← UI 文本，多实例会带 "(2)"，不能用来匹配配置名
+String getRunConfigurationName();     // @ApiStatus.Internal（262 起就是）—— 不能用
+String getRunConfigurationTypeId();   // @ApiStatus.Internal —— 不能用
+long   getExecutionId();              // 公开
+ProcessHandler getProcessHandler();   // 公开 ← 本插件靠它取回"盖章"（RunConfigurationStamping.kt）
+String getDisplayName();              // 公开，但是 UI 文本，多实例会带 "(2)"，不能用来匹配配置名
 ```
+
+`ExecutionManager.getRunningDescriptors(Condition)` 同样是 `@ApiStatus.Internal`。结论：**"按配置找 Run 内容"没有公开 API**，归属只能自己盖章（见 `src/main/kotlin/.../mcp/RunConfigurationStamping.kt`）。
 
 ### `ExecutionManager` 上没有 `stopRunProfile`
 

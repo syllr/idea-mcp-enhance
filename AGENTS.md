@@ -15,7 +15,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 ## STACK
 
 - Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin **2.19.0**
-- 目标平台: **2026.2.3**（`pluginSinceBuild=262`，`pluginUntilBuild` 留空）
+- 目标平台: **2026.2.3**（`pluginSinceBuild=262`，`pluginUntilBuild=262.*`——只支持 2026.2；内置 MCP Server 的 API 在 263 变了，见「注意事项」）
 - **必须用 2.19.0，不能退回 2.14.0**：2.14.0 解析不了 2026.2 发行版 `modules/module-descriptors.jar` 里的 `$legacy_jps_library` 描述符，会报 `Field 'name' is required ... ModuleDescriptor`，连 `:test` 的依赖都算不出来。
 - **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate。
 - **运行时依赖: 无第三方库** — 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` 提供的类型 + `kotlinx-serialization-json`（平台自带）
@@ -179,8 +179,8 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 
 ## 注意事项（容易踩的坑）
 
-- **2026.1 → 2026.2 的 API 变化**：`RunContentDescriptor` **没有** `getRunProfile()` 了；改用 `getRunConfigurationName()` / `getRunConfigurationTypeId()`。`getExecutors(descriptor)` 在 `ExecutionManager` 上是 `@ApiStatus.Internal`，本插件不用它。
-- **`ProcessHandler.getNativePid()` 返回 `CompletableFuture`**: 进程没创建出来时 future 未完成，`get()` 会阻塞。只取 `isDone` 为 true 的结果。
+- **2026.1 → 2026.2 的 API 变化**：`RunContentDescriptor` **没有** `getRunProfile()` 了；而接替它的 `getRunConfigurationName()` / `getRunConfigurationTypeId()`，以及 `ExecutionManager.getRunningDescriptors(...)` / `getExecutors(descriptor)` —— **全都是 `@ApiStatus.Internal`**，本插件一个都不用（实例归属见下面那条"事件盖章"）
+- **取进程号不用 `ProcessHandler.getNativePid()`——它是 `@ApiStatus.Experimental`**（262 里 `ProcessHandler` 与 `BaseProcessHandler` 两处都标着），Plugin Verifier 会把它算成 "usage of experimental API"，而这种标记随时可能在下一个大版本换签名。改用 `BaseProcessHandler.getProcess().pid()`：平台自己的 `getNativePid()` 字节码就是「反射调 `Process.pid()` → `CompletableFuture.completedFuture(pid)`，失败返回 null」，本插件跑 JDK 21 直接调即可，语义完全一致（那段反射只为兼容 Java 8）。`getProcess()` 只带 `@NotNull`、没有 `@ApiStatus.*` 标记；拿不到就返回 null，pid 只是辅助信息
 - **平台没有 `ExecutionManager.stopRunProfile`**: Stop 按钮走 `ExecutionManagerImpl.stopProcess`（`impl` 包）。本插件用等价的公开 API 组合重写（`TERMINATION_REQUESTED` + `killProcess`/`detachProcess`/`destroyProcess`），语义逐条对齐，见 `RunConfigAccess.stopHandler` 的 KDoc
 - **`McpToolSchema.propertiesSchema` 只装 properties**，不含根级 `"type": "object"`；根类型由 MCP Server 合成 schema 时补（input 与 output 都一样）
 - **MCP Server 的项目解析只认两样东西**：header `IJ_MCP_SERVER_PROJECT_PATH`，或调用参数 `projectPath`。**"只打开了一个项目"不算**——实测不带参数调内置 `get_run_configurations` 同样被拒（`Unable to determine the target project`）。因此三个工具的 schema 必须声明 `projectPath`（可为空、不进 `required`），否则没配 header 的客户端一个工具都用不了
@@ -198,6 +198,8 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
   平台的 `FakeRerunAction.isEnabled` 判 `isStarting()` / `isProcessTerminating()`，我们按**每个实例**读
   `ProcessHandler` 的同一对状态（`startNotified` / `isProcessTerminating`），粒度更细、且不依赖 UI 组件树
 - **沙箱里出现 `config/disabled_plugins.txt` 基本都是陈旧残留**：该文件由 Gradle 插件的 `PrepareSandboxTask` 从 `IntelliJPlatformPluginsExtension.disablePlugins` 生成，而本仓库的 `build.gradle.kts` / `gradle.properties` 都没配它（`config` 与 `config-test` 两份沙箱里它都是 0 字节）。一旦里面有 `com.intellij.modules.ultimate`，Node.js / Go / Python / Spring 等一大批插件会全部加载失败（日志里是 `requires plugin with id=com.intellij.modules.ultimate to be enabled`）
+- **`RunContentDescriptor` 没有任何公开的"配置归属"API**：`getRunConfigurationName()` 与 `ExecutionManager.getRunningDescriptors(...)` 从 262 起就都是 `@ApiStatus.Internal`（Plugin Verifier 在 2026.3 上把它报成 internal API usage），而 `displayName` 是多实例会被加后缀的 UI 文本。归属因此改成"事件盖章"：`ExecutionListener.processStarting/processStarted`（由 `ExecutionManagerImpl` 发出；IDE 的 Run/Rerun 按钮、内置 `execute_run_configuration`、我们自己的 `rerun` 三条路都经过它）把配置名写进 `ProcessHandler`（`ProcessHandler extends UserDataHolderBase`），读的时候用公开的 `descriptor.processHandler` 取回同一个 handler 上的戳——见 `mcp/RunConfigurationStamping.kt`。**没有**戳的 Run 内容会被跳过：宁可少列一个，也不猜一个错的名字
+- **`pluginUntilBuild=262.*` 的原因：内置 MCP Server 的 API 在 2026.3 变了**。实测 2026.3 EAP（263.6800.24）改了 `McpToolDescriptor` / `McpToolCategory` 的构造器，而 `mcp/RunLifecycleSchemas.kt` 的顶层 `val` 就在 `<clinit>` 里调它们 ⇒ 用 262 编译出来的字节码在 263 上会 `NoSuchMethodError`（Plugin Verifier 报成 "Invocation of unresolved constructor"，2 条；同一个 `<clinit>` 里的 `McpToolSchema.<init>` / `ToolAnnotations.<init>` 没被报，说明 263 只动了那两个类）。上限留空 = 声称支持 263，所以钉成 `262.*`，不让 Marketplace 把它发给 263 用户。**适配 263 需要 263 的 IDE 包**（本机没有），届时把编译目标切到 263、`sinceBuild` 跟着抬，或加一层反射做双版本
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性**（覆写 `getXxx()` 不会变成 `val`），调用要写 `.getTools()`
 - **`HighlightInfo` 在 `...daemon.impl` 包里，但只是 `@ApiStatus.NonExtendable`**，可以用
 - **daemon 高亮存在 document 级 `DocumentMarkupModel`**，不是 `editor.markupModel`。读错地方会得到空列表（不报错，静默失败）

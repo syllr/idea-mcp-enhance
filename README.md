@@ -25,7 +25,7 @@ JetBrains 2026.2 内置的 MCP Server（`com.intellij.mcpServer`）已经提供�
 
 ## Run Lifecycle MCP 工具
 
-前提：目标 IDE 为 2026.2+，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的四个工具不会出现在工具列表里，prompt 功能不受影响。
+前提：目标 IDE 为 2026.2，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的四个工具不会出现在工具列表里，prompt 功能不受影响。
 
 | 工具                             | 类型     | 作用                                                                                                                                                                                                                                             |
 | -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -109,7 +109,7 @@ diagnostics:
 
 **问题：MCP 工具列表里看不到 Run Lifecycle 那四个**
 
-- 确认 IDE 是 2026.2+（本插件 `sinceBuild=262`，因为要编译内置 MCP Server 的 API）
+- 确认 IDE 是 2026.2（本插件 `sinceBuild=262`，因为要编译内置 MCP Server 的 API）
 - 确认内置的 **MCP Server** 插件已安装并启用
 - 打开 MCP Server 的工具面板，确认没有在 Allowed tools 里把它们过滤掉
 
@@ -134,11 +134,11 @@ diagnostics:
 
 ## 兼容性
 
-| 项       | 约束                                                               |
-| -------- | ------------------------------------------------------------------ |
-| IDE      | **2026.2（build 262）及以上**——MCP 增强依赖这一版的内置 MCP Server |
-| 其他 IDE | 带 `com.intellij.modules.platform` 的都支持（prompt 功能）         |
-| JDK      | 21（仅构建需要，运行在 IDE 自带的 JBR 上）                         |
+| 项       | 约束                                                         |
+| -------- | ------------------------------------------------------------ |
+| IDE      | **2026.2（build 262）**——MCP 增强依赖这一版的内置 MCP Server |
+| 其他 IDE | 带 `com.intellij.modules.platform` 的都支持（prompt 功能）   |
+| JDK      | 21（仅构建需要，运行在 IDE 自带的 JBR 上）                   |
 
 > ⚠️ 与上游 [`syllr/copy-as-prompt`](https://github.com/syllr/copy-as-prompt) 的关系：prompt 部分的实现与输出格式契约来自那个仓库，保持逐字节一致；本仓库额外加入了 MCP 增强，并把目标平台提到 2026.2。
 

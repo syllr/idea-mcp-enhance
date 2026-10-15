@@ -109,13 +109,17 @@ else if (!handler.isProcessTerminated) {
 
 **代价**：平台改了停止语义，这里要跟着改。**收益**：不绑死在一个 `impl` 包上。
 
-### 3.4 决策 2：实例归属靠 `getRunConfigurationName()`，不靠 `getRunProfile()`
+### 3.4 决策 2：实例归属靠"事件盖章"，不靠 `getRunConfigurationName()`
 
-要回答"这个配置有几个实例在跑"，就得把 `RunContentDescriptor` 关联回配置。
+要回答"这个配置有几个实例在跑"，就得把 `RunContentDescriptor` 关联回配置——而平台**没有**公开 API 能做这件事：
 
-**踩到的坑**：2026.1 的 `RunContentDescriptor` 有 `getRunProfile()`，**2026.2 删掉了**。现在只有 `getRunConfigurationName()` / `getRunConfigurationTypeId()`——反倒是更直接的字段。
+- `getRunProfile()`：2026.1 有，**2026.2 删了**
+- `getRunConfigurationName()` / `getRunConfigurationTypeId()` / `ExecutionManager.getRunningDescriptors(...)`：**全是 `@ApiStatus.Internal`**（Plugin Verifier 会把前者报成 internal API usage；本仓库 HARD RULE 也禁止内部 API）
+- `getDisplayName()`：UI 文本，多实例时会被加 "(2)" 之类后缀，拿它和配置名比对必然失配——而"同一配置有几个实例"恰恰是要回答的核心问题
 
-**不能用 `getDisplayName()`**：那是 UI 文本，多实例时会被加 "(2)" 之类后缀，拿它和配置名比对必然失配——而"同一配置有几个实例"恰恰是要回答的核心问题。
+**做法**：在 `ExecutionListener.processStarting` / `processStarted` 事件里把配置名写进 `ProcessHandler`（`ProcessHandler extends UserDataHolderBase`），读的时候用公开的 `descriptor.processHandler` 取回同一个 handler 上的戳。事件由 `ExecutionManagerImpl` 发出，IDE 的 Run/Rerun 按钮、内置 `execute_run_configuration`、我们自己的 `rerun` 三条路都会经过。
+
+**代价**：取不到戳的 Run 内容会被跳过（宁可少列一个，也不猜一个错的名字）。**收益**：只依赖公开 API，且状态挂在平台自己的对象上，没有本插件侧的全局可变状态。详见 `mcp/RunConfigurationStamping.kt` 的 KDoc。
 
 ### 3.5 决策 3：`rerun` 自己接 `ProgramRunner.Callback` 同步等启动，而不是 `restartRunProfile` / `ExecutionUtil.restartIfActive`
 

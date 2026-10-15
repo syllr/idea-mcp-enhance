@@ -9,6 +9,7 @@ import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.execution.configurations.RuntimeConfigurationException
 import com.intellij.execution.Executor
 import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.process.BaseProcessHandler
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
@@ -51,18 +52,21 @@ import java.util.concurrent.TimeUnit
 /**
  * 按**配置名**把项目当前所有 Run 内容分组。
  *
- * 用 `RunContentDescriptor.getRunConfigurationName()`，而不是 `displayName`：后者是 UI 文本，
- * 多实例时会被加 "(2)" 之类后缀，拿它和配置名比对必然失配——而"同一配置有几个实例"恰恰是本插件要回答的核心问题。
- * 平台自己就是用 `runConfigurationName` 维护这个关联的（见 `setRunConfigurationName`）。
+ * 归属靠 [stampedConfigurationName]（`ExecutionListener` 事件盖在 `ProcessHandler` 上的配置名），
+ * 而**不能**用下面两条：
  *
- * 注：2026.1 及更早的 `RunContentDescriptor` 没有 `getRunProfile()`，这里也不依赖它。
+ * - `RunContentDescriptor.getRunConfigurationName()` —— `@ApiStatus.Internal`（本仓库禁止内部 API）
+ * - `displayName` —— UI 文本，多实例时会被加 "(2)" 之类后缀，比对必然失配；
+ *   而"同一配置有几个实例"恰恰是本插件要回答的核心问题
+ *
+ * 见 `RunConfigurationStamping.kt` 的 KDoc（含为什么事件一定覆盖三条发起来源）。
  *
  * @return 配置名 → 该配置下的所有 Run 内容（含已结束、只剩标签页的）
  */
 internal fun descriptorsByConfigurationName(project: Project): Map<String, List<RunContentDescriptor>> {
     val result = mutableMapOf<String, MutableList<RunContentDescriptor>>()
     for (descriptor in RunContentManager.getInstance(project).allDescriptors) {
-        val name = descriptor.runConfigurationName ?: continue
+        val name = descriptor.stampedConfigurationName() ?: continue
         result.getOrPut(name) { mutableListOf() } += descriptor
     }
     return result
@@ -421,7 +425,7 @@ internal fun RunContentDescriptor.toInstanceState(): RunInstanceState? {
         running = !handler.isProcessTerminated,
         terminating = handler.isProcessTerminating,
         startNotified = handler.isStartNotified,
-        pid = nativePidOrNull(handler),
+        pid = processPidOrNull(handler),
         exitCode = handler.exitCode,
     )
 }
@@ -429,15 +433,19 @@ internal fun RunContentDescriptor.toInstanceState(): RunInstanceState? {
 /**
  * 拿操作系统进程号。
  *
- * `ProcessHandler.getNativePid()` 返回 `CompletableFuture`：进程还没创建出来时 future 尚未完成，
- * 此时 `get()` 会阻塞。这里只取**已经完成且有值**的结果——pid 只是辅助信息，
- * 拿不到不影响工具正确性，不值得为它阻塞一次工具调用。
+ * **刻意不用 `ProcessHandler.getNativePid()`**：它带 `@ApiStatus.Experimental`（262 的
+ * `ProcessHandler` 与 `BaseProcessHandler` 上都标着），Plugin Verifier 会把它算成
+ * "usage of experimental API"——这种标记随时可能在下一个大版本里换签名。
+ *
+ * 这里做的事和平台自己的实现**完全一致**：`BaseProcessHandler.getNativePid()` 的字节码就是
+ * "反射调 `Process.pid()` → `CompletableFuture.completedFuture(pid)`，失败返回 null"。
+ * 我们跑在 JDK 21 上，`Process.pid()` 可以直接调、不必反射（平台那段反射只是为了兼容 Java 8）。
+ *
+ * 拿不到就返回 null（handler 不是 `BaseProcessHandler`、或该 `Process` 实现不支持 `pid()`）：
+ * pid 只是辅助信息，不影响工具正确性，也不值得为它阻塞或抛错。
  */
-private fun nativePidOrNull(handler: ProcessHandler): Long? {
-    val future = handler.nativePid ?: return null
-    if (!future.isDone) return null
-    return runCatching { future.getNow(null) }.getOrNull()
-}
+private fun processPidOrNull(handler: ProcessHandler): Long? =
+    (handler as? BaseProcessHandler<*>)?.process?.let { process -> runCatching { process.pid() }.getOrNull() }
 
 /**
  * 请求停止一个进程，等价于 `ExecutionManagerImpl.stopProcess`，但只用公开 API。
@@ -695,7 +703,7 @@ internal suspend fun startRunAndAwait(
     val live = state.instances.firstOrNull { it.executionId == descriptor.executionId }
     return StartOutcome(
         executionId = descriptor.executionId,
-        pid = live?.pid ?: handler?.let(::nativePidOrNull),
+        pid = live?.pid ?: handler?.let(::processPidOrNull),
         sessionId = buildSessionId(project, sessionName, descriptor),
         output = collector.preview(),
         fullOutputPath = outputPath?.toString(),
@@ -769,11 +777,11 @@ private fun elapsedMsSince(fromNanos: Long): Long = (System.nanoTime() - fromNan
 private fun deadlineNanos(timeoutMs: Long): Long =
     System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs.coerceAtLeast(1L))
 
-/** 等进程被真正创建（`nativePid` 可读）或提前终止。 */
+/** 等进程被真正创建（pid 可读）或提前终止。 */
 private suspend fun awaitProcessUp(handler: ProcessHandler, timeoutMs: Int) {
     val deadline = deadlineNanos(timeoutMs.toLong())
     while (System.nanoTime() < deadline) {
-        if (handler.isProcessTerminated || nativePidOrNull(handler) != null) return
+        if (handler.isProcessTerminated || processPidOrNull(handler) != null) return
         delay(START_POLL_INTERVAL_MS)
     }
 }

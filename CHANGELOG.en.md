@@ -22,7 +22,7 @@
 - **Copy as Prompt** — copy the selected code together with its file path and line range, ready to paste into
   any chat.
 - **Copy Diagnostics as Prompt** — copy every error and warning of the current file as one clean list.
-- **Run Lifecycle MCP tools** (need the bundled MCP Server plugin; IntelliJ IDEA 2026.2 or newer):
+- **Run Lifecycle MCP tools** (need the bundled MCP Server plugin; IntelliJ IDEA 2026.2):
   - `list_running_configurations` — what is actually running right now: which configurations, how many
     processes each, and with which process id.
   - `stop_run_configuration` — stop all running instances of a configuration and wait until they really
@@ -35,4 +35,4 @@
 
 - The MCP tools drive the IDE's own process handlers: no port guessing, no command-line matching, and no
   changes to your start scripts.
-- IntelliJ IDEA 2026.2 (build 262) or newer is required for the MCP tools.
+- IntelliJ IDEA 2026.2 (build 262) is required for the MCP tools.

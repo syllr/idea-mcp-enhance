@@ -46,7 +46,7 @@
 
 ### Known limitations
 
-- 目标平台被抬到 **2026.2（build 262）及以上**：MCP Server 是该版本的**内置**插件，没有发布到 Marketplace，无法作为独立依赖，因此编译它的 API 会把整个插件的下限一起抬上去。上游 `copy-as-prompt` 本身只需要 202.1+。
+- 目标平台被抬到 **2026.2（build 262）**：MCP Server 是该版本的**内置**插件，没有发布到 Marketplace，无法作为独立依赖，因此编译它的 API 会把整个插件的下限一起抬上去。上游 `copy-as-prompt` 本身只需要 202.1+。
 - **`EditorDiagnosticsTest` 暂时禁用**：IntelliJ Platform 2026.2.3 的测试沙箱起不来（打开测试项目时 post-startup 阶段报 `Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]` → `Cannot find suitable constructor ... expected (), (CoroutineScope), (Application), or (Application, CoroutineScope)`）。这是平台内部类（`product-backend.jar`）的问题，与本插件无关：把同样代码指向 2026.2.3 的上游 `copy-as-prompt` 失败完全一致；且 2026.2 已不再发布 IDEA Community 版，无法绕开。诊断采集的实际行为请用 `./gradlew runIde` 手工验证。
 - 四个 MCP 工具都只在被显式调用时才动作（停 / 重启 / 建配置）；插件自身不做任何后台轮询或自动重启。
 - **`rerun_run_configuration` 的可重入语义全部建立在平台自己的状态上**（不维护任何插件侧内存状态）：① 中间态（启动中 / 停止中，含"Run 内容已出现、进程还没挂上"）直接拒绝；② 旧实例没停干净就不启动新进程；③ 发起前先过平台自己的门 `ExecutionManager.isStarting(environment)` —— 因为 `ProgramRunnerUtil.executeConfigurationAsync` 对"同配置正在启动"的第二次提交是**静默丢弃**（回调都不装）。平台永远不会起两个实例，所以这三道判定不是为了"防双实例"，而是把"静默丢弃 / 静默悬挂"换成立刻、精确、可自洽的错误。不同配置并发 rerun 仍允许。
