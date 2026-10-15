@@ -286,9 +286,6 @@ diagnostics:
 | `interpreterPath`    | string  | 否   | —       | 解释器（如 `/bin/zsh`）；不给就是模板默认值                                         |
 | `interpreterOptions` | string  | 否   | —       | 传给解释器的参数                                                                    |
 | `envs`               | object  | 否   | —       | 额外的环境变量（string 到 string）；非字符串的值跳过                                |
-| `passParentEnvs`     | boolean | 否   | `true`  | 是否继承 IDE 的环境                                                                 |
-| `executeInTerminal`  | boolean | 否   | `false` | 在终端里跑，而不是 Run 工具窗口                                                     |
-| `filePath`           | string  | 否   | —       | 落点（相对项目根或绝对路径），默认 `.run/<配置名>.run.xml`                          |
 | `projectPath`        | string  | 否   | —       | 见「项目解析」                                                                      |
 
 行为：
@@ -297,7 +294,9 @@ diagnostics:
   **直接写 `.run.xml` 文件**（纯字符串生成，不调平台创建 API）。
   **MUST NOT 提供 `shared` / 本地工作区开关**
 - 默认落点 MUST 与 IDE 一致：`<项目根>/.run/<配置名>.run.xml`（配置叫什么，文件就叫什么）；
-  `filePath` 可以覆盖它——**落点是调用方的选择，工具不自作主张**
+  落点由配置名唯一决定，MUST NOT 暴露成入参（配置一定是项目级的、一定在 `.run/` 里）
+- 其它固定项同样 MUST NOT 暴露：脚本恒定继承 IDE 的环境（`pass-parent-envs="true"`）、
+  恒定跑在 Run 工具窗口而非终端（`EXECUTE_IN_TERMINAL=false`）
 - 文件形状 MUST 与 IDE 自己写的字节一致：8 个业务 option（`SCRIPT_*` / `INTERPRETER_*` /
   `EXECUTE_*`）+ `<envs>` + `<method>`，`INDEPENDENT_*` 三行带 `true`；属性值 MUST 转义
   （`& < > "`，换行写成 `&#10;`——XML 属性里的原始换行会被规整成空格）；

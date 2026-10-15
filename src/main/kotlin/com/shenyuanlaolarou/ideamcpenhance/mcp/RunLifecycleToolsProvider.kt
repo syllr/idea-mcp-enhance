@@ -253,7 +253,7 @@ private class CreateRunConfigurationTool : BaseRunTool() {
             )
         }
 
-        val storagePath = resolveRunConfigurationPath(project, name, arguments.optionalString("filePath"))
+        val storagePath = runConfigurationFilePath(project, name)
             ?: return errorResult(
                 "Could not resolve the project root, so there is nowhere to store the new configuration.",
                 null,
@@ -284,8 +284,9 @@ private class CreateRunConfigurationTool : BaseRunTool() {
         // 目标文件已存在就拒绝：没有 delete 工具，不悄悄覆盖用户在 IDE 里改好的文件
         if (Files.exists(Path.of(storagePath))) {
             return errorResult(
-                "A file already exists at $storagePath. Nothing was created or overwritten — " +
-                    "delete it in the IDE (there is deliberately no delete tool) or pass another `filePath`.",
+                "A file already exists at $storagePath, so a configuration named \"$name\" is already there. " +
+                    "Nothing was created or overwritten — delete it in the IDE (there is deliberately no delete " +
+                    "tool) or pick another name.",
                 null,
             )
         }
@@ -327,9 +328,7 @@ private class CreateRunConfigurationTool : BaseRunTool() {
                 workingDirectory = arguments.optionalString("workingDirectory"),
                 interpreterPath = arguments.optionalString("interpreterPath"),
                 interpreterOptions = arguments.optionalString("interpreterOptions"),
-                executeInTerminal = arguments.optionalBoolean("executeInTerminal", false),
                 envs = arguments.stringMap("envs"),
-                passParentEnvs = arguments.optionalBoolean("passParentEnvs", true),
             )
             if (scriptPath != null && !scriptFileExists(project, scriptPath)) {
                 warnings += "The script file \"$scriptPath\" does not exist yet — " +

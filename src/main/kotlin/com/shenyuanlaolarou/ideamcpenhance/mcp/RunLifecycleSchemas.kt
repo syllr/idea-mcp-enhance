@@ -492,12 +492,12 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
     Optional shell details: `scriptOptions` (arguments), `workingDirectory` (defaults to the
     template default when omitted), `interpreterPath` (e.g. `/bin/zsh`; omitted = template default),
     `interpreterOptions`, `envs` (extra environment variables as a JSON object; merged over the
-    inherited environment unless `passParentEnvs` is false), `passParentEnvs` (default true),
-    `executeInTerminal` (default false).
+    environment the script inherits from the IDE).
 
-    `filePath` decides where the file goes (relative to the project root, or absolute). By default
-    the file is named after the configuration, in the project's `.run/` directory — matching what the
-    IDE itself does. Pass it explicitly when you want a different location or file name.
+    Everything else is fixed and therefore not exposed: the file always lands in the project's
+    `.run/` directory named after the configuration, the script always inherits the IDE's
+    environment, and it always runs in the Run tool window rather than a terminal.
+
 
     This tool writes that file directly and the IDE picks it up live (its `*.run.xml` watcher
     registers the new configuration, usually within a second or two). The result reports whether
@@ -555,20 +555,7 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
                 "object",
                 "Extra environment variables as a JSON object of string to string " +
                     "(e.g. `{\"PORT\": \"3201\"}`). They are merged over the inherited environment unless " +
-                    "`passParentEnvs` is false.",
-            ),
-            "passParentEnvs" to property(
-                "boolean",
-                "Whether the script inherits the IDE's environment. Defaults to true.",
-            ),
-            "executeInTerminal" to property(
-                "boolean",
-                "Run it in a terminal instead of the Run tool window. Defaults to false.",
-            ),
-            "filePath" to property(
-                "string",
-                "Where to store it: a path relative to the project root (e.g. `.run/my-app.run.xml`) or an absolute " +
-                    "path. Defaults to `.run/<configurationName>.run.xml` in the project — the same rule the IDE uses.",
+                    "inherits from the IDE.",
             ),
             "projectPath" to projectPathProperty(),
         ),

@@ -46,14 +46,13 @@ class RunLifecycleSchemaTest {
 
     @Test
     fun `create 工具的入参契约`() {
-        // 只建 Shell 类型：没有 `type` 参数；文件落点由 filePath 决定（默认 .run/<配置名>.run.xml）。
+        // 只建 Shell 类型：没有 `type` 参数。落点/是否继承环境/是否终端运行都是写死的，不开放给调用方。
         // 三选一：scriptPath / scriptText / cloneFrom。
         val schema = toolByName(CREATE_TOOL_NAME).descriptor.inputSchema
         assertEquals(
             setOf(
                 "configurationName", "scriptPath", "scriptText", "cloneFrom", "scriptOptions",
-                "workingDirectory", "interpreterPath", "interpreterOptions", "envs",
-                "passParentEnvs", "executeInTerminal", "filePath", "projectPath",
+                "workingDirectory", "interpreterPath", "interpreterOptions", "envs", "projectPath",
             ),
             schema.propertiesSchema.keys,
         )
@@ -85,9 +84,7 @@ class RunLifecycleSchemaTest {
                 workingDirectory = "scripts",
                 interpreterPath = "/bin/zsh",
                 interpreterOptions = null,
-                executeInTerminal = false,
                 envs = mapOf("PORT" to "3201"),
-                passParentEnvs = true,
             ),
         )
         assertTrue(xml, xml.contains("name=\"my-app\""))
@@ -104,7 +101,7 @@ class RunLifecycleSchemaTest {
     fun `shellRunConfigurationXml 内联脚本转义换行与特殊字符`() {
         val xml = shellRunConfigurationXml(
             "t",
-            ShellRunSpec(null, "echo a&b\nsleep 1", null, null, null, null, false, emptyMap(), true),
+            ShellRunSpec(null, "echo a&b\nsleep 1", null, null, null, null, emptyMap()),
         )
         assertTrue(xml, xml.contains("EXECUTE_SCRIPT_FILE\" value=\"false\""))
         val line = xml.lines().first { it.contains("SCRIPT_TEXT") }

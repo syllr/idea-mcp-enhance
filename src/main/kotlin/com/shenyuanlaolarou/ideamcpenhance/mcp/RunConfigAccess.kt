@@ -202,19 +202,12 @@ internal suspend fun awaitPendingStart(
 /**
  * 解析"新配置落到哪个文件"。
  *
- * 约定与现状一致：**配置叫什么，文件就叫什么**（`.run/node-server.run.xml` ↔ 配置 `node-server`）。
- * 所以默认路径就是 `<project>/.run/<配置名>.run.xml`；调用方也可以显式传 [filePath]
- * （相对项目根，或绝对路径）来决定落点——落点本身是调用方的选择，不是本工具该操心的规则。
- *
- * @param filePath 相对项目根的路径（例如 `.run/my-app.run.xml`）或绝对路径；null = 用默认值
+ * 约定与现状一致：**配置叫什么，文件就叫什么**（`.run/node-server.run.xml` ↔ 配置 `node-server`），
+ * 固定落 `<project>/.run/<配置名>.run.xml`。落点不做成入参：配置一定是项目级的、一定在 `.run/` 里，
+ * 由配置名唯一决定，没有第二种选择暴露给调用方。
  */
-internal fun resolveRunConfigurationPath(project: Project, name: String, filePath: String?): String? {
-    val requested = filePath?.trim()?.takeIf { it.isNotEmpty() } ?: return project.basePath
-        ?.let { FileUtil.toSystemIndependentName(Path.of(it, ".run", "$name.run.xml").toString()) }
-    val path = Path.of(requested)
-    val resolved = if (path.isAbsolute) path else project.basePath?.let { Path.of(it, requested) } ?: return null
-    return FileUtil.toSystemIndependentName(resolved.toString())
-}
+internal fun runConfigurationFilePath(project: Project, name: String): String? =
+    project.basePath?.let { FileUtil.toSystemIndependentName(Path.of(it, ".run", "$name.run.xml").toString()) }
 
 /** Shell Script 配置类型的 id（`ShConfigurationType`，显示名 "Shell Script"）。本工具只建这种。 */
 internal const val SHELL_CONFIGURATION_TYPE_ID = "ShConfigurationType"
@@ -233,9 +226,7 @@ internal data class ShellRunSpec(
     val workingDirectory: String?,
     val interpreterPath: String?,
     val interpreterOptions: String?,
-    val executeInTerminal: Boolean,
     val envs: Map<String, String>,
-    val passParentEnvs: Boolean,
 )
 
 /** 写完 `.run.xml` 后等 IDE 文件监听注册它的上限。 */
@@ -293,7 +284,7 @@ internal fun shellRunConfigurationXml(name: String, spec: ShellRunSpec, beforeRu
     val method = if (beforeRunInnerXml.isBlank()) "<method v=\"2\" />"
     else "<method v=\"2\">$beforeRunInnerXml</method>"
     val envs = if (spec.envs.isEmpty()) "<envs />" else buildString {
-        append("<envs pass-parent-envs=\"${spec.passParentEnvs}\">")
+        append("<envs pass-parent-envs=\"true\">")
         for ((k, v) in spec.envs) append("<env name=\"${xmlEscapeAttr(k)}\" value=\"${xmlEscapeAttr(v)}\" />")
         append("</envs>")
     }
@@ -308,7 +299,7 @@ internal fun shellRunConfigurationXml(name: String, spec: ShellRunSpec, beforeRu
         "    <option name=\"INDEPENDENT_INTERPRETER_PATH\" value=\"true\" />\n" +
         "    <option name=\"INTERPRETER_PATH\" value=\"${xmlEscapeAttr(spec.interpreterPath.orEmpty())}\" />\n" +
         "    <option name=\"INTERPRETER_OPTIONS\" value=\"${xmlEscapeAttr(spec.interpreterOptions.orEmpty())}\" />\n" +
-        "    <option name=\"EXECUTE_IN_TERMINAL\" value=\"${spec.executeInTerminal}\" />\n" +
+        "    <option name=\"EXECUTE_IN_TERMINAL\" value=\"false\" />\n" +
         "    <option name=\"EXECUTE_SCRIPT_FILE\" value=\"$executeScriptFile\" />\n" +
         "    $envs\n" +
         "    $method\n" +
