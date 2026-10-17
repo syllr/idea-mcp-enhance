@@ -161,8 +161,8 @@ internal fun deploymentWarnings(
     if (options.overwriteAll) {
         add(
             "overwriteAll = true: every file is re-uploaded on each upload (the size+mtime \"skip unchanged\" " +
-                "check is bypassed). Uncheck \"Overwrite all files when uploading\" in Deployment | Options to " +
-                "upload only changes.",
+                "check is bypassed). Uncheck \"Overwrite up-to-date files\" in Settings | Build, Execution, " +
+                "Deployment | Deployment | Options to upload only changes.",
         )
     }
 
