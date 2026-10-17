@@ -7,21 +7,26 @@
   扩展点全名：com.intellij.mcpServer.mcpToolsProvider
 -->
 <idea-plugin>
+    <!--
+      Deployment 工具还额外需要 com.jetbrains.plugins.webDeployment（FTP/SFTP/WebDAV Connectivity，
+      **仅 Ultimate 有**）。它是**再一层** optional 依赖，注册内容在 deployment.xml 里。
+
+      链式是平台支持的：PluginDescriptorLoader.loadPluginDependencyDescriptors 解析出 config-file 后
+      会对那个子描述符**递归调用自己**（并带 checkCycle 防环），所以只有 MCP Server 与 webDeployment
+      **都在**时 deployment.xml 才会被读取、工具才会被注册。
+
+      为什么不把这条依赖写在 plugin.xml：
+        ① 裸写 `<depends optional="true">`（不带 config-file）会被 Marketplace 的结构校验警告
+           "Optional dependency declaration ... should specify config-file"；
+        ② 直接在 plugin.xml 里配 config-file，又会要求 MCP Server 与 webDeployment 同时存在才能解析
+           `mcpServer.*` 扩展点命名空间 —— MCP Server 缺失时插件反而加载失败。
+      挂在 mcpserver.xml 下面就没有这两个问题：命名空间的前提（MCP Server）已经由上一层保证了。
+    -->
+    <depends optional="true" config-file="deployment.xml">com.jetbrains.plugins.webDeployment</depends>
+
     <extensions defaultExtensionNs="com.intellij">
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
-
-        <!--
-          Deployment 工具（列服务器等）。
-          与上面那个 provider 的差别：这些工具还额外需要 com.jetbrains.plugins.webDeployment
-          （FTP/SFTP/WebDAV Connectivity，**仅 Ultimate 有**）。
-          这里直接注册是安全的：provider 自己在 getTools() 里做运行时检查，插件不在就返回空列表，
-          工具根本不出现在 tools/list 里，也不会去加载任何引用该插件的类。
-          为什么不另开一个 optional 依赖的 config-file：那样要求 MCP Server 与 webDeployment 同时存在
-          才能解析扩展点命名空间，反而会在 MCP Server 缺失时让插件加载失败。
-        -->
-        <mcpServer.mcpToolsProvider
-                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.DeploymentToolsProvider"/>
 
         <!--
           给每个新建的进程盖上"属于哪个 Run Configuration"。原因见

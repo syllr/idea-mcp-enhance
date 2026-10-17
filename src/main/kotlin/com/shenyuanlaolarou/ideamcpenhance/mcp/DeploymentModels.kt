@@ -206,12 +206,10 @@ internal fun deploymentWarnings(
                     "dialog, which blocks the MCP call. Fix the credentials in the IDE first.",
             )
         }
-        if (server.needsTransfer && server.mappings.isEmpty()) {
-            add(
-                "\"${server.name}\" has no path mapping in this project, so upload/download would have no files " +
-                    "to work on. Add a Mapping in its Deployment settings.",
-            )
-        }
+        // 刻意**不**检查 mappings 是否为空：平台会给每台服务器都物化一份 ServerData
+        // （`doLoadState` 结尾对每台 `getServerData(id)`），没配过也会补一条"项目根 → 服务器根"
+        // 的默认映射 ⇒ 这个列表几乎不可能为空；而"为空 ⇒ 无事可做"的推论本身也不成立
+        // （真没配时照样会把整个项目传上去）。何况那是用户的配置，IDE 自己已经校验过。
     }
 }
 

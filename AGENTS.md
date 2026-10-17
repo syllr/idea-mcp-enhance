@@ -64,18 +64,18 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
     ├── DeploymentModels.kt          纯数据 + 纯函数：服务器快照 → JSON + 风险提示
     ├── DeploymentSchemas.kt         工具描述符 / 输入 schema / 输出 schema
     ├── DeploymentAccess.kt          平台接线：**全插件唯一** import webDeployment 的文件
-    └── DeploymentToolsProvider.kt   McpTool + 运行时插件存在性检查
+    └── DeploymentToolsProvider.kt   McpTool（前提由 config-file 把守）
 ```
 
-| 层                                       | 允许                                               | 禁止                                      | 测试方式                                            |
-| ---------------------------------------- | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------- |
-| `prompt/format/`                         | 字符串操作                                         | 平台 import、IO、环境变量                 | 纯 JUnit 4（秒级）                                  |
-| `mcp/RunLifecycleModels` / `Schemas`     | 字符串、JsonObject、mcpserver 的 descriptor 类型   | 平台 import、IO                           | 纯 JUnit 4（秒级）                                  |
-| `prompt/actions/`、`mcp/RunConfigAccess` | 平台 API                                           | 字符串格式化 / 手写 JSON                  | `BasePlatformTestCase`（见「已知阻塞」）或 `runIde` |
-| `mcp/RunLifecycleToolsProvider`          | 编排：解析参数 → 调接线层 → 包 `McpToolCallResult` | 直接操作 `ProcessHandler`                 | 描述符 + 参数解析有单测                             |
-| `mcp/DeploymentModels` / `Schemas`       | 字符串、JsonObject、mcpserver 的 descriptor 类型   | 平台 import、IO、**webDeployment import** | 纯 JUnit 4（秒级）                                  |
-| `mcp/DeploymentAccess`                   | webDeployment + 平台 API（**全插件唯一允许处**）   | 字符串格式化 / 手写 JSON                  | 只能 `runIde` 手工验证（需要真的服务器）            |
-| `mcp/DeploymentToolsProvider`            | 编排 + **运行时插件存在性检查**                    | 在检查之前碰 webDeployment 类型           | 描述符 / 纯函数有单测                               |
+| 层                                       | 允许                                                | 禁止                                      | 测试方式                                            |
+| ---------------------------------------- | --------------------------------------------------- | ----------------------------------------- | --------------------------------------------------- |
+| `prompt/format/`                         | 字符串操作                                          | 平台 import、IO、环境变量                 | 纯 JUnit 4（秒级）                                  |
+| `mcp/RunLifecycleModels` / `Schemas`     | 字符串、JsonObject、mcpserver 的 descriptor 类型    | 平台 import、IO                           | 纯 JUnit 4（秒级）                                  |
+| `prompt/actions/`、`mcp/RunConfigAccess` | 平台 API                                            | 字符串格式化 / 手写 JSON                  | `BasePlatformTestCase`（见「已知阻塞」）或 `runIde` |
+| `mcp/RunLifecycleToolsProvider`          | 编排：解析参数 → 调接线层 → 包 `McpToolCallResult`  | 直接操作 `ProcessHandler`                 | 描述符 + 参数解析有单测                             |
+| `mcp/DeploymentModels` / `Schemas`       | 字符串、JsonObject、mcpserver 的 descriptor 类型    | 平台 import、IO、**webDeployment import** | 纯 JUnit 4（秒级）                                  |
+| `mcp/DeploymentAccess`                   | webDeployment + 平台 API（**全插件唯一允许处**）    | 字符串格式化 / 手写 JSON                  | 只能 `runIde` 手工验证（需要真的服务器）            |
+| `mcp/DeploymentToolsProvider`            | 编排（前提由 config-file 把守，**没有**运行时检查） | 在 EP 注册之前碰 webDeployment 类型       | 描述符 / 纯函数有单测                               |
 
 测试根: `src/test/kotlin/com/shenyuanlaolarou/ideamcpenhance/`
 
@@ -228,7 +228,7 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - **写完 `.run.xml` MUST 调 `LocalFileSystem.refreshAndFindFileByNioFile`**，别只用 `Files.writeString`：`RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，纯 nio 写的文件 VFS 注意不到就**既不触发监听器也不进配置列表**（实测：文件确实落盘，但 IDE 等满 3 秒也没注册，工具只能如实报"尚未加载"）。刷新一次就正常（实测 `canRun` 立刻变 true，`rerun` 立刻能跑）。两个入口都是公开 API，也都不在 `execution.impl` 包里
 - **克隆 = 读源文件改名**：只换 `<configuration>` 标签里的 `name`，`run_configuration_name`（别人的引用）不动；源不在 `.run/` 里必须拒绝
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本
-- **`com.jetbrains.plugins.webDeployment` 是产品内部实现，不是平台 API**：包名是 `com.jetbrains.*` 而不是 `com.intellij.*` —— 没有文档、没有稳定性承诺，而且**只在 Ultimate 里存在**（它依赖 `com.intellij.modules.ultimate`）。它没被标 `@ApiStatus.Internal`，所以 Plugin Verifier 不会拦，但这**不等于**它是公开 API。规矩：引用它的类**只能在运行时确认插件存在之后**才加载（见 `mcp/DeploymentToolsProvider.kt` 的 KDoc，`getTools()` 里那个存在性检查是**运行时**的，不是 EP 依赖——为什么不另开 config-file 也在那份 KDoc 里），且全插件的引用集中在 `mcp/DeploymentAccess.kt` 一个文件里
+- **`com.jetbrains.plugins.webDeployment` 是产品内部实现，不是平台 API**：包名是 `com.jetbrains.*` 而不是 `com.intellij.*` —— 没有文档、没有稳定性承诺，而且**只在 Ultimate 里存在**（它依赖 `com.intellij.modules.ultimate`）。它没被标 `@ApiStatus.Internal`，所以 Plugin Verifier 不会拦，但这**不等于**它是公开 API。规矩：引用它的类**只能在确认插件存在之后**才加载——靠的是**链式 optional 依赖**（`plugin.xml` → `mcpserver.xml` → `deployment.xml`，平台会递归加载 config-file；实测禁用 webDeployment 后平台日志会打印 `<depends> config 'deployment.xml' ... excluded`），且全插件的引用集中在 `mcp/DeploymentAccess.kt` 一个文件里。**这条依赖不能裸写在 `plugin.xml`**（Marketplace 结构校验会警告 optional 依赖缺 `config-file`），也不能直接给 `plugin.xml` 那条配 `config-file`（会要求 MCP Server 与 webDeployment 同时存在才能解析 `mcpServer.*` 命名空间，MCP Server 缺失时插件反而加载失败）。**也不要为此加"运行时存在性检查"**：`PluginManagerCore.getPlugin` 与 `PluginManager.findEnabledPlugin` **都是 `@ApiStatus.Internal`**（后者是 Plugin Verifier 实测报出来的），而 config-file 已经把"插件不在"挡在注册之前了，那层检查纯属冗余
 - **Deployment 的两类配置粒度不同，很容易读错**：`Mappings` 与 `Excluded paths` 是**按服务器**的（存在 `PublishConfig$ServerData`，按服务器名/ID 索引），而**其余全部选项**（`overwriteAll`、`deleteMissingItems`、确认开关、自动上传、排除掩码、权限）都是**项目级、所有服务器共用**。所以 `list_deployment_servers` 返回里的 `options` 描述的是"这个项目的部署策略"，不是"某个服务器的属性"——想按环境差异化行为只能靠调用参数（`PublishConfig.clone()` 改一份副本传给 `TransferTask`，不碰用户的持久配置），不能靠配置本身
 - **`overwriteAll` 的语义与字面相反**：`true`（**默认值**）表示"不做 size+mtime 比较、每次全量覆盖"——`TransferOperation.copyFile` 里是 `if (!isOverwriteAll()) { if (isUpToDate(remote, local, server)) skip }`，为 true 时那段跳过逻辑压根不执行。配套的 `preserveTimestamps`（默认 true）是"上传后把远端 mtime 设成本地 mtime"，**关掉它下次就再也没法跳过**（mtime 对不上）
 - **"删远端多余"靠 `deleteMissingItems`，它不是"上传的某个参数"**：上传任务走 `DeploymentMode.CUSTOM`（`TransferTask` 的构造器默认就传它），`CUSTOM.sourceNotExist` 里判 `isDeleteMissingItems()` 决定是否生成 `Delete`；若 `confirmBeforeDeletion` 为 true 则生成 `UserConfirmedDelete` —— **那个会弹模态框**，MCP 路径必须回避（`PublishConfig.clone()` 里强制设 false）

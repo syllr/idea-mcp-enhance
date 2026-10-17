@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-10-17
+
+### Fixed
+
+- **Deployment 工具按名字找得到服务器了**：`serverName` 传 `list_deployment_servers` 里的 `servers[].name`（显示名）即可。此前它被当成服务器 id（UUID）去比，于是**任何**显式指定名字的 upload/download 都直接失败，报的还是自相矛盾的 `No deployment server named "X" … Existing: [X]`。
+- **路径映射现在读的是你在 Deployment 设置里配的那份**：`list_deployment_servers` 的 `mappings[]`，以及 upload/download 用到的本地根，都按服务器 **id** 读取。此前查询用的是显示名，平台因此每次都返回一份当场补出来的"项目根 → 服务器根"默认映射（非空、看起来完全正常），你配的子目录 / 多条映射 / 自定义 deploy 路径实际上被忽略。
+- **上传失败不再伪装成成功**：`upload_to_deployment` 与 `get_deployment_task_status` 在失败时（平台只给一个布尔结果，`failed` 计数甚至可能是 0）以前会输出 `Uploaded to "X": 0 operation(s) …`，读起来像传完了；现在明确写 `FAILED before any operation ran` / `FAILED after N operation(s)`，并指向 IDE 的 Deployment 日志找原因。
+
+### Changed
+
+- `list_deployment_servers` 的文本摘要逐行列出每台服务器的名字，并在默认那台上标 `(default)` —— 客户端即使不读 structuredContent，也能据此决定 `serverName`。
+- Deployment 工具的可选依赖改为**链式 config-file**（`plugin.xml` → `mcpserver.xml` → `deployment.xml`）：没装 Deployment 插件时这些工具不注册，插件其余部分照常加载。顺带去掉了原先那段运行时存在性检查（它用的 `PluginManager.findEnabledPlugin` 是 `@ApiStatus.Internal`）。
+
+### Removed
+
+- 一条永远不可能触发的告警（"has no path mapping … nothing to work on"）：平台会给每台服务器补一份默认映射，这个列表几乎不可能为空；而"为空 ⇒ 无事可做"的推论本身也不成立。
+
 ## [0.0.2] - 2026-10-17
 
 ### Added
@@ -72,6 +89,7 @@
 - `rerun_run_configuration` 用配置**名字**定位，不支持 `file:line` 代码位置。
 - **内置 `get_run_configurations` 的 `filePath` 模式未实现**：给定一个文件、列出该文件里可执行的入口点（IDE 行号槽上出现 Run 图标的位置），那需要整套 PSI / `RunConfigurationProducer` / `ConfigurationFromContext` 能力。本插件刻意不碰 PSI（prompt 那半也不碰），因此这块仍由内置工具承担，两个工具组合使用即可。
 
-[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...HEAD
+[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.3...HEAD
+[0.0.3]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...0.0.3
 [0.0.2]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.1...0.0.2
 [0.0.1]: https://github.com/syllr/idea-mcp-enhance/commits/0.0.1

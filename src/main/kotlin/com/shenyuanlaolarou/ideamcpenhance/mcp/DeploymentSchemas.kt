@@ -35,7 +35,11 @@ private val DEPLOYMENT_MAPPING_SCHEMA: JsonObject = buildJsonObject {
     put("description", JsonPrimitive("One path mapping of this server within the current project."))
     put("properties", properties(
         "localPath" to property("string", "Local directory this mapping takes files from."),
-        "deployPath" to property("string", "Remote directory those files are deployed to (relative to the server root folder)."),
+        "deployPath" to property(
+            "string",
+            "Remote directory those files are deployed to, relative to the server root folder. " +
+                "Empty means the server's rootFolder itself.",
+        ),
         "webPath" to property("string", "Web path used for browsing the deployed files; unrelated to the actual transfer."),
     ))
     put("required", buildJsonArray {
@@ -78,7 +82,7 @@ private val DEPLOYMENT_SERVER_SCHEMA: JsonObject = buildJsonObject {
         "isDefault" to property("boolean", "true for the server (or a member of the group) currently set as default."),
         "mappings" to arrayOf(
             DEPLOYMENT_MAPPING_SCHEMA,
-            "Path mappings of this server in the current project. Empty means upload/download have no files to work on.",
+            "Path mappings of this server in the current project — the local roots upload/download work on.",
         ),
     ))
     put("required", buildJsonArray {

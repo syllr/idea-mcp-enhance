@@ -15,6 +15,39 @@
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-10-17
+
+### Fixed
+
+- **The Deployment tools now find a server by its name**: pass the display name from `list_deployment_servers`
+  (`servers[].name`) as `serverName`. It used to be compared against the server's id (a UUID), so **every**
+  upload/download that named a server failed outright — with the self-contradictory
+  `No deployment server named "X" … Existing: [X]`.
+- **Path mappings are now read from what you configured in Deployment settings**: `mappings[]` in
+  `list_deployment_servers`, and the local roots upload/download work on, are read by **server id**. The lookup
+  used to pass the display name, so the platform returned a freshly fabricated "project root → server root"
+  mapping every time — non-empty and perfectly plausible, while your sub-directories, multiple mappings and
+  custom deploy paths were silently ignored.
+- **A failed upload no longer reads like a success**: when the platform reports failure (it only returns a
+  boolean, and the `failed` counter can be 0), `upload_to_deployment` and `get_deployment_task_status` used to
+  print `Uploaded to "X": 0 operation(s) …`. They now say `FAILED before any operation ran` /
+  `FAILED after N operation(s)` and point at the IDE's Deployment log for the cause.
+
+### Changed
+
+- The text summary of `list_deployment_servers` lists every server name, marking the default one with
+  `(default)`, so a client can pick a `serverName` without reading structuredContent.
+- The optional dependency on the Deployment plugin is now a **chained config-file**
+  (`plugin.xml` → `mcpserver.xml` → `deployment.xml`): without that plugin the deployment tools are simply not
+  registered and the rest of the plugin loads as usual. The former runtime existence check is gone — it used
+  `PluginManager.findEnabledPlugin`, which is `@ApiStatus.Internal`.
+
+### Removed
+
+- A warning that could never fire ("has no path mapping … nothing to work on"): the platform materialises a
+  default mapping for every server, so that list is practically never empty — and "empty means nothing to do"
+  was not true anyway.
+
 ## [0.0.2] - 2026-10-17
 
 ### Added

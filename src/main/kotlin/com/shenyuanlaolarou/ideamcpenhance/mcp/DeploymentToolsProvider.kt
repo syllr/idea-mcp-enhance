@@ -1,12 +1,10 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
-import com.intellij.ide.plugins.PluginManager
 import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.McpToolDescriptor
 import com.intellij.mcpserver.McpToolsProvider
 import com.intellij.mcpserver.projectOrNull
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.jetbrains.plugins.webDeployment.config.PublishConfig
 import kotlinx.serialization.json.JsonObject
@@ -21,56 +19,50 @@ import kotlin.coroutines.coroutineContext
  * `com.jetbrains.plugins.webDeployment` 这个**只在 Ultimate 里存在**的插件
  * （它依赖 `com.intellij.modules.ultimate`）。
  *
- * ## 为什么用运行时检查，而不是再开一个 optional 依赖的 config-file
+ * ## 前提条件由**链式 optional 依赖**把守（不是运行时检查）
  *
- * 另一个做法是在 `plugin.xml` 里写
- * `<depends optional="true" config-file="deployment.xml">com.jetbrains.plugins.webDeployment</depends>`，
- * 再把 provider 注册在那个文件里。没有采用，因为那样要求 **MCP Server 与 webDeployment 同时存在**
- * 才能解析文件里的扩展点命名空间；MCP Server 缺失时反而会让插件加载失败。
+ * ```
+ * plugin.xml     → mcpserver.xml    （com.intellij.mcpServer）
+ * mcpserver.xml  → deployment.xml   （com.jetbrains.plugins.webDeployment）
+ * ```
  *
- * 运行时检查没有这个问题：webDeployment 不在时 [getTools] 直接返回空列表，
- * 工具不出现在 `tools/list` 里，插件其余部分照常工作。
+ * 平台支持这样链：`PluginDescriptorLoader.loadPluginDependencyDescriptors` 解析出 config-file 后，
+ * 会对那个子描述符**递归调用自己**（并带 `checkCycle` 防环）。于是只有两个插件**都在**时，
+ * `deployment.xml` 才会被读取、本 provider 才会被注册。实测（禁用 webDeployment 后启动）平台日志：
  *
- * ## 类加载隔离（这里的关键）
+ * ```
+ * plugin 'FTP/SFTP/WebDAV Connectivity' (...) is marked disabled
+ *   └ ... <depends> config 'deployment.xml' of plugin com.shenyuanlaolarou.ideamcpenhance excluded
+ * ```
  *
- * 引用 `com.jetbrains.plugins.webDeployment.*` 的类**只能在确认插件存在之后**才被加载。
- * JVM 是按方法惰性解析引用类的（HotSpot 的 split verifier），所以只要
- * [ListDeploymentServersTool] 是在 [deploymentPluginAvailable] 通过之后才被 `new` 出来，
- * 插件缺失时那条 `new` 就永远不会执行，也就永远不会去解析它引用的那些类。
+ * 为什么不把这条依赖直接写在 `plugin.xml`：
+ *   ① 裸写 `<depends optional="true">`（不带 config-file）会被 Marketplace 的结构校验警告
+ *      "Optional dependency declaration ... should specify config-file"；
+ *   ② 直接在 `plugin.xml` 里配 config-file，会要求 **MCP Server 与 webDeployment 同时存在**
+ *      才能解析 `mcpServer.*` 扩展点命名空间——MCP Server 缺失时插件反而加载失败。
+ * 挂在 `mcpserver.xml` 之下就避开了这两个问题：命名空间的前提由上一层保证。
  *
- * 这正是本仓库对 MCP Server 那条铁律的镜像写法：**引用可选插件的类，必须由运行时的存在性检查把守**。
- * 平台接线的引用全部集中在 `DeploymentAccess` 一个文件里，就是为了让这件事可推理。
+ * ## 为什么**没有**运行时存在性检查（原先有，已删）
+ *
+ * 两个理由，任一条都足够：
+ *   1. **冗余**：config-file 已经把"插件不在"这件事挡在注册之前了（见上面的实测日志）。
+ *   2. **没有合规的 API**：`PluginManagerCore.getPlugin` 与 `PluginManager.findEnabledPlugin`
+ *      **都是 `@ApiStatus.Internal`**（后者是 Plugin Verifier 实测报出来的），而本仓库硬规则
+ *      禁止使用内部 API。既然前一条已经保证正确性，就不该为"第二道防线"去踩这条规则。
+ *
+ * 于是 [getTools] 无条件返回四个工具——provider 存在 ⇒ webDeployment 一定在。
+ *
+ * 平台接线的引用全部集中在 `DeploymentAccess` 一个文件里，是为了让这件事可推理。
  */
 class DeploymentToolsProvider : McpToolsProvider {
 
-    override fun getTools(): List<McpTool> =
-        if (deploymentPluginAvailable()) {
-            listOf(
-                ListDeploymentServersTool(),
-                UploadToDeploymentTool(),
-                DownloadFromDeploymentTool(),
-                GetDeploymentTaskStatusTool(),
-            )
-        } else {
-            emptyList()
-        }
+    override fun getTools(): List<McpTool> = listOf(
+        ListDeploymentServersTool(),
+        UploadToDeploymentTool(),
+        DownloadFromDeploymentTool(),
+        GetDeploymentTaskStatusTool(),
+    )
 }
-
-/** Deployment 插件（FTP/SFTP/WebDAV Connectivity）的 ID。大小写敏感。 */
-private const val DEPLOYMENT_PLUGIN_ID = "com.jetbrains.plugins.webDeployment"
-
-/**
- * 这个 IDE 上有没有**已加载并启用**的 Deployment 插件。
- *
- * 用 [PluginManager.findEnabledPlugin] 而不是 `PluginManagerCore.getPlugin`：后者被标了
- * `@ApiStatus.Internal`（本仓库禁用内部 API，见 AGENTS.md）。前者是公开 API，而且语义更准——
- * 我们要的是"能用"，不只是"装过"（装了但被禁用同样不行）。
- *
- * 判断本身不引用 webDeployment 的任何类型，所以可以安全地在类加载前调用——这正是下面那套
- * 类加载隔离的前提。
- */
-private fun deploymentPluginAvailable(): Boolean =
-    PluginManager.getInstance().findEnabledPlugin(PluginId.getId(DEPLOYMENT_PLUGIN_ID)) != null
 
 /**
  * 工具共用的骨架：兜住异常 → 跑具体逻辑。
@@ -120,15 +112,34 @@ private class ListDeploymentServersTool : BaseDeploymentTool() {
             warnings = deploymentWarnings(defaultName, servers, options),
         )
 
+        // summary 必须自带「有哪些服务器、哪台是默认」：这两条是调用方决定**要不要传 serverName**
+        // 的前提（不传就落到默认那台），而完整字段只在 structuredContent 里 —— 客户端是否读它不可控，
+        // 只有 text 会稳定到达。把它们塞进 text，调用方就不必依赖 structuredContent 才能做选择。
+        //
+        // (default) 标记打在每台自己身上，而不是只在首行写一次名字：这样台数一多也不用把首行和
+        // 列表逐个对名字，名字相近或重名时不会看错。
         val summary = when {
             servers.isEmpty() ->
                 "No deployment servers are configured for this project."
 
-            defaultName == null ->
-                "Found ${servers.size} deployment server(s), but no default server or group is set."
-
-            else ->
-                "Found ${servers.size} deployment server(s); default: \"$defaultName\"."
+            else -> {
+                // 默认服务器是**组**（而不是某台具体服务器）时，没有哪台能挂 (default)，
+                // 所以这种情况要在首行说出来 —— 否则「默认是谁」这一信息就整个丢了。
+                val defaultClause = when {
+                    defaultName == null -> " no default server or group is set."
+                    servers.none { it.name == defaultName } -> " the default is a group named \"$defaultName\"."
+                    else -> ""
+                }
+                buildString {
+                    append("Found ").append(servers.size).append(" deployment server(s);")
+                    append(defaultClause).append('\n')
+                    servers.forEach { server ->
+                        append("- \"").append(server.name.ifEmpty { "(unnamed)" }).append('"')
+                        if (server.name == defaultName) append(" (default)")
+                        append('\n')
+                    }
+                }.trimEnd('\n')
+            }
         }
         return McpToolCallResult.text(summary, report.toJson())
     }
@@ -176,7 +187,7 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
             ?: return McpToolCallResult.error("Could not read this project's deployment configuration.", null)
 
         val serverName = server.getName().orEmpty()
-        val roots = runCatching { config.getPathMappings(serverName) }.getOrNull().orEmpty()
+        val roots = pathMappingsOf(config, server)
             .mapNotNull { mapping ->
                 runCatching { mapping.localPath }.getOrNull()?.takeIf { it.isNotEmpty() }
             }
@@ -211,12 +222,23 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
         // ⚠️ 粒度是平台自己定的，**不是"文件数"**：实测删掉一个含 400 个文件的目录，`deleted` 也只是 1
         // （它数的是"删除操作"）。所以文案写"delete operation(s)"，不写 file(s)。
         val deleted = outcome.counters.entries.firstOrNull { it.key.contains("deleted") }?.value ?: 0
-        val summary = buildString {
-            append("Uploaded to \"").append(outcome.serverName).append("\" (mode=").append(mode).append("): ")
-            append(outcome.totalProcessed).append(" operation(s)")
-            if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
-            if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
-            append(" in ").append(outcome.elapsedMs).append("ms. handle=").append(outcome.handle)
+        // 失败时不能沿用成功措辞：平台只给一个 succeeded=false，连 failed 计数都可能是 0
+        // （实测连不上主机时就是 "0 operation(s)"），读起来跟"传完了"一模一样。
+        val summary = if (outcome.succeeded) {
+            buildString {
+                append("Uploaded to \"").append(outcome.serverName).append("\" (mode=").append(mode).append("): ")
+                append(outcome.totalProcessed).append(" operation(s)")
+                if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
+                if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
+                append(" in ").append(outcome.elapsedMs).append("ms. handle=").append(outcome.handle)
+            }
+        } else {
+            buildString {
+                append("Upload to \"").append(outcome.serverName).append("\" (mode=").append(mode).append(") FAILED ")
+                appendFailureProgress(outcome)
+                append(". ").append(failureReason(outcome))
+                append(" handle=").append(outcome.handle)
+            }
         }
         return if (outcome.succeeded) {
             McpToolCallResult.text(summary, report.toJson())
@@ -252,6 +274,27 @@ private fun DeploymentTaskOutcome.toReport(roots: List<String>) = DeploymentTask
     counters = counters,
     warnings = warnings,
 )
+
+/**
+ * 失败原因的一句话。
+ *
+ * 平台那条路径只给一个 `succeeded = false`：`doRun` 返回布尔值，具体原因（连不上、权限、
+ * 远端路径解析失败…）它自己记在 Deployment 日志里，不经过我们的返回结构。所以这里优先用
+ * 任务自己填的 warning，没有就指向日志 —— 不臆测原因。
+ */
+private fun failureReason(outcome: DeploymentTaskOutcome): String =
+    outcome.warnings.firstOrNull()
+        ?: "The platform reported no detail; the IDE's Deployment log has the cause."
+
+/** 失败时描述"跑到哪一步"：一个操作都没跑，和"跑了 N 个之后失败"是两回事。 */
+private fun StringBuilder.appendFailureProgress(outcome: DeploymentTaskOutcome) {
+    if (outcome.totalProcessed > 0) {
+        append("after ").append(outcome.totalProcessed).append(" operation(s)")
+        if (outcome.failed > 0) append(", of which ").append(outcome.failed).append(" failed")
+    } else {
+        append("before any operation ran")
+    }
+}
 
 // ---------------------------------------------------------------------------
 // get_deployment_task_status
@@ -296,13 +339,23 @@ private class GetDeploymentTaskStatusTool : BaseDeploymentTool() {
         }
 
         val deleted = outcome.counters.entries.firstOrNull { it.key.contains("deleted") }?.value ?: 0
-        val summary = buildString {
-            append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
-            append(" \"").append(outcome.serverName).append("\" finished in ")
-            append(outcome.elapsedMs).append("ms: ").append(outcome.totalProcessed).append(" operation(s)")
-            if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
-            if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
-            append('.')
+        // 与 upload 同一条规则：失败时不能说 "finished"，否则 "0 operation(s)" 会被读成成功。
+        val summary = if (outcome.succeeded) {
+            buildString {
+                append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
+                append(" \"").append(outcome.serverName).append("\" finished in ")
+                append(outcome.elapsedMs).append("ms: ").append(outcome.totalProcessed).append(" operation(s)")
+                if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
+                if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
+                append('.')
+            }
+        } else {
+            buildString {
+                append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
+                append(" \"").append(outcome.serverName).append("\" FAILED ")
+                appendFailureProgress(outcome)
+                append(". ").append(failureReason(outcome))
+            }
         }
         return if (outcome.succeeded) {
             McpToolCallResult.text(summary, report.toJson())
@@ -343,9 +396,7 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
         }
 
         val serverName = server.getName().orEmpty()
-        val roots = runCatching {
-            publishConfigOf(project).getPathMappings(serverName)
-        }.getOrNull().orEmpty().mapNotNull { mapping ->
+        val roots = pathMappingsOf(publishConfigOf(project), server).mapNotNull { mapping ->
             runCatching { mapping.localPath }.getOrNull()?.takeIf { it.isNotEmpty() }
         }
         if (roots.isEmpty()) {

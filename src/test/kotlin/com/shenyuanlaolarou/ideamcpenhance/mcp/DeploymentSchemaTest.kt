@@ -132,13 +132,6 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `没有映射的服务器会被点名`() {
-        val result = warnings(servers = listOf(server(name = "prod", mappings = emptyList())))
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("no path mapping"))
-    }
-
-    @Test
     fun `配置有问题的服务器会被点名`() {
         val result = warnings(servers = listOf(server(name = "prod", validationIssue = "host is empty")))
         assertEquals(1, result.size)
@@ -146,9 +139,9 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `LOCAL 类型只提示不传输 不再要求凭据和映射`() {
-        // needsTransfer=false 时，凭据与映射两条警告都带 `needsTransfer &&` 前缀，所以不该出现：
-        // 对本地/挂载类型谈"凭据"和"映射"都是噪音。
+    fun `LOCAL 类型只提示不传输 不再要求凭据`() {
+        // needsTransfer=false 时，凭据那条警告带 `needsTransfer &&` 前缀，所以不该出现：
+        // 对本地/挂载类型谈"凭据"是噪音。
         val result = warnings(
             servers = listOf(server(name = "local", needsTransfer = false, hasCredentials = false, mappings = emptyList())),
         )

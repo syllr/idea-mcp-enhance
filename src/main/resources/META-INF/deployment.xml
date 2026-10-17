@@ -1,0 +1,17 @@
+<!--
+  链式 optional 依赖的**里层**：只有 com.intellij.mcpServer（外层，见 plugin.xml）与
+  com.jetbrains.plugins.webDeployment（见 mcpserver.xml）**都在**时，这个文件才会被读取。
+
+  这里注册 Deployment 工具（列服务器 / 上传 / 下载 / 查状态）。它们的类引用了
+  com.jetbrains.plugins.webDeployment.*，因此**必须在确认该插件存在之后才被加载**——
+  config-file 机制正好给的就是这一点：插件不在，这个文件根本不会被读取，
+  这些类也就永远不会被解析。
+
+  扩展点全名：com.intellij.mcpServer.mcpToolsProvider
+-->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <mcpServer.mcpToolsProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.DeploymentToolsProvider"/>
+    </extensions>
+</idea-plugin>

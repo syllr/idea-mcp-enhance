@@ -126,10 +126,7 @@ private fun WebServerConfig.toState(
         hasCredentials = deployable?.let { runCatching { it.hasCredentials() }.getOrDefault(false) } ?: false,
         validationIssue = runCatching { validateFast() }.getOrNull(),
         isDefault = serverName == defaultServerOrGroupName,
-        mappings = runCatching { config.getPathMappings(serverName) }
-            .getOrNull()
-            .orEmpty()
-            .map { it.toState() },
+        mappings = pathMappingsOf(config, this).map { it.toState() },
     )
 }
 
@@ -141,13 +138,47 @@ private fun DeploymentPathMapping.toState(): DeploymentMappingState = Deployment
     webPath = runCatching { webPath }.getOrNull().orEmpty(),
 )
 
+/**
+ * 一台服务器在本项目的路径映射 —— **必须按 id 取**。
+ *
+ * `PublishConfig.getPathMappings(String)` 的形参名就是 `serverId`，平台内部每一处调用都传
+ * `getId()`（`WebServerConfig.isUsedInProject`、部署设置里的 Mappings 页、`PublishConfig` 自己的
+ * `getNearestMapping*` 都是 `getServerData(server.getId())`）。
+ *
+ * **传显示名不会报错，只会读到编造件**：`getServerData(serverId)` 是 get-or-create，
+ * 键查不到时它会 new 一份、调 `addDefaultMappings()` 补一条"每个 content root → 服务器根"
+ * 的默认映射、并写进内存里的 `myState.myServerData`，然后把这它返回给你 —— 看起来完全正常
+ * （`@NotNull`、非空、形状合理），所以错误是静默的。详见 AGENTS.md 的注意事项。
+ *
+ * id 为空（理论上不该发生）时返回空列表：宁可少报映射，也不要拿空串去 miss 一次、白造一份默认。
+ */
+internal fun pathMappingsOf(config: PublishConfig, server: WebServerConfig): List<DeploymentPathMapping> {
+    val serverId = server.id.orEmpty()
+    if (serverId.isEmpty()) return emptyList()
+    return runCatching { config.getPathMappings(serverId) }.getOrNull().orEmpty()
+}
+
 // ---------------------------------------------------------------------------
 // upload / download 共用的平台侧
 // ---------------------------------------------------------------------------
 
-/** 按名字找服务器；找不到就是 null（调用方负责给出候选列表）。 */
+/**
+ * 按**显示名**找服务器；找不到就是 null（调用方负责给出候选列表）。
+ *
+ * 刻意不走平台的 `GroupedServersConfigManager.findServer(name)`：它的形参叫 name，实现里比的却是
+ * `WebServerConfig.getId()`（每台服务器自己的 UUID），所以传显示名永远匹配不上 —— 报出来的是
+ * `No deployment server named "X" … Existing: [X]` 这种自相矛盾的错误（候选列表用 getName 拼，
+ * 查找却按 getId 比）。按名字查的平台方法是 `findByName`，但它返回 `Pair<组, 服务器>`，
+ * 名字命中「组」时 second 为 null，要多一层判空；这里直接用 API 取全部服务器再按 `getName()` 过滤，
+ * 与工具 schema 里「用 `servers[]` 的 name 当 `serverName`」的约定一致。
+ */
 internal fun findDeploymentServer(project: Project, name: String): WebServerConfig? =
-    runCatching { GroupedServersConfigManager.getInstance(project).findServer(name) }.getOrNull()
+    runCatching {
+        // getFlattenedServers() 是 Java 方法、平台类型：没有配置 mapping 时它会返回 null 而不是空列表，
+        // 所以先 orEmpty() 再过滤（同 allDeploymentServers 里的处理）。
+        GroupedServersConfigManager.getInstance(project).flattenedServers.orEmpty()
+            .firstOrNull { it.getName() == name }
+    }.getOrNull()
 
 /**
  * 解析"这次操作哪个服务器"。返回 (server, 失败原因)，两者必有其一。
