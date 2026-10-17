@@ -12,6 +12,18 @@
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
 
         <!--
+          Deployment 工具（列服务器等）。
+          与上面那个 provider 的差别：这些工具还额外需要 com.jetbrains.plugins.webDeployment
+          （FTP/SFTP/WebDAV Connectivity，**仅 Ultimate 有**）。
+          这里直接注册是安全的：provider 自己在 getTools() 里做运行时检查，插件不在就返回空列表，
+          工具根本不出现在 tools/list 里，也不会去加载任何引用该插件的类。
+          为什么不另开一个 optional 依赖的 config-file：那样要求 MCP Server 与 webDeployment 同时存在
+          才能解析扩展点命名空间，反而会在 MCP Server 缺失时让插件加载失败。
+        -->
+        <mcpServer.mcpToolsProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.DeploymentToolsProvider"/>
+
+        <!--
           给每个新建的进程盖上"属于哪个 Run Configuration"。原因见
           mcp/RunConfigurationStamping.kt：平台没有公开 API 能把 Run 内容归属到配置
           （getRunConfigurationName / getRunningDescriptors 都是 @ApiStatus.Internal）。

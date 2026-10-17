@@ -73,7 +73,11 @@ internal fun JsonObject.requiredString(key: String): String? =
 // schema 构造小工具
 // ---------------------------------------------------------------------------
 
-private fun property(type: String, description: String): JsonObject = buildJsonObject {
+// 下面这些构 schema 的小工具是**两套工具共用**的（Run Lifecycle 与 Deployment），
+// 所以是 internal 而不是 private：DeploymentSchemas 与 RunLifecycleSchemas 同包，
+// 共用一份可以避免两边各写一套、日后悄悄漂移。
+
+internal fun property(type: String, description: String): JsonObject = buildJsonObject {
     put("type", JsonPrimitive(type))
     put("description", JsonPrimitive(description))
 }
@@ -84,7 +88,7 @@ private fun property(type: String, description: String): JsonObject = buildJsonO
  * 输出 schema 里凡是有可能出现 null 的字段都用它——直接写 `"integer"` 会让严格客户端
  * 在一个正常返回（例如进程还在跑、`exitCode` 为 null）上校验失败。
  */
-private fun nullableProperty(type: String, description: String): JsonObject = buildJsonObject {
+internal fun nullableProperty(type: String, description: String): JsonObject = buildJsonObject {
     put("type", buildJsonArray {
         add(JsonPrimitive(type))
         add(JsonPrimitive("null"))
@@ -92,18 +96,16 @@ private fun nullableProperty(type: String, description: String): JsonObject = bu
     put("description", JsonPrimitive(description))
 }
 
-private fun arrayOf(item: JsonObject, description: String? = null): JsonObject = buildJsonObject {
+internal fun arrayOf(item: JsonObject, description: String? = null): JsonObject = buildJsonObject {
     put("type", JsonPrimitive("array"))
     if (description != null) put("description", JsonPrimitive(description))
     put("items", item)
 }
 
-private fun objectProperty(type: String, description: String) = property(type, description)
-
-private fun properties(vararg entries: Pair<String, JsonObject>): JsonObject =
+internal fun properties(vararg entries: Pair<String, JsonObject>): JsonObject =
     JsonObject(entries.toMap())
 
-private fun schema(
+internal fun schema(
     properties: JsonObject,
     required: Set<String> = emptySet(),
 ): McpToolSchema = McpToolSchema(
@@ -112,7 +114,7 @@ private fun schema(
     definitions = emptyMap(),
 )
 
-private fun annotations(
+internal fun annotations(
     readOnly: Boolean,
     destructive: Boolean,
     idempotent: Boolean,
@@ -129,12 +131,12 @@ private fun annotations(
  *
  * schema 层面它是**可选**的（官方 58 个工具里有 54 个声明了它，但都不放进 `required`）。
  */
-private const val PROJECT_PATH_DESCRIPTION =
+internal const val PROJECT_PATH_DESCRIPTION =
     " The project path. Pass this value ALWAYS if you are aware of it. It reduces numbers of ambiguous calls. \n" +
         " In the case you know only the current working directory you can use it as the project path.\n" +
         " If you're not aware about the project path you can ask user about it."
 
-private fun projectPathProperty(): JsonObject = property("string", PROJECT_PATH_DESCRIPTION)
+internal fun projectPathProperty(): JsonObject = property("string", PROJECT_PATH_DESCRIPTION)
 
 // ---------------------------------------------------------------------------
 // 输出 schema 的公共片段（多处复用，避免三份 instances[] 定义漂移）
@@ -202,7 +204,7 @@ private val RUN_TRANSITION_STEP_SCHEMA: JsonObject = buildJsonObject {
     })
 }
 
-private val WARNINGS_SCHEMA: JsonObject =
+internal val WARNINGS_SCHEMA: JsonObject =
     arrayOf(property("string", "Warning message."), "Non-fatal problems encountered during the call.")
 
 private val AVAILABLE_NAMES_SCHEMA: JsonObject =

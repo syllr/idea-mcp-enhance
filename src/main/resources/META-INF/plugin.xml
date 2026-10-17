@@ -32,6 +32,19 @@
     -->
     <depends optional="true" config-file="mcpserver.xml">com.intellij.mcpServer</depends>
 
+    <!--
+      Deployment（FTP/SFTP/WebDAV Connectivity）。deployment 工具引用了它的类，所以必须声明依赖——
+      否则 Plugin Verifier 会报"用了未声明插件的类"，Marketplace 侧也不干净。
+
+      用 optional 的原因：这个插件**只在 Ultimate 里存在**（它自己依赖 com.intellij.modules.ultimate）。
+      没有它的 IDE 上，本插件其余功能照常工作，deployment 工具会被 DeploymentToolsProvider 里的
+      运行时存在性检查挡掉，不会出现在 tools/list 里。
+
+      刻意**不带** config-file：要加载哪些类由那个运行时检查决定，而不是由这里决定——
+      带 config-file 会让"文件被读取"等于"类被加载"，反而失去控制。
+    -->
+    <depends optional="true">com.jetbrains.plugins.webDeployment</depends>
+
     <actions>
 
         <!-- 选区 → prompt -->

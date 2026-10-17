@@ -41,7 +41,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 源码根: `src/main/kotlin/com/shenyuanlaolarou/ideamcpenhance/`
 
-**两个互不依赖的能力包**，各自三层：
+**三个互不依赖的能力包**，各自三层：
 
 ```
 ├── prompt/                        ← 能力一：复制 prompt（与上游 copy-as-prompt 逐字节一致）
@@ -50,26 +50,40 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │       ├── CopyAsPromptAction.kt
 │       ├── CopyDiagnosticsAction.kt
 │       └── EditorPromptContext.kt
-└── mcp/                           ← 能力二：Run Lifecycle MCP 工具
-    ├── RunLifecycleModels.kt      纯数据 + 纯函数：状态快照 → JSON
-    ├── RunLifecycleSchemas.kt     工具描述符 / 输入 schema / 参数解析
-    ├── RunConfigAccess.kt         平台接线：RunManager / RunContentManager / ProcessHandler
-    └── RunLifecycleToolsProvider.kt  三个 McpTool + 异常兜底
+└── mcp/                           ← 能力二：Run Lifecycle MCP 工具（只要 MCP Server）
+│   ├── RunLifecycleModels.kt      纯数据 + 纯函数：状态快照 → JSON
+│   ├── RunLifecycleSchemas.kt     工具描述符 / 输入 schema / 参数解析
+│   ├── RunConfigAccess.kt         平台接线：RunManager / RunContentManager / ProcessHandler
+│   └── RunLifecycleToolsProvider.kt  三个 McpTool + 异常兜底
+    （mcp/ 下还有能力三，见下）
 ```
 
-| 层                                       | 允许                                               | 禁止                      | 测试方式                                            |
-| ---------------------------------------- | -------------------------------------------------- | ------------------------- | --------------------------------------------------- |
-| `prompt/format/`                         | 字符串操作                                         | 平台 import、IO、环境变量 | 纯 JUnit 4（秒级）                                  |
-| `mcp/RunLifecycleModels` / `Schemas`     | 字符串、JsonObject、mcpserver 的 descriptor 类型   | 平台 import、IO           | 纯 JUnit 4（秒级）                                  |
-| `prompt/actions/`、`mcp/RunConfigAccess` | 平台 API                                           | 字符串格式化 / 手写 JSON  | `BasePlatformTestCase`（见「已知阻塞」）或 `runIde` |
-| `mcp/RunLifecycleToolsProvider`          | 编排：解析参数 → 调接线层 → 包 `McpToolCallResult` | 直接操作 `ProcessHandler` | 描述符 + 参数解析有单测                             |
+**能力三：Deployment MCP 工具**（同一个 `mcp/` 包，同样三层；额外需要 `com.jetbrains.plugins.webDeployment`，**仅 Ultimate 有**）
+
+```
+    ├── DeploymentModels.kt          纯数据 + 纯函数：服务器快照 → JSON + 风险提示
+    ├── DeploymentSchemas.kt         工具描述符 / 输入 schema / 输出 schema
+    ├── DeploymentAccess.kt          平台接线：**全插件唯一** import webDeployment 的文件
+    └── DeploymentToolsProvider.kt   McpTool + 运行时插件存在性检查
+```
+
+| 层                                       | 允许                                               | 禁止                                      | 测试方式                                            |
+| ---------------------------------------- | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------- |
+| `prompt/format/`                         | 字符串操作                                         | 平台 import、IO、环境变量                 | 纯 JUnit 4（秒级）                                  |
+| `mcp/RunLifecycleModels` / `Schemas`     | 字符串、JsonObject、mcpserver 的 descriptor 类型   | 平台 import、IO                           | 纯 JUnit 4（秒级）                                  |
+| `prompt/actions/`、`mcp/RunConfigAccess` | 平台 API                                           | 字符串格式化 / 手写 JSON                  | `BasePlatformTestCase`（见「已知阻塞」）或 `runIde` |
+| `mcp/RunLifecycleToolsProvider`          | 编排：解析参数 → 调接线层 → 包 `McpToolCallResult` | 直接操作 `ProcessHandler`                 | 描述符 + 参数解析有单测                             |
+| `mcp/DeploymentModels` / `Schemas`       | 字符串、JsonObject、mcpserver 的 descriptor 类型   | 平台 import、IO、**webDeployment import** | 纯 JUnit 4（秒级）                                  |
+| `mcp/DeploymentAccess`                   | webDeployment + 平台 API（**全插件唯一允许处**）   | 字符串格式化 / 手写 JSON                  | 只能 `runIde` 手工验证（需要真的服务器）            |
+| `mcp/DeploymentToolsProvider`            | 编排 + **运行时插件存在性检查**                    | 在检查之前碰 webDeployment 类型           | 描述符 / 纯函数有单测                               |
 
 测试根: `src/test/kotlin/com/shenyuanlaolarou/ideamcpenhance/`
 
 | 测试                                   | 类型                   | 覆盖                                                                                        | 状态            |
 | -------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- | --------------- |
 | `prompt/format/PromptFormatTest`       | 纯 JUnit 4（11 例）    | 两个 prompt 格式契约 + 稳定排序                                                             | ✅ 通过         |
-| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（29 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
+| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（50 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
+| `mcp/DeploymentSchemaTest`             | 纯 JUnit 4（15 例）    | deployment 描述符 / 风险提示（危险组合的判定）/ 输出 JSON 形状                              | ✅ 通过         |
 | `prompt/actions/EditorDiagnosticsTest` | `BasePlatformTestCase` | 诊断采集能从 markup model 捞出编译错误                                                      | ⛔ 禁用（见下） |
 
 ## WHERE TO LOOK
@@ -89,6 +103,10 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改 rerun / stop 的可重入语义             | `mcp/RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent`（状态判定层）+ 平台启动门（`ExecutionManager.isStarting(environment)`） |
 | 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                       |
 | 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                               |
+| 改 deployment 工具的名字 / 描述 / 入参   | `mcp/DeploymentSchemas.kt` 的 `listDeploymentServersDescriptor` + `DeploymentSchemaTest`                                                                                                            |
+| 改 deployment 的返回 JSON / 风险提示     | `mcp/DeploymentModels.kt` 的 `toJson()` / `deploymentWarnings()`                                                                                                                                    |
+| 加一个新的 deployment 工具               | `mcp/DeploymentToolsProvider.kt` 加一个 `BaseDeploymentTool` 子类 + 在 `getTools()` 里注册（**类加载隔离的规矩见该文件 KDoc**）                                                                     |
+| 改 deployment 的平台接线                 | `mcp/DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）                                                                                                                               |
 | 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                               |
 
 ## HARD RULES
@@ -210,6 +228,12 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - **写完 `.run.xml` MUST 调 `LocalFileSystem.refreshAndFindFileByNioFile`**，别只用 `Files.writeString`：`RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，纯 nio 写的文件 VFS 注意不到就**既不触发监听器也不进配置列表**（实测：文件确实落盘，但 IDE 等满 3 秒也没注册，工具只能如实报"尚未加载"）。刷新一次就正常（实测 `canRun` 立刻变 true，`rerun` 立刻能跑）。两个入口都是公开 API，也都不在 `execution.impl` 包里
 - **克隆 = 读源文件改名**：只换 `<configuration>` 标签里的 `name`，`run_configuration_name`（别人的引用）不动；源不在 `.run/` 里必须拒绝
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本
+- **`com.jetbrains.plugins.webDeployment` 是产品内部实现，不是平台 API**：包名是 `com.jetbrains.*` 而不是 `com.intellij.*` —— 没有文档、没有稳定性承诺，而且**只在 Ultimate 里存在**（它依赖 `com.intellij.modules.ultimate`）。它没被标 `@ApiStatus.Internal`，所以 Plugin Verifier 不会拦，但这**不等于**它是公开 API。规矩：引用它的类**只能在运行时确认插件存在之后**才加载（见 `mcp/DeploymentToolsProvider.kt` 的 KDoc，`getTools()` 里那个存在性检查是**运行时**的，不是 EP 依赖——为什么不另开 config-file 也在那份 KDoc 里），且全插件的引用集中在 `mcp/DeploymentAccess.kt` 一个文件里
+- **Deployment 的两类配置粒度不同，很容易读错**：`Mappings` 与 `Excluded paths` 是**按服务器**的（存在 `PublishConfig$ServerData`，按服务器名/ID 索引），而**其余全部选项**（`overwriteAll`、`deleteMissingItems`、确认开关、自动上传、排除掩码、权限）都是**项目级、所有服务器共用**。所以 `list_deployment_servers` 返回里的 `options` 描述的是"这个项目的部署策略"，不是"某个服务器的属性"——想按环境差异化行为只能靠调用参数（`PublishConfig.clone()` 改一份副本传给 `TransferTask`，不碰用户的持久配置），不能靠配置本身
+- **`overwriteAll` 的语义与字面相反**：`true`（**默认值**）表示"不做 size+mtime 比较、每次全量覆盖"——`TransferOperation.copyFile` 里是 `if (!isOverwriteAll()) { if (isUpToDate(remote, local, server)) skip }`，为 true 时那段跳过逻辑压根不执行。配套的 `preserveTimestamps`（默认 true）是"上传后把远端 mtime 设成本地 mtime"，**关掉它下次就再也没法跳过**（mtime 对不上）
+- **"删远端多余"靠 `deleteMissingItems`，它不是"上传的某个参数"**：上传任务走 `DeploymentMode.CUSTOM`（`TransferTask` 的构造器默认就传它），`CUSTOM.sourceNotExist` 里判 `isDeleteMissingItems()` 决定是否生成 `Delete`；若 `confirmBeforeDeletion` 为 true 则生成 `UserConfirmedDelete` —— **那个会弹模态框**，MCP 路径必须回避（`PublishConfig.clone()` 里强制设 false）
+- **下载方向的默认策略是 `AlwaysAsk`，会弹框**：`DownloadAction.download(...)` 的默认 `IgnoreOverwritingStrategy` 就是 `AlwaysAsk.INSTANCE`（对应 `Overwrite local file "x" with one from server?`）。调它**必须显式传** `AlwaysOverwrite` / `AlwaysSkip`。另外下载**没有**上传那种 `isUpToDate` 自动跳过，也**没有**"删本地多余"（IDEA 不支持）
+- **认证失败会弹模态登录框**：`PublishUtils.showLoginDialogAfterAuthFail` 的调用者包括 `RemoteHostTask`（`TransferTask` 那一族的父类）。所以在建连接之前 MUST 先用 `Deployable.create(server, project).hasCredentials()` 预检——它是纯内存判断，不联网、不弹框（`WebServerConfig` 本身**没有** `hasCredentials()`，那是 `Connectable` 上的，要经 `Deployable` 拿）
 
 ## REFERENCES
 
