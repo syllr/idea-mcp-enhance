@@ -226,13 +226,14 @@ internal fun deploymentWarnings(
  *
  * @param handle 这一次任务的句柄。**查询状态只认它**，不要用 serverName 去查（一个服务器会先后有多个任务）
  * @param kind `upload`（推到服务器）或 `download`（从服务器拉）
- * @param mode 该方向的策略：上传是 `upload`/`mirror`，下载是 `skip-local`/`take-remote`
+ * @param mode 该方向的策略：上传是 `upload`/`mirror`，下载目前只有 `take-remote`
  * @param state `completed`（任务真正结束，结果可信）或 `in_progress`（**还在传**，见下方说明）
- * @param elapsedMs 这个任务已经跑了多久（毫秒）
- * @param processed / total 平台计数器的实时进度。**下载方向拿不到**（平台的 download 不暴露计数器），
- *   所以下载进行中时这两个是 0——如实反映，不假装有进度
+ * @param elapsedMs 这个任务已经跑了多久（毫秒）；**已结束的取结束时刻**，不再随时间增长
+ * @param processed / total 平台计数器的实时进度。两个方向都拿得到（上传/下载都是我们自己的任务子类）；
+ *   收集阶段结束前 `total` 可能还是 0，如实反映，不假装有进度
  * @param counters 平台按操作类型记的计数，key 是它自己的 bundle key（形如
- *   `transfer.details.transferred` / `transfer.details.deleted`）。含 `deleted` 的那一项是"删掉了几个远端文件"。
+ *   `transfer.details.transferred` / `transfer.details.deleted`）。**粒度是平台定的，不是"文件数"**：
+ *   `transferred` 数文件，`deleted` 数删除操作（一个被整个删掉的目录算 1）。
  *   **`state = "in_progress"` 时为空**——还没统计完，报了也没意义
  */
 data class DeploymentTaskReport(

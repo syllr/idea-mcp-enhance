@@ -333,9 +333,9 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `download 的入参是 serverName、overwriteLocal、waitMs（都可选）`() {
+    fun `download 的入参是 serverName、waitMs（都可选）`() {
         assertEquals(
-            setOf("serverName", "overwriteLocal", "waitMs", "projectPath"),
+            setOf("serverName", "waitMs", "projectPath"),
             downloadFromDeploymentDescriptor.inputSchema.propertiesSchema.keys,
         )
         assertEquals(emptySet<String>(), downloadFromDeploymentDescriptor.inputSchema.requiredProperties)

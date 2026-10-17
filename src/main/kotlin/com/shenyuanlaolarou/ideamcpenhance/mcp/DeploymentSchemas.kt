@@ -157,7 +157,7 @@ private val DEPLOYMENT_TASK_RESULT_PROPERTIES: JsonObject = properties(
     "serverName" to property("string", "Server the transfer ran against."),
     "mode" to property(
         "string",
-        "Policy used: `upload`/`mirror` for uploads, `skip-local`/`take-remote` for downloads.",
+        "Policy used: `upload`/`mirror` for uploads, `take-remote` for downloads.",
     ),
     "localRoots" to arrayOf(
         property("string", "Local directory involved."),
@@ -171,8 +171,7 @@ private val DEPLOYMENT_TASK_RESULT_PROPERTIES: JsonObject = properties(
     "elapsedMs" to property("integer", "How long this transfer has been running, in milliseconds."),
     "processed" to property(
         "integer",
-        "Operations handled so far, live while running. Downloads do not expose per-file progress, so this " +
-            "stays 0 until a download finishes.",
+        "Operations handled so far, live while running; 0 until the platform has counted its first one.",
     ),
     "total" to property("integer", "Expected operation count as reported by the platform; 0 when unknown."),
     "succeeded" to property("boolean", "The platform reported no failed operations."),
@@ -184,8 +183,9 @@ private val DEPLOYMENT_TASK_RESULT_PROPERTIES: JsonObject = properties(
             "description",
             JsonPrimitive(
                 "Per-operation counts as recorded by the platform, keyed by its own bundle keys — e.g. " +
-                    "{\"transfer.details.transferred\": 3, \"transfer.details.deleted\": 1}. " +
-                    "Any key containing \"deleted\" is how many remote files were removed.",
+                    "{\"transfer.details.transferred\": 19, \"transfer.details.deleted\": 1}. Each number counts " +
+                    "operations, not files: `deleted` counts delete operations, and a removed directory counts " +
+                    "as 1 however many files it held.",
             ),
         )
         put("additionalProperties", property("integer", "Count for this operation kind."))
@@ -316,7 +316,8 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
     Read the result as the IDE's own accounting:
 
     - `counters` — per-operation counts (`transfer.details.transferred`, `transfer.details.deleted`, ...).
-      With `mode: "mirror"`, `deleted` is how many remote files were removed.
+      Each number counts operations, not files: with `mode: "mirror"` a removed directory counts as 1
+      `delete` operation however many files it held.
     - `handle` — always returned, and the only way to look this upload up later.
     - `state: "in_progress"` — the counts are zero and mean nothing; poll `get_deployment_task_status`.
 
@@ -372,10 +373,9 @@ internal val getDeploymentTaskStatusDescriptor = McpToolDescriptor(
 
     The answer has the same shape whichever tool started the task; `kind` tells you which (`upload` / `download`).
 
-    While an upload runs you get `processed` / `total` from the platform's own counters (`total` may still be 0
-    while the platform is still counting). Downloads do not expose per-file progress, so those two stay 0 until
-    the task finishes. When it is done you get the same per-operation `counters` as the original call — any key
-    containing `deleted` is how many remote files were removed.
+    While a transfer runs you get `processed` / `total` from the platform's own counters (`total` may still be 0
+    while the platform is still counting). When it is done you get the same per-operation `counters` as the
+    original call — each number counts operations, not files (a removed directory counts as 1).
 
     A handle that never existed, or one of the oldest finished tasks that has since been dropped (only the 20
     most recent finished transfers per project are kept), comes back as an error.
@@ -418,13 +418,10 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     What gets downloaded: **the remote side of the server's path mappings in this project**, written into the
     matching local roots. There is no path argument — the mapping already says which directories belong together.
 
-    `overwriteLocal` decides what happens when a file exists on **both** sides:
-
-    - `false` (default) — keep the local file, skip it. The safe choice.
-    - `true` — the remote copy wins and replaces the local file.
-
-    The IDE normally asks about this; on the MCP path nothing can answer a dialog, so this argument is what
-    stands in for that question.
+    Files that exist on **both** sides are replaced by the server's copy, as long as they actually differ; files
+    already in sync are left alone. There is no "keep my local version" option: the IDE's own download asks a
+    dialog for that, and nothing can answer a dialog on the MCP path — so this tool always takes the remote
+    copy. Treat the server as the source of truth for the mapped directories.
 
     ## This tool is asynchronous underneath, and returns a handle
 
@@ -432,12 +429,9 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     (default 10000) for the download to actually finish:
 
     - finished in time → `state: "completed"`
-    - not finished → `state: "in_progress"` with a **`handle`**. The download **keeps running in the IDE**;
-      poll it with `get_deployment_task_status`. Calling this tool again would NOT report progress — it would
-      start yet another download.
-
-    While a download runs there is no per-file progress to show (the platform does not expose its counters for
-    downloads), so `processed` / `total` stay 0 until it finishes.
+    - not finished → `state: "in_progress"` with a **`handle`** and the live `processed` / `total` counts. The
+      download **keeps running in the IDE**; poll it with `get_deployment_task_status`. Calling this tool again
+      would NOT report progress — it would start yet another download.
 
     If a transfer to or from the same server is already running, this call does not start a second one: it
     returns that task's `handle` and state instead.
@@ -451,11 +445,6 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
                 "Name of the deployment server to download from, as reported by `list_deployment_servers`. " +
                     "Omit it to use the configured default server. A default that is a *group* is rejected — " +
                     "pick one server explicitly.",
-            ),
-            "overwriteLocal" to property(
-                "boolean",
-                "false (default) keeps local files that already exist and skips them; true lets the remote " +
-                    "copy replace them. The IDE would normally ask — this argument answers that question.",
             ),
             "waitMs" to property(
                 "integer",

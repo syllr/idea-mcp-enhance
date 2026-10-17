@@ -1,34 +1,27 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
 import com.intellij.openapi.components.service
-import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.jetbrains.plugins.webDeployment.AutoUploadComponent
 import com.jetbrains.plugins.webDeployment.ConnectionOwnerFactory
-import com.jetbrains.plugins.webDeployment.DeploymentPathUtils
 import com.jetbrains.plugins.webDeployment.ExecutionContext
-import com.jetbrains.plugins.webDeployment.IgnoreOverwritingStrategy
 import com.jetbrains.plugins.webDeployment.ProjectDeploymentRevisionTracker
 import com.jetbrains.plugins.webDeployment.TransferTask
 import com.jetbrains.plugins.webDeployment.AlwaysOverwrite
-import com.jetbrains.plugins.webDeployment.AlwaysSkip
 import com.jetbrains.plugins.webDeployment.actions.DownloadAction
 import com.jetbrains.plugins.webDeployment.actions.PublishActionUtil
-import com.jetbrains.plugins.webDeployment.connections.RemoteConnectionManager
 import com.jetbrains.plugins.webDeployment.config.Deployable
 import com.jetbrains.plugins.webDeployment.config.DeploymentPathMapping
-import com.jetbrains.plugins.webDeployment.config.FileTransferConfig
 import com.jetbrains.plugins.webDeployment.config.GroupedServersConfigManager
 import com.jetbrains.plugins.webDeployment.config.PublishConfig
 import com.jetbrains.plugins.webDeployment.config.WebServerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.apache.commons.vfs2.FileObject
-import org.apache.commons.vfs2.FileType
 
 /**
  * Deployment 的**平台接线层**：把 `WebServerConfig` / `PublishConfig` 拍平成 [DeploymentServerState]
@@ -274,17 +267,21 @@ internal data class DeploymentTaskOutcome(
  *
  * @param config 决定本次行为的 `PublishConfig`。调用方应传**副本**（`clone()`）并只改本次要覆盖的选项，
  *   这样"这一次用 mirror"这类策略不会写进用户的持久配置
+ * @param mode 本次策略（[MODE_UPLOAD] / [MODE_MIRROR]），**原样登记进句柄**。
+ *   它必须由调用方传进来，而不是在这里写死：任务的返回、以及"进行中"的文案都读它，
+ *   写死会让 `mode: "upload"` 的调用被报成 `mirror`（实测踩过）。
  */
 internal suspend fun uploadToServer(
     project: Project,
     server: WebServerConfig,
     config: PublishConfig,
     roots: List<String>,
+    mode: String,
     waitMs: Long,
 ): DeploymentTaskOutcome {
     val serverName = server.getName().orEmpty()
     val registry = project.service<DeploymentTaskRegistry>()
-    val (slot, isOwner) = registry.acquireOrJoin(DeploymentTaskRegistry.KIND_UPLOAD, serverName, MODE_MIRROR)
+    val (slot, isOwner) = registry.acquireOrJoin(DeploymentTaskRegistry.KIND_UPLOAD, serverName, mode)
 
     if (!isOwner) return awaitSlot(registry, slot, waitMs, joinedExisting = true)
 
@@ -324,24 +321,32 @@ internal suspend fun uploadToServer(
 /**
  * 把远端的内容**下载**到 [roots] 对应的本地目录，并在 [waitMs] 内尽量同步地等它结束。
  *
- * 走官方的 [DownloadAction.download]。注意它内部用的是 `ProgressManager.run()`（**阻塞调用线程**），
- * 不是上传那边的 `queue()`——所以这里**必须**放到后台线程上去跑，否则会把协程的线程占住。
+ * 形状与 [uploadToServer] **完全同构**：都是自己写一个 [TransferTask.ListBased] 子类、`queue()` 出去，
+ * 差别只在操作列表的方向 —— 上传用 `PublishActionUtil.scanFiles`，下载用 [DownloadAction.scanFiles]。
+ * 两个 `scanFiles` 都是平台自己的 `public static`，官方内部也就是这么用的。
  *
- * @param overwriteLocal 本地已有同名文件时是否被远端覆盖。`false`（默认）= 保留本地，较安全；
- *   `true` = 以远端为准。本地这一侧要不要被覆盖**没有"问用户"的选项**（IDE 默认会弹框，
- *   而 MCP 路径上没人能回答），所以只能在这里替用户定。
+ * ## 为什么不再用官方的 [DownloadAction.download]
+ *
+ * 它内部是 `ProgressManager.run(task)` + 匿名 task：在 EDT 上只是"提交"后立刻返回（任务
+ * `background=true`），"是否完成"只能等它回头调 `onFinished` 回调。而那个 task 是匿名类 ——
+ * 我们既拿不到它的计数器、也拿不到进度，"完成时机"还全靠回调（一旦某条早退路径不回调就误判成失败）。
+ * 自建任务把这三件事一并解决，并且与上传走同一条路，两份实现不会各自漂移。
+ *
+ * ## 覆盖策略
+ *
+ * 文件在两侧都存在时**以远端为准**（直接覆盖）。平台没给"非交互地跳过本地同名文件"这个能力，
+ * 详见 [DownloadFromServerTask.buildOperationsList] 里对 `AlwaysSkip` 的说明。
  */
 internal suspend fun downloadFromServer(
     project: Project,
     server: WebServerConfig,
     roots: List<String>,
-    overwriteLocal: Boolean,
     waitMs: Long,
 ): DeploymentTaskOutcome {
     val serverName = server.getName().orEmpty()
-    val mode = if (overwriteLocal) MODE_TAKE_REMOTE else MODE_SKIP_LOCAL
     val registry = project.service<DeploymentTaskRegistry>()
-    val (slot, isOwner) = registry.acquireOrJoin(DeploymentTaskRegistry.KIND_DOWNLOAD, serverName, mode)
+    val (slot, isOwner) =
+        registry.acquireOrJoin(DeploymentTaskRegistry.KIND_DOWNLOAD, serverName, MODE_TAKE_REMOTE)
 
     if (!isOwner) return awaitSlot(registry, slot, waitMs, joinedExisting = true)
 
@@ -359,92 +364,29 @@ internal suspend fun downloadFromServer(
         return outcomeOf(registry, slot)
     }
 
-    // Kotlin `object`：不用写 INSTANCE，直接用类名本身。
-    val strategy: IgnoreOverwritingStrategy = if (overwriteLocal) AlwaysOverwrite else AlwaysSkip
-
-    // 平台的 download 内部会调 `saveDocumentsSilently`（要写动作）+ `ProgressManager.run()`（阻塞），
-    // 所以它**必须在 EDT 上调用**。代价是这期间 EDT 被占住——这与我们在别处记录过的"模态框卡 EDT"
-    // 是同一类风险，只是这里的阻塞时长等于下载时长，且我们用预算上限兜底。
-    val connection = withContext(Dispatchers.EDT) {
-        val deployableOnEdt = runCatching { Deployable.create(server, project) }.getOrNull()
-            ?: return@withContext null
-        runCatching {
-            RemoteConnectionManager.getInstance().openConnection(
-                ConnectionOwnerFactory.createConnectionOwner(project),
-                "deployment download",
-                deployableOnEdt,
-                FileTransferConfig.Origin.Default,
-                null,
-                EmptyProgressIndicator(),
-            )
-        }.getOrNull()
-    } ?: run {
-        finishSlot(slot, "Could not open a connection to \"$serverName\"; nothing was downloaded.")
-        return outcomeOf(registry, slot)
+    // 与官方一致：先把手头打开的文档落盘，免得"编辑器里未保存的改动"和"远端覆盖"打架。
+    // 它要求写意图锁，所以只在 EDT 上调（这也是官方 `DownloadAction.download` 唯一的 EDT 依赖）。
+    withContext(Dispatchers.EDT) {
+        runCatching { AutoUploadComponent.saveDocumentsSilently(project, localFiles) }
     }
 
-    // EDT 上调用平台的阻塞下载；用 try/finally 保证连接一定释放。
-    val failure = withContext(Dispatchers.EDT) {
-        try {
-            val remoteRoot = runCatching { connection.resolveRoot() }.getOrNull()
-            if (remoteRoot == null) {
-                "Could not locate the deployment root on \"$serverName\"."
-            } else {
-                // **平台的 download 收的是"远端的具体文件"，不是目录**：
-                // 它把每个远端 FileObject 反算成本地路径（`UploadFilesAction.getLocalRoots`），
-                // 再逐个 `processIncoming` 拉下来。传目录进去会算出那个目录的本地路径，
-                // 而本地已经有它了 —— 一个字节都不会传（实测：回调触发了、零传输）。
-                // 所以这里必须先递归列出远端目录下的文件，再交给它。
-                val remoteFiles = runCatching { collectRemoteFiles(remoteRoot, MAX_REMOTE_FILES) }
-                    .getOrDefault(emptyList())
-                if (remoteFiles.isEmpty()) {
-                    "There is nothing on \"$serverName\" to download."
-                } else {
-                    // ⚠️ 未解决：这里两个数组的语义还没搞清。
-                    //
-                    // 已确认的事实：
-                    //  1) 必须在 EDT 上调（内部 saveDocumentsSilently 要写动作）
-                    //  2) 收的是**具体文件**，不是目录（传目录 → 零传输）
-                    //  3) remoteFiles 用来调 getLocalRoots(...) 反推"扫哪个本地目录"
-                    //  4) 平台打印 "No files or folders found to process" ⇒ 它筛完没剩东西
-                    //
-                    // 猜测（未验证）：localFiles 应该是这批远端文件对应的**本地目标**，
-                    // 空数组 = 没有下载目标 → 正好对得上 "not found to process"。
-                    // 但反算本地路径该用哪个 API（getNearestMappingDeploy2Local 返回的是
-                    // mapping 不是路径）我没验证过，所以先不瞎填。
-                    val localTargets = emptyList<VirtualFile>()
-                    DownloadAction.download(
-                        project,
-                        deployable,
-                        connection,
-                        remoteFiles.toTypedArray(),
-                        localTargets.toTypedArray(),
-                        { slot.result = completedOutcome(slot); slot.finished.complete(Unit) },
-                        strategy,
-                    )
-                    // 正常返回但回调没触发：兜底，别让句柄永远悬着。
-                    if (slot.finished.isCompleted) null else "The download ended without reporting a result."
-                }
-            }
-        } catch (t: Throwable) {
-            "The download failed: ${t.message ?: t::class.java.simpleName}"
-        } finally {
-            runCatching { connection.release() }
-        }
-    }
-
-    if (failure != null) finishSlot(slot, failure)
-
-    // 等完成信号或预算用尽，两者谁先到算谁。
-    val finished = withTimeoutOrNull(waitMs.coerceIn(0, MAX_DEPLOYMENT_WAIT_MS)) { slot.finished.await() }
-    if (finished != null) return outcomeOf(registry, slot)
-
-    return inProgressOutcome(
-        registry = registry,
+    val task = DownloadFromServerTask(
+        project = project,
+        config = PublishConfig.getInstance(project),
+        deployable = deployable,
+        title = "Download from $serverName",
+        files = localFiles,
         slot = slot,
-        joinedExisting = false,
-        extra = "A download reports no per-file progress, so there is nothing to show until it finishes.",
     )
+    slot.progressProvider = { DeploymentProgress(task.processedSteps(), task.totalSteps()) }
+
+    return try {
+        task.queue()
+        awaitSlot(registry, slot, waitMs, joinedExisting = false)
+    } catch (t: Throwable) {
+        finishSlot(slot, "The download could not be started: ${t.message ?: t::class.java.simpleName}")
+        outcomeOf(registry, slot)
+    }
 }
 
 /**
@@ -457,31 +399,6 @@ internal fun deploymentTaskStatusOf(project: Project, handle: String): Deploymen
     val slot = registry.lookup(handle) ?: return null
     return outcomeOf(registry, slot)
 }
-
-/** 递归列远端目录下的**文件**（不含目录本身），上限 [limit] 个。 */
-private fun collectRemoteFiles(root: FileObject, limit: Int): List<FileObject> {
-    if (limit <= 0) return emptyList()
-    val out = mutableListOf<FileObject>()
-
-    fun walk(dir: FileObject) {
-        if (out.size >= limit) return
-        val children = runCatching { DeploymentPathUtils.getChildren(dir) }.getOrNull() ?: return
-        for (child in children) {
-            if (out.size >= limit) return
-            when (runCatching { child.type }.getOrNull()) {
-                FileType.FOLDER -> walk(child)
-                FileType.FILE -> out.add(child)
-                else -> Unit
-            }
-        }
-    }
-
-    walk(root)
-    return out
-}
-
-/** 远端一次最多列多少文件（防御大目录把收集阶段拖死）。 */
-private const val MAX_REMOTE_FILES = 2_000
 
 /** 把登记表里的一个任务转成结果快照。 */
 private fun outcomeOf(
@@ -544,7 +461,11 @@ private suspend fun awaitSlot(
     inProgressOutcome(registry, slot, joinedExisting, extra = null)
 }
 
-/** 下载完成时由平台的回调写这个（平台的 download 不暴露计数器，所以全是 0 / 空）。 */
+/**
+ * 一个"空结果"快照，只给**没能启动 / 出错**的路径用（[finishSlot]）：那种情况下平台一个操作都没跑，
+ * 所以计数器全是 0 / 空，`succeeded` 由 [finishSlot] 覆写成 false。真正跑完的任务由任务子类自己写
+ * `slot.result`（它们拿得到平台的真实计数器）。
+ */
 private fun completedOutcome(slot: DeploymentTaskRegistry.Slot): DeploymentTaskOutcome = DeploymentTaskOutcome(
     handle = slot.handle,
     kind = slot.kind,
@@ -568,10 +489,9 @@ private fun finishSlot(slot: DeploymentTaskRegistry.Slot, reason: String) {
     slot.finished.complete(Unit)
 }
 
-/** 策略取值（上传 / 下载各一套）。 */
+/** 策略取值：上传有 `upload`/`mirror` 两种；下载目前只有 `take-remote`（以远端为准）。 */
 internal const val MODE_UPLOAD = "upload"
 internal const val MODE_MIRROR = "mirror"
-internal const val MODE_SKIP_LOCAL = "skip-local"
 internal const val MODE_TAKE_REMOTE = "take-remote"
 
 /**
@@ -615,6 +535,79 @@ private class UploadToServerTask(
 
     override fun buildOperationsList(context: ExecutionContext): ResultWithErrors =
         PublishActionUtil.scanFiles(context, files)
+
+    override fun run(indicator: ProgressIndicator) {
+        val ok = doRun(indicator)
+        val processed = runCatching { myTotalProcessed.get() }.getOrDefault(0)
+        slot.result = DeploymentTaskOutcome(
+            handle = slot.handle,
+            kind = slot.kind,
+            serverName = slot.serverName,
+            mode = slot.mode,
+            state = DEPLOYMENT_STATE_COMPLETED,
+            elapsedMs = 0, // 由调用方用 registry 算实际值
+            processed = processed,
+            total = processed,
+            succeeded = ok,
+            totalProcessed = processed,
+            failed = runCatching { myFailed.get() }.getOrDefault(0),
+            counters = runCatching { myProcessedCounters.mapValues { it.value.get() } }.getOrDefault(emptyMap()),
+            warnings = emptyList(),
+        )
+        slot.progressProvider = null
+        slot.finished.complete(Unit)
+    }
+}
+
+/**
+ * 执行一次**下载**的 `TransferTask`。与 [UploadToServerTask] 同构，只差两处：
+ *
+ * - 操作列表用 [DownloadAction.scanFiles]（下载方向），而不是 [PublishActionUtil.scanFiles]
+ * - 第 3 个构造参数 `serverSideModification = false`（上传传 `true`）——
+ *   官方 `DownloadAction` 内部那个匿名子类传的就是 `false`，语义没有公开文档，照抄官方最安全
+ *
+ * 用自建任务（而不是 `DownloadAction.download`）是为了拿到 `myTotalProcessed` / `myFailed` /
+ * `myProcessedCounters`：官方那个 task 是匿名类，这些计数器都读不到。
+ */
+private class DownloadFromServerTask(
+    project: Project,
+    config: PublishConfig,
+    deployable: Deployable,
+    title: String,
+    private val files: List<VirtualFile>,
+    private val slot: DeploymentTaskRegistry.Slot,
+) : TransferTask.ListBased(
+    project,
+    ConnectionOwnerFactory.createConnectionOwner(project),
+    false,
+    config,
+    deployable,
+    title,
+    true,
+    true,
+    true,
+    ProjectDeploymentRevisionTracker.getInstance(project),
+) {
+
+    /** 已处理的操作数（轮询进度用）。 */
+    fun processedSteps(): Int = runCatching { myTotalProcessed.get() }.getOrDefault(0)
+
+    /** 预计总数。语义同 [UploadToServerTask.totalSteps]。 */
+    fun totalSteps(): Int = runCatching { getTotalStepsNumber() }.getOrDefault(0)
+
+    override fun buildOperationsList(context: ExecutionContext): ResultWithErrors {
+        // 本地已有同名文件时**直接覆盖**，不弹框。
+        //
+        // 平台的 `IgnoreOverwritingStrategy` 只有两个"非交互"实现，而且名字会骗人（字节码实证）：
+        //   AlwaysOverwrite → FixedIgnoreOverwritingStrategy(true)  → ignoreLocalOverwriting() = true  → 直接覆盖
+        //   AlwaysSkip      → FixedIgnoreOverwritingStrategy(false) → ignoreLocalOverwriting() = false → **落到"问用户"**
+        // 判定处是 `shouldIgnore != null ? shouldIgnore : promptForLocalOverwrite(...)`：
+        // 传 false 会继续走 `promptForLocalOverwrite`，配了 `isPromptOnLocalOverwrite` 就**弹模态框**——
+        // 在 MCP 路径上没人能回答，等于死锁。所以只有 AlwaysOverwrite 是安全的；
+        // 平台**没有**提供"非交互地跳过本地同名文件"，这也是本工具不暴露覆盖开关的原因。
+        context.setIgnoreOverwritingStrategy(AlwaysOverwrite)
+        return DownloadAction.scanFiles(context, files)
+    }
 
     override fun run(indicator: ProgressIndicator) {
         val ok = doRun(indicator)

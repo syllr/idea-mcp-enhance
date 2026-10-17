@@ -58,6 +58,13 @@ class DeploymentTaskRegistry {
         @Volatile
         internal var result: DeploymentTaskOutcome? = null
 
+        /**
+         * 任务结束的时刻（nanotime）。**在结束的那一瞬冻结**——否则 [DeploymentTaskRegistry.elapsedMsOf]
+         * 会拿"现在"去减开始时间，一个已经完成的任务每查一次耗时都在涨。
+         */
+        @Volatile
+        internal var finishedAtNanos: Long? = null
+
         /** 由任务自己填入，用于轮询时读实时进度。 */
         @Volatile
         internal var progressProvider: (() -> DeploymentProgress)? = null
@@ -101,6 +108,8 @@ class DeploymentTaskRegistry {
 
         // 任务一结束就摘掉"这台服务器正在跑"的标记，下一次调用才能正常发起新任务。
         slot.finished.invokeOnCompletion {
+            // 先冻结结束时刻，再让查询方读到（顺序无所谓，但先写更像"结束"这件事本身）。
+            slot.finishedAtNanos = System.nanoTime()
             synchronized(this) {
                 if (runningByServer[slot.serverName] == slot.handle) runningByServer.remove(slot.serverName)
                 evictCompleted()
@@ -115,8 +124,14 @@ class DeploymentTaskRegistry {
     @Synchronized
     fun lookup(handle: String): Slot? = tasks[handle]
 
-    /** 这个任务跑了多久（毫秒）。 */
-    fun elapsedMsOf(slot: Slot): Long = (System.nanoTime() - slot.startedAtNanos) / 1_000_000
+    /**
+     * 这个任务跑了多久（毫秒）。**已在结束的以结束时刻为准**（不再随时间增长）；
+     * 还在跑的用"现在"减开始时间。
+     */
+    fun elapsedMsOf(slot: Slot): Long {
+        val end = slot.finishedAtNanos ?: System.nanoTime()
+        return (end - slot.startedAtNanos) / 1_000_000
+    }
 
     /** 当前进度。 */
     fun progressOf(slot: Slot): DeploymentProgress =

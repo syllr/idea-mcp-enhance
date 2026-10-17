@@ -192,7 +192,7 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
         // 删除确认框在 MCP 路径上没人能点：必须关掉，否则 mirror 会把调用连同 EDT 一起卡住。
         config.isConfirmBeforeDeletion = false
 
-        val outcome = uploadToServer(project, server, config, roots, waitMs)
+        val outcome = uploadToServer(project, server, config, roots, mode, waitMs)
 
         val report = outcome.toReport(roots)
 
@@ -207,11 +207,14 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
 
         // counter 的 key 是 WDBundle 的 message key（形如 `transfer.details.deleted`），
         // 不是裸的 `deleted` —— 用 contains 匹配，免得死记 key 名。
+        //
+        // ⚠️ 粒度是平台自己定的，**不是"文件数"**：实测删掉一个含 400 个文件的目录，`deleted` 也只是 1
+        // （它数的是"删除操作"）。所以文案写"delete operation(s)"，不写 file(s)。
         val deleted = outcome.counters.entries.firstOrNull { it.key.contains("deleted") }?.value ?: 0
         val summary = buildString {
             append("Uploaded to \"").append(outcome.serverName).append("\" (mode=").append(mode).append("): ")
             append(outcome.totalProcessed).append(" operation(s)")
-            if (deleted > 0) append(", DELETED ").append(deleted).append(" remote file(s)")
+            if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
             if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
             append(" in ").append(outcome.elapsedMs).append("ms. handle=").append(outcome.handle)
         }
@@ -297,7 +300,7 @@ private class GetDeploymentTaskStatusTool : BaseDeploymentTool() {
             append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
             append(" \"").append(outcome.serverName).append("\" finished in ")
             append(outcome.elapsedMs).append("ms: ").append(outcome.totalProcessed).append(" operation(s)")
-            if (deleted > 0) append(", DELETED ").append(deleted).append(" remote file(s)")
+            if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
             if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
             append('.')
         }
@@ -324,7 +327,6 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
         )
 
         val requested = arguments.optionalString("serverName")
-        val overwriteLocal = arguments.optionalBoolean("overwriteLocal", false)
         val waitMs = arguments.optionalInt("waitMs", DEFAULT_DEPLOYMENT_WAIT_MS.toInt()).toLong()
 
         val (server, resolveFailure) = resolveTargetServer(project, requested)
@@ -354,7 +356,7 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
             )
         }
 
-        val outcome = downloadFromServer(project, server, roots, overwriteLocal, waitMs)
+        val outcome = downloadFromServer(project, server, roots, waitMs)
         val report = outcome.toReport(roots)
 
         if (outcome.state == DEPLOYMENT_STATE_IN_PROGRESS) {
