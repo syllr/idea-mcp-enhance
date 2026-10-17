@@ -15,6 +15,30 @@
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-17
+
+### Added
+
+- **Deployment MCP tools** (4 new — Ultimate only, see Notes):
+  - `list_deployment_servers` — every deployment server this project can use, its path mappings, the project-wide
+    deployment options, and warnings about dangerous combinations. It reads the IDE's stored settings only.
+  - `upload_to_deployment` — upload the mapped directories. `mode: "mirror"` (the default) also deletes remote
+    files the project no longer contains; `mode: "upload"` sends local files only and leaves remote extras alone.
+  - `download_from_deployment` — pull the server's copy back into the mapped local roots.
+  - `get_deployment_task_status` — poll one transfer by its handle; it never starts anything.
+- **Handle-based async**: a transfer runs in the IDE's background and can outlive the tool's wait budget (10000ms
+  by default). It then reports `state: "in_progress"` together with a handle that identifies _that_ transfer — not
+  the server, which accumulates many transfers over time. One server never runs two transfers at once: a second
+  call joins the running one and returns its handle.
+
+### Notes
+
+- The Deployment tools appear **only on Ultimate**: they rely on the bundled Deployment (FTP/SFTP/WebDAV
+  Connectivity) plugin, which needs `com.intellij.modules.ultimate`. Without it these four tools are simply not
+  registered and everything else keeps working.
+- Transfers use the IDE's own transfer machinery, so the counts match the IDE's: `transferred` counts files, while
+  `deleted` counts delete operations — removing a directory counts as one, however many files it held.
+
 ## [0.0.1] - 2026-10-14
 
 ### Added

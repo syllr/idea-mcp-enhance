@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-17
+
+### Added
+
+- **Deployment MCP 工具（4 个）** —— 把 IDE 的 Deployment（FTP/SFTP/WebDAV）能力交给 agent，补齐内置 MCP Server 完全没有的这一块：
+  - `list_deployment_servers`（只读）—— 本项目可用的全部部署服务器（名称 / 项目级或应用级 / 协议 / host / port / rootFolder）、各自在本项目的路径映射，以及**项目级**的部署选项（`overwriteAll`、`deleteMissingItems`、确认开关、自动上传、排除掩码）与危险组合告警。只读 IDE 配置，不联网。
+  - `upload_to_deployment`（破坏性）—— 把映射到的本地目录上传到服务器。`mode` 两取：`mirror`（**默认，会删掉远端多出来的文件**，使服务器与本地一致）/ `upload`（只传本地文件，保留远端多余）。
+  - `download_from_deployment`（破坏性）—— 把服务器上映射目录的内容拉回本地，**以远端为准**。平台没有提供"非交互地跳过本地同名文件"的能力（IDE 默认弹框问，而 MCP 路径上没人能点），所以不暴露覆盖开关。
+  - `get_deployment_task_status`（只读）—— 用句柄查一次传输的状态与计数，**永不启动任何任务**。
+- **句柄式异步**：传输跑在 IDE 后台，可能超出工具的等待预算（默认 10000ms）。这时返回 `state: "in_progress"` 与一个**标识本次任务**的句柄——不是服务器名，因为同一台服务器会先后发生多次传输，用服务器名查会张冠李戴。同一台服务器也不会并发跑第二个传输：第二次调用会"加入"在跑的那个并把它的句柄返回。
+- 传输全程走平台自己的 `TransferTask`：连接、路径解析（服务器 rootFolder + 路径映射）、进度与逐操作计数都由 IDE 负责；本插件不自建连接、不自己拼远端路径。
+- 计数的口径与 IDE 一致：`transfer.details.transferred` 数文件，`transfer.details.deleted` 数**删除操作**——一个被整个删掉的目录算 1，哪怕它底下有几百个文件。
+
+### Notes
+
+- Deployment 工具**只在 Ultimate 上出现**：它们依赖内置的 Deployment（FTP/SFTP/WebDAV Connectivity）插件，而该插件依赖 `com.intellij.modules.ultimate`。插件不在时这 4 个工具不注册，本插件其余功能照常工作。
+- 上传的删除确认框在 MCP 路径上会被强制关闭——模态对话框没人能点，会连同 EDT 一起把调用卡死。
+
 ## [0.0.1] - 2026-10-14
 
 ### Added
@@ -54,5 +72,6 @@
 - `rerun_run_configuration` 用配置**名字**定位，不支持 `file:line` 代码位置。
 - **内置 `get_run_configurations` 的 `filePath` 模式未实现**：给定一个文件、列出该文件里可执行的入口点（IDE 行号槽上出现 Run 图标的位置），那需要整套 PSI / `RunConfigurationProducer` / `ConfigurationFromContext` 能力。本插件刻意不碰 PSI（prompt 那半也不碰），因此这块仍由内置工具承担，两个工具组合使用即可。
 
-[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.1...HEAD
+[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...HEAD
+[0.0.2]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.1...0.0.2
 [0.0.1]: https://github.com/syllr/idea-mcp-enhance/commits/0.0.1
