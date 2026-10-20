@@ -36,14 +36,6 @@
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunConfigDefinitionToolsProvider"/>
 
         <!--
-          edit_file：把"写文件"搬进 IDE。
-          见 mcp/FileEditToolsProvider.kt 的类注释 —— 进程外写文件会让 IDE 持有一份旧副本，
-          reformat_file 随后会把旧副本存回磁盘，把 agent 刚写的内容整个冲掉。
-        -->
-        <mcpServer.mcpToolsProvider
-                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.FileEditToolsProvider"/>
-
-        <!--
           给每个新建的进程盖上"属于哪个 Run Configuration"。原因见
           mcp/RunConfigurationStamping.kt：平台没有公开 API 能把 Run 内容归属到配置
           （getRunConfigurationName / getRunningDescriptors 都是 @ApiStatus.Internal）。

@@ -88,7 +88,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
                 put("properties", properties(
                     "kind" to property(
                         "string",
-                        "`runFile` (project-level `<project>/.run/<name>.run.xml`), `dotIdea`, `workspace`, " +
+                        "`runFile` (project-level, shared with the team), `dotIdea`, `workspace`, " +
                             "`temporary` or `unknown`.",
                     ),
                     "path" to nullableProperty("string", "Path of the file holding it; null when it has none."),
@@ -235,8 +235,7 @@ internal val createRunConfigurationDefinitionDescriptor = McpToolDescriptor(
     CREATE_DEFINITION_TOOL_NAME,
     "Create Run Configuration",
     """
-    Create a **project-level** run configuration of any type, stored at
-    `<project>/.run/<configurationName>.run.xml`.
+    Create a **project-level** run configuration of any type — a team asset, stored with the project.
 
     **Do not create or edit that file yourself** — this tool (with `update_run_configuration` and
     `delete_run_configuration`) is the only writer. A hand-written file fails silently: a wrong `type`
@@ -303,7 +302,7 @@ internal val createRunConfigurationDefinitionDescriptor = McpToolDescriptor(
                 "string",
                 "How the body was produced: `clone:<name>`, `template:<type>` or `xml`.",
             ),
-            "storagePath" to property("string", "Absolute path of the `.run.xml` file."),
+            "storagePath" to property("string", "Absolute path of the file holding the configuration."),
             "canRun" to property("boolean", "Whether the IDE's own check accepts running it right now."),
             "canRunBlockedReason" to nullableProperty("string", "Why it cannot run yet; null when it can."),
             "unknownOptions" to arrayOf(
@@ -341,8 +340,8 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
     """
     Change an existing project-level run configuration — its settings **and its name**.
 
-    **Do not edit the `.run.xml` file yourself** — this tool is the writer. It keeps the file in the
-    IDE's own shape and re-checks that the result still runs.
+    **Do not edit the configuration's file yourself** — this tool is the writer. It keeps the file in
+    the IDE's own shape and re-checks that the result still runs.
 
     ## Two kinds of change
 
@@ -362,8 +361,7 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
       since you read it.
     - Renaming is refused while the configuration is running (the IDE names run contents after the
       configuration, so the two would disagree afterwards) and when the target name is taken.
-    - Only configurations stored in `.run/` can be changed here. For `.idea`-stored ones, edit them in
-      the IDE.
+    - Only project-level configurations can be changed here. For IDE-level ones, edit them in the IDE.
     """.trimIndent(),
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.update_run_configuration",
@@ -411,7 +409,7 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
             "configurationName" to property("string", "Name after the update (the new name when renamed)."),
             "previousName" to nullableProperty("string", "The old name; null when it was not renamed."),
             "renamed" to property("boolean", "true when the name changed."),
-            "storagePath" to property("string", "Absolute path of the `.run.xml` file after the update."),
+            "storagePath" to property("string", "Absolute path of the file holding the configuration."),
             "changed" to arrayOf(
                 property("string", "What was changed, e.g. `option:SCRIPT_TEXT`, `env:APP_ENV`, `name`."),
                 "The changes that were applied, in the order they were applied.",
@@ -456,15 +454,15 @@ internal val deleteRunConfigurationDescriptor = McpToolDescriptor(
     DELETE_TOOL_NAME,
     "Delete Run Configuration",
     """
-    Delete a project-level run configuration: remove it from the IDE and delete its `.run.xml` file.
+    Delete a project-level run configuration: remove it from the IDE and delete the file holding it.
 
     **Do not delete the file yourself** — this tool is the writer. It refuses while the configuration is
     running (stop it first with `stop_run_configuration`) and while other configurations reference it
     (a before-launch step or a compound configuration): pass `force = true` to delete it **and** remove
     those references, which is reported back.
 
-    Only configurations stored in `.run/` can be deleted here. Templates and `.idea`-stored
-    configurations are out of scope and are refused with an explanation.
+    Only project-level configurations can be deleted here. Templates and IDE-level configurations are
+    out of scope and are refused with an explanation.
     """.trimIndent(),
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.delete_run_configuration",
@@ -482,7 +480,7 @@ internal val deleteRunConfigurationDescriptor = McpToolDescriptor(
     schema(
         properties = properties(
             "configurationName" to property("string", "Name of the deleted configuration."),
-            "storagePath" to property("string", "Absolute path of the deleted `.run.xml` file."),
+            "storagePath" to property("string", "Absolute path of the file that held the configuration."),
             "removedReferences" to arrayOf(
                 property("string", "Name of the configuration whose reference was removed."),
                 "Configurations that referenced it; their references were removed (only with `force`).",

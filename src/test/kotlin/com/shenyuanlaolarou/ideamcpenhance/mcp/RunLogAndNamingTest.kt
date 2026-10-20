@@ -308,9 +308,11 @@ class RunLogAndNamingTest {
     }
 
     @Test
-    fun `描述里说清了不要自己写 run xml`() {
+    fun `描述里说清了不要自己写文件 而且不提文件路径`() {
         val create = definitionTools().first { it.descriptor.name == CREATE_DEFINITION_TOOL_NAME }.descriptor
-        assertTrue(create.description.contains(".run/<configurationName>.run.xml"))
         assertTrue(create.description.contains("Do not create or edit that file yourself"))
+        // 描述里**不出现**文件路径 —— 提了模型就会去手写文件。
+        assertFalse(create.description.contains(".run/"))
+        assertFalse(create.description.contains(".run.xml"))
     }
 }

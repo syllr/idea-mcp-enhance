@@ -15,21 +15,17 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 ## STACK
 
-- Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin **2.19.0**
-- 目标平台: **2026.2.3**（`pluginSinceBuild=262`，`pluginUntilBuild=262.*`——只支持 2026.2；内置 MCP Server 的 API 在 263
-  变了，见「注意事项」）
-- **必须用 2.19.0，不能退回 2.14.0**：2.14.0 解析不了 2026.2 发行版 `modules/module-descriptors.jar` 里的
-  `$legacy_jps_library` 描述符，会报 `Field 'name' is required ... ModuleDescriptor`，连 `:test` 的依赖都算不出来。
-- **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate。
-- **运行时依赖: 无第三方库** — 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` 提供的类型 +
-  `kotlinx-serialization-json`（平台自带）
-- 测试依赖: JUnit 4.13.2、opentest4j 1.3.0、IntelliJ Platform TestFramework
-- 静态分析: Qodana（linter `jetbrains/qodana-jvm-community:2024.3`，Gradle plugin `2025.3.1`）+ Kover 0.9.5 + CodeCov
-- `CHANGELOG.md` 由 `org.jetbrains.changelog` Gradle 插件（`patchChangelog` 任务）管理， **不要手改版本段落结构**
-- **`CHANGELOG.en.md` 是 Marketplace 用的英文变更日志**（`plugin.xml` 的 `<change-notes>` 唯一来源，见 `build.gradle.kts`
-  ）：英文面向商店、中文 `CHANGELOG.md` 面向仓库； **发版时两个文件都要加一段**，漏了英文那段构建会直接失败。同理，
-  `<description>` 直接写在 `src/main/resources/META-INF/plugin.xml` 里且是英文—— **不要**把 Marketplace 文案塞回
-  README / CHANGELOG 再拼出来
+- Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin **2.19.0**（不能退回 2.14.0：它解析不了
+  2026.2 的 `module-descriptors.jar`，连 `:test` 的依赖都算不出来）
+- 目标平台 **2026.2.3**：`pluginSinceBuild=262`、`pluginUntilBuild=262.*`（内置 MCP Server 的 API 在 263 变了）
+- **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate
+- 运行时依赖：**无第三方库** —— 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` + 平台自带的
+  `kotlinx-serialization-json`
+- 测试依赖：JUnit 4.13.2、opentest4j 1.3.0、IntelliJ Platform TestFramework
+- 静态分析：Qodana（`jetbrains/qodana-jvm-community:2024.3`，Gradle plugin `2025.3.1`）+ Kover 0.9.5 + CodeCov
+- `CHANGELOG.md` 由 `org.jetbrains.changelog` 插件（`patchChangelog` 任务）管理，**不要手改版本段落结构**
+- **`CHANGELOG.en.md` 是 `<change-notes>` 的唯一来源**（英文面向商店，中文 `CHANGELOG.md` 面向仓库）；**发版时两个文件都要加
+  一段**，漏了英文那段构建会直接失败。`<description>` 同理，直接写在 `plugin.xml` 里且是英文
 
 ### 五个容易混淆的"名字"
 
@@ -117,13 +113,12 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改 MCP 的停止实现                        | `mcp/RunConfigAccess.kt` 的 `stopHandler` / `stopDescriptors`                                                                                                                                       |
 | 改 MCP 的启动 / 重启实现                 | `mcp/RunConfigAccess.kt` 的 `startRunAndAwait`（`ProgramRunner.Callback` + 输出采集）                                                                                                               |
 | 改启动后回传的日志 / 状态流转            | `mcp/RunConfigAccess.kt` 的 `RunOutputCollector` + `mcp/RunLifecycleModels.kt` 的 `RerunReport`                                                                                                     |
-| 改 rerun / stop 的可重入语义             | `mcp/RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent`（状态判定层）+ 平台启动门（`ExecutionManager.isStarting(environment)`） |
+| 改 rerun / stop 的可重入语义             | `RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent` + 平台启动门 |
 | 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                       |
 | 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                               |
-| 改 deployment 工具的名字 / 描述 / 入参   | `mcp/DeploymentSchemas.kt` 的 `listDeploymentServersDescriptor` + `DeploymentSchemaTest`                                                                                                            |
+| 改 deployment 工具的名字 / 描述 / 入参   | `mcp/DeploymentSchemas.kt` 的 descriptor + `DeploymentSchemaTest`                                                                                                                                    |
 | 改 deployment 的返回 JSON / 风险提示     | `mcp/DeploymentModels.kt` 的 `toJson()` / `deploymentWarnings()`                                                                                                                                    |
-| 加一个新的 deployment 工具               | `mcp/DeploymentToolsProvider.kt` 加一个 `BaseDeploymentTool` 子类 + 在 `getTools()` 里注册（**类加载隔离的规矩见该文件 KDoc**）                                                                     |
-| 改 deployment 的平台接线                 | `mcp/DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）                                                                                                                               |
+| 加一个 deployment 工具 / 改它的平台接线   | `DeploymentToolsProvider.kt` 加子类并注册（类加载隔离规矩见该文件 KDoc）+ `DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）      |
 | 改运行日志的采集 / 落盘 / 清理           | `mcp/RunLogAccess.kt`（抓点、大小上限、sidecar、历史扫描、改名迁移）+ `mcp/RunLogModels.kt`（键 / 文件名 / JSON）                                                                                   |
 | 改配置名的解析规则                       | `mcp/RunConfigNaming.kt` + `RunLogAndNamingTest`                                                                                                                                                    |
 | 改 `inspect` 返回的字段                  | `mcp/RunConfigDefinitionModels.kt` + `RunConfigDefinitionSchemas.kt` + `RunLogAndNamingTest`                                                                                                        |
@@ -156,21 +151,17 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | `com.intellij.mcpServer.mcpToolset`            | `McpToolset`            | **反射式**：`suspend fun` + `@McpTool(name, title)`，schema 靠 kotlinx-serialization 反射合成，返回类型必须有 `@Serializable` |
 | `com.intellij.mcpServer.mcpToolFilterProvider` | `McpToolFilterProvider` | 过滤别人注册的工具                                                                                                            |
 
-两条路的结果由 `McpToolsListProvider.getAllMcpTools()` 合并，所以选哪条都能被 MCP Server 发现。
-
-**为什么选 `McpToolsProvider`**：省掉 kotlinx-serialization 编译器插件（不用给 `plugin.xml` 额外挂依赖）、schema 与输出 JSON
-全部显式可测、prompt 那一半保持零依赖。代价是参数要自己从 `JsonObject` 解析。
+两条路的结果由 `McpToolsListProvider.getAllMcpTools()` 合并，选哪条都能被发现。**选 `McpToolsProvider`**：省掉
+kotlinx-serialization 编译器插件、schema 与输出 JSON 全部显式可测、prompt 那一半保持零依赖；代价是参数自己从 `JsonObject` 解析。
 
 其它必须知道的：
 
-- `McpSessionHandler` 在调用 **任何** `McpTool` 之前都会 `withContext(McpCallAdditionalDataElement(McpCallInfo(...)))`
-  ，所以直接实现的工具里 `coroutineContext.projectOrNull` 同样有效（`McpCallInfoKt` 的顶层扩展属性，import
-  `com.intellij.mcpserver.projectOrNull`）
-- 内置的 `ExecutionToolset` 只有 `get_run_configurations` 和 `execute_run_configuration`， **没有 stop / rerun / status**
-  ——本插件补的就是这三个
-- 内置 `execute_run_configuration` 走的是 "Run" 路径，每次调用无脑 spawn， **不是 Rerun**；返回值只有 `output` +
-  `fullOutputPath`，没有 PID
-- PID 拿不到不是缺陷：进程树是 `IDEA → sh → pnpm → vite`，隔了好几层。正确做法是用 IDE 自己的 `ProcessHandler`
+- `McpSessionHandler` 调用**任何** `McpTool` 之前都会 `withContext(McpCallAdditionalDataElement(McpCallInfo(...)))`，
+  所以直接实现的工具里 `coroutineContext.projectOrNull` 同样有效（import `com.intellij.mcpserver.projectOrNull`）
+- 内置 `ExecutionToolset` 只有 `get_run_configurations` 和 `execute_run_configuration`，**没有 stop / rerun / status** ——
+  本插件补的就是这三个；内置 `execute_run_configuration` 走 "Run" 路径（每次无脑 spawn，不是 Rerun），返回值只有
+  `output` + `fullOutputPath`，没有 PID
+- PID 拿不到不是缺陷：进程树是 `IDEA → sh → pnpm → vite`，隔了好几层 —— 正确做法是用 IDE 自己的 `ProcessHandler`
 
 ## COMMANDS
 
@@ -197,23 +188,16 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 **签名/发布 env**（`local.properties` 已 gitignore）: `PUBLISH_TOKEN`、`CERTIFICATE_CHAIN`、`PRIVATE_KEY`、
 `PRIVATE_KEY_PASSWORD`。 **绝对不能**进 git。
 
-## 已知阻塞：平台集成测试跑不起来
+`EditorDiagnosticsTest`（以及任何 `BasePlatformTestCase`）在 **2026.2.3 上必然失败**：`Cannot create extension
+(class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]` —— `Z.Z.Z.Z.Z` 是 `lib/product-backend.jar` 里的平台内部接口，
+失败发生在打开测试项目的 post-startup 阶段。
 
-`EditorDiagnosticsTest`（以及任何 `BasePlatformTestCase`）在 **2026.2.3 上必然失败**，报错：
+- **与本插件无关**：上游 `syllr/copy-as-prompt` 原样指向 2026.2.3，失败完全一致
+- **绕不开**：2026.2 已停发 `ideaIC`，只能拉 Ultimate；去掉 `com.intellij.java`、加
+  `idea.force.use.core.classloader=true` 都无效
+- 因此该测试类打了 `@Ignore`（**原因写在注解里**），JetBrains 修复后删掉注解即可恢复
 
-```
-Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]
-  → Cannot find suitable constructor for class Z.Z.Z.Z.Z,
-    expected (), (CoroutineScope), (Application), or (Application, CoroutineScope)
-```
-
-- `Z.Z.Z.Z.Z` 是 `lib/product-backend.jar` 里的平台内部（混淆）接口，失败发生在打开测试项目的 post-startup 阶段
-- **与本插件无关**：把上游 `syllr/copy-as-prompt` 原样指向 2026.2.3，失败完全一致
-- **绕不开**：2026.2 已停发 `ideaIC`，只能拉 Ultimate；去掉 `com.intellij.java`、加 `idea.force.use.core.classloader=true`
-  都无效
-- 因此该测试类打了 `@Ignore`， **原因写在注解里**。JetBrains 修复后删掉注解即可恢复
-
-期间请用 `./gradlew runIde` 手工验证平台行为（菜单项 enabled、诊断采集、MCP 工具实际启停）。
+期间用 `./gradlew runIde` 手工验证平台行为（菜单项 enabled、诊断采集、MCP 工具实际启停）。
 
 ## UNIQUE STYLES / 约定
 
@@ -230,173 +214,34 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 
 ## 注意事项（容易踩的坑）
 
-- **运行日志只能在 `processStarting` 时接**：平台没有公开 API 能事后读控制台（`ConsoleViewImpl` 在
-  `com.intellij.execution.impl`，本仓库禁用）。字节码核实：`ExecutionManagerImpl.doStartRunProfile$lambda$1$0`
-  里 `processStarting(...)` 在 offset 302、紧跟着 309 就是 `startNotify()` —— 在这一刻挂 `ProcessListener`
-  才能抓到第一行。挂到 `processStarted` 之后就可能漏掉启动横幅
-- **日志文件名里的键 = `sha256(项目路径 + "\0" + 配置名)` 前 16 位**，不是官方那种不可逆的 `sanitizeFileName`：
-  官方做法会把 `console-web` 与 `console_web` 抹成同一个名字，然后把别人的日志当成这个配置的。
-  文件名同时带 `startedAtMillis`（排序键）与 4 位随机后缀（复合配置会在同一毫秒起多个成员）
-- **历史实例没有 ID**：Run 标签页一关，平台什么都不剩，`executionId` 就没有意义了。所以历史条目按 **开始时间倒序**
-  、身份就是日志文件路径；对应的时间戳直接从文件名解析，不靠任何内存表
-- **日志是本体、sidecar 是富化**：`.log` 文件决定"这次运行还存在吗"，同名的 `.json` 只补 `pid` / `exitCode` /
-  `endedAt`。sidecar 丢了就安静降级（字段为 null）， **不发 warning**
-- **终端形态的 Shell（`EXECUTE_IN_TERMINAL=true`）是运行态工具的盲区**：`ShRunConfigurationProfileState.execute`
-  在终端分支直接 `return null`，没有 `ProcessHandler` ⇒ 没日志、也 **停不掉 / 重启不了、list 看不见**。
-  `inspect` 会针对这种配置给一条 warning；我们自己的 create 工具写死 `EXECUTE_IN_TERMINAL=false`
-- **类型插件没装 ≠ 配置不可读**：平台会把这类配置加载成 `UnknownConfigurationType`（`settings.type.id == "Unknown"`），
-  但 `.run.xml` 里的 `type` 属性仍是真实类型。`inspect` MUST 以文件里的 `type` 为准并给 `typeKnown: false`；
-  `cloneFrom` / `update` 照常工作（跳过平台校验 + warning）。只有"调用方显式指定了一个本机不可用的 type"才拒绝
-- **`.run/` 的写入口只有定义态工具**（create / update / delete）。这条规矩 **写在提示词里**
-  （工具描述 + opencode-idea 的 guidance）， **不在 `edit_file` 里做硬拦截** —— 用户明确要求手改文件时，
-  工具报错比放行更糟；而且原生 `write` / `shell` 也拦不住，硬拦只会造成"看起来有保障其实没有"
-- **改名必须迁移日志键**：日志文件名里的键来自配置名，改名后旧键的文件就再也扫不到了。
-  `update_run_configuration` 的 `newName` 分支会调 `renameRunLogs` —— 漏了这一步，历史会"凭空消失"
-- **`writeExternal` 不带 `<envs>` / `<method>`**：`RunConfigurationBase.writeExternal` 只序列化类型自己的
-  `options`。所以 **读**定义要走盘上的 `.run.xml`（完整），不要指望平台序列化能拼回整份文件；
-  round-trip 对比只对 `<option>` 的字段名有效
-- **写 `.run.xml` 必须 `refreshAndFindFileByNioFile`**（`AGENTS.md` 原有那条），定义态工具的
-  `writeRunConfigurationFile` 已经内置
+写代码时必须守的规则，每条一行；**机制细节在 [DESIGN.md 附录 B](./DESIGN.md#附录-b平台细节备忘)**，要改行为前先读那里。
 
-
-- **2026.1 → 2026.2 的 API 变化**：`RunContentDescriptor` **没有** `getRunProfile()` 了；而接替它的
-  `getRunConfigurationName()` / `getRunConfigurationTypeId()`，以及 `ExecutionManager.getRunningDescriptors(...)` /
-  `getExecutors(descriptor)` —— **全都是 `@ApiStatus.Internal`**，本插件一个都不用（实例归属见下面那条"事件盖章"）
-- **取进程号不用 `ProcessHandler.getNativePid()`——它是 `@ApiStatus.Experimental`**（262 里 `ProcessHandler` 与
-  `BaseProcessHandler` 两处都标着），Plugin Verifier 会把它算成 "usage of experimental API"，而这种标记随时可能在下一个大版本换签名。改用
-  `BaseProcessHandler.getProcess().pid()`：平台自己的 `getNativePid()` 字节码就是「反射调 `Process.pid()` →
-  `CompletableFuture.completedFuture(pid)`，失败返回 null」，本插件跑 JDK 21 直接调即可，语义完全一致（那段反射只为兼容 Java
-  8）。`getProcess()` 只带 `@NotNull`、没有 `@ApiStatus.*` 标记；拿不到就返回 null，pid 只是辅助信息
-- **平台没有 `ExecutionManager.stopRunProfile`**: Stop 按钮走 `ExecutionManagerImpl.stopProcess`（`impl` 包）。本插件用等价的公开
-  API 组合重写（`TERMINATION_REQUESTED` + `killProcess`/`detachProcess`/`destroyProcess`），语义逐条对齐，见
-  `RunConfigAccess.stopHandler` 的 KDoc
-- **`McpToolSchema.propertiesSchema` 只装 properties**，不含根级 `"type": "object"`；根类型由 MCP Server 合成 schema
-  时补（input 与 output 都一样）
-- **MCP Server 的项目解析只认两样东西**：header `IJ_MCP_SERVER_PROJECT_PATH`，或调用参数 `projectPath`。 **"
-  只打开了一个项目"不算**——实测不带参数调内置 `get_run_configurations` 同样被拒（`Unable to determine the target project`
-  ）。因此三个工具的 schema 必须声明 `projectPath`（可为空、不进 `required`），否则没配 header 的客户端一个工具都用不了
-- **服务器会按客户端配置裁剪 schema**：客户端给了 header 时，它会把 **所有**工具的 `projectPath` 参数从 schema
-  里摘掉（官方工具也一样）；只在没给 header 时才保留。所以验"有没有声明 projectPath"必须用 **不带 header**的 `tools/list`
-  ，否则会误判成"没声明"
-- **启动 Run Configuration 是异步的**：`ExecutionManager.restartRunProfile(env)` 发射后不管，紧接着做快照必然读到
-  `runningAfter = 0`、`instances[]` 里只有旧的已死实例。必须走
-  `ProgramRunnerUtil.executeConfigurationAsync(env, false, true, callback)` + `ProgramRunner.Callback`，在
-  `processStarted` 里拿到 `descriptor` 才算"起来了"（内置 `execute_run_configuration` 也是这么做的）
-- **`executeConfigurationAsync` 的第一句就是平台自己的门**：`if (!manager.isStarting(environment)) { … }` —— 同配置 + 同
-  executor + 同 runner 正在启动时，这次提交被 **静默丢弃**（回调都不装，既不回 `processStarted` 也不回
-  `processNotStarted`）。`isStarting` 读的是 `inProgress`，而 `inProgress` 是 `executeConfiguration` 一进来就加、 **进程创建并
-  `startNotify` 之后才减**（`ExecutionManagerImpl.kt` 里 `inProgress.update { it - inProgressEntry }` 紧跟
-  `processHandler.startNotify()`）⇒ **碰撞窗口 = 整个启动过程**， **包含 before-launch 的构建时长**（实测：给配置挂一个永不退出的
-  before-launch 后，第二次 rerun 0 秒返回 "another start is already in
-  progress"；我早先说"窗口只有进程创建那几十毫秒"是错的）。 **平台永远不会起两个实例**，所以"防双实例"不需要我们做；`rerun`
-  只需在发起前用同一个条件问一次，把"静默丢弃"换成立刻、精确的错误
-- **单次工具调用的时长必须远小于 MCP Server 的会话耐心**（实测约 **15 秒**：`Pending StreamableHttp transport timed out` →
-  `Removing session`）。请求悬着超过它，会话会被移除，工具算完也送不回结果 → 客户端拿到 **HTTP 404 空响应**。实测边界：8
-  秒能送达、20 秒不能； **官方工具也一样**（30 秒的 `execute_run_configuration` 实测 30.1 秒后空 404），而它的 `timeout` 默认就是
-  10000。所以 `startTimeoutMs` 默认取 10000（ **与原生 `execute_run_configuration` 的 `timeout` 默认值一致**）。注意 `rerun`
-  的总时长是三段相加（stop + start + 输出窗口），"慢停 + 慢启"会超过上限—— **凡是给工具加"等待"
-  的地方，都要把总时长和这个上限一起算**
-- **before-launch 步骤可以查出来**：`RunConfiguration.getBeforeRunTasks()`（公开默认方法）。平台在它们跑完之前 **不产出 Run
-  内容**（实测：给 `node-server` 挂一个永不退出的 before-launch 后，`list` 里只有那个 before-launch 配置有实例、
-  `node-server` 什么都没有）。所以启动超时的文案必须点明这一点，而不是让人以为启动失败
-- **`rerun` 的三道前置判定互补，别删其中任一道**：① 中间态拒绝（含"Run 内容已出现、进程还没挂上"这一档；覆盖用户手动点按钮）②
-  旧实例没停干净就不启动 ③ 平台启动门（`isStarting(environment)`，把"静默丢弃"换成 0 秒精确错误）。
-  **都不依赖本插件自建的内存状态**
-- **`ProcessAdapter` 在 2026.2 已废弃**：`ProcessListener` 的方法现在全都有默认实现，直接实现接口、只覆写 `onTextAvailable`
-  即可
-- **错误结果里没有 `structuredContent`**：`McpSessionHandlerKt.toSdkToolCallResult` 的字节码是
-  `getStructuredToolOutputEnabled() ifeq … ; isError() ifne …` —— 即只有"注册表开关 `mcp.server.structured.tool.output`
-  打开 **且** `isError == false`"才会输出结构化内容。所以给 `McpToolCallResult.error(text, json)` 传的第二个参数在 wire 上
-  **看不到**： **错误文案必须自洽**（关键信息一律写进 text）
-- **中间态判定真的能抓到**（实测，不是推理）：`stop` 等待进程退出的窗口里，另一会话 rerun 会拿到
-  `isError=true` + `"…is currently stopping, and the IDE disables Rerun in that state."`。判据与 GUI 同源：
-  平台的 `FakeRerunAction.isEnabled` 判 `isStarting()` / `isProcessTerminating()`，我们按 **每个实例**读
-  `ProcessHandler` 的同一对状态（`startNotified` / `isProcessTerminating`），粒度更细、且不依赖 UI 组件树
-- **沙箱里出现 `config/disabled_plugins.txt` 基本都是陈旧残留**：该文件由 Gradle 插件的 `PrepareSandboxTask` 从
-  `IntelliJPlatformPluginsExtension.disablePlugins` 生成，而本仓库的 `build.gradle.kts` / `gradle.properties` 都没配它（
-  `config` 与 `config-test` 两份沙箱里它都是 0 字节）。一旦里面有 `com.intellij.modules.ultimate`，Node.js / Go / Python /
-  Spring 等一大批插件会全部加载失败（日志里是 `requires plugin with id=com.intellij.modules.ultimate to be enabled`）
-- **`RunContentDescriptor` 没有任何公开的"配置归属"API**：`getRunConfigurationName()` 与
-  `ExecutionManager.getRunningDescriptors(...)` 从 262 起就都是 `@ApiStatus.Internal`（Plugin Verifier 在 2026.3 上把它报成
-  internal API usage），而 `displayName` 是多实例会被加后缀的 UI 文本。归属因此改成"事件盖章"：
-  `ExecutionListener.processStarting/processStarted`（由 `ExecutionManagerImpl` 发出；IDE 的 Run/Rerun 按钮、内置
-  `execute_run_configuration`、我们自己的 `rerun` 三条路都经过它）把配置名写进 `ProcessHandler`（
-  `ProcessHandler extends UserDataHolderBase`），读的时候用公开的 `descriptor.processHandler` 取回同一个 handler 上的戳——见
-  `mcp/RunConfigurationStamping.kt`。 **没有**戳的 Run 内容会被跳过：宁可少列一个，也不猜一个错的名字
-- **`pluginUntilBuild=262.*` 的原因：内置 MCP Server 的 API 在 2026.3 变了**。实测 2026.3 EAP（263.6800.24）改了
-  `McpToolDescriptor` / `McpToolCategory` 的构造器，而 `mcp/RunLifecycleSchemas.kt` 的顶层 `val` 就在 `<clinit>`
-  里调它们 ⇒ 用 262 编译出来的字节码在 263 上会 `NoSuchMethodError`（Plugin Verifier 报成 "Invocation of unresolved
-  constructor"，2 条；同一个 `<clinit>` 里的 `McpToolSchema.<init>` / `ToolAnnotations.<init>` 没被报，说明 263
-  只动了那两个类）。上限留空 = 声称支持 263，所以钉成 `262.*`，不让 Marketplace 把它发给 263 用户。 **适配 263 需要 263 的
-  IDE 包**（本机没有），届时把编译目标切到 263、`sinceBuild` 跟着抬，或加一层反射做双版本
-- **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性**（覆写 `getXxx()` 不会变成 `val`），调用要写 `.getTools()`
-- **`HighlightInfo` 在 `...daemon.impl` 包里，但只是 `@ApiStatus.NonExtendable`**，可以用
-- **daemon 高亮存在 document 级 `DocumentMarkupModel`**，不是 `editor.markupModel`。读错地方会得到空列表（不报错，静默失败）
-- **平台会为了"这个配置能不能跑"弹模态对话框，那会永久卡死 EDT**（实测用 `jstack` 抓到：
-  `ExecutionManagerImpl.executeConfiguration` → `RunDialog.editConfiguration` → `DialogWrapper.show`）。触发条件是
-  `RunManagerImpl.canRunConfiguration(environment)` 为 false，即 `settings.checkSettings(executor)` 抛
-  `IndexNotReadyException`（IDE 还在建索引，刚打开大项目时很常见）或 `RuntimeConfigurationError`
-  （配置本身有致命问题）。无头场景没人点那个对话框 ⇒ EDT 被占住 ⇒ 我们 `withContext(Dispatchers.EDT)`
-  的提交再也回不来，请求一直悬着、会话被移除、调用方拿到空 404。 **所以 `startRunAndAwait` 必须先用同一个公开方法
-  `RunnerAndConfigurationSettings.checkSettings(executor)` 提前问一次**，把这两种情况转成立刻、可读的结构化错误。注意
-  `checkSettings` **不检查 before-launch**（`checkSettingsBeforeRun()` 默认空实现），但 **这不是缺陷**：before-launch
-  配错了是使用姿势问题，执行时就会暴露、用户自己会去改。 **工具侧 MUST 主动判断"现在是不是有模态对话框在等用户"**：扫本 JVM
-  的 `Window.getWindows()`，找可见且带模态语义的 `Dialog`（`isModal || modalityType != MODELESS`），命中就立刻返回"这需要用户去
-  IDE 处理"。 **时机和顺序很关键**：这套判断（对话框 / `checkSettings` / `isStarting`）必须在 **停旧实例之前**先问一次，并在
-  **真正提交之前**再问一次——先停后判会"把在跑的应用白白杀掉，然后才告诉用户需要你去 IDE 处理"（实测过这个坏顺序：重排后同样的场景
-  0.02 秒返回错误，且旧实例仍然活着）。 **别用 `DialogWrapper.findInstanceFromFocus()`**——它读
-  `KeyboardFocusManager.getFocusOwner()`，IDE 窗口没被聚焦时（agent 在跑、窗口在后台）是 null，实测判断直接落空、白等满
-  `startTimeoutMs`。这一层比 `checkSettings` 更通用：后者只拦"平台因为这个配置而不能跑"，前者拦"别的对话框占着
-  EDT"（例如用户自己开的设置窗、上一次调用留下的编辑框）。 **而且 MUST NOT 为"提交到 EDT"新增超时**：它与"等进程创建"共用
-  `startTimeoutMs`。上限必须留着——完全不留的话工具永远返回不了任何东西，AI 拿到空 404，就没法把"请用户去 IDE
-  处理"转告出去，而那正是这类卡点唯一的出路（实测：用内置 `execute_run_configuration` 打一个脚本不存在的配置，平台真的会弹
-  "Edit Configuration" 把 EDT 占住；此时我们的 rerun 会 **立刻**（实测 0.03 秒，走主动判断）返回"这需要用户到 IDE 里处理"，而
-  `list_running_configurations` 仍然 0.01 秒可用，所以文案里"先查状态再重试"的建议成立）
-- **`rerun` 有异步模式 `waitForStart = false`**（对齐原生 `execute_run_configuration` 的 `waitForExit`）：只提交启动请求就返回，
-  `started` / `runningAfter` 为 `null`（"不知道"），`transition[]` 以 `START_SUBMITTED` 收尾，调用方用
-  `list_running_configurations` 轮询。给"before-launch 比会话耐心还长"的配置用——那种情况同步等下去只会把结果丢成空 404。
-  **别把 `null` 和 `false` 混起来**：`false` 是"失败"，会让 agent 去重试
-- **`stop` 必须处理"启动在飞"**：`rerun` 异步模式（`waitForStart = false`）提交完就返回，此时 Run 内容可能还没建、进程还没挂上；这时
-  `stop` 直接报 "not running; nothing to stop" 是 **假话**——进程随后就会起来（实测：stop 返回成功 3 秒后进程在跑、端口占着）。正确做法是先用
-  `hasPendingRunContent` / `ExecutionManager.isStarting(env)` 判断"有启动在飞"，再 **有界等待**（
-  `PENDING_START_ATTACH_TIMEOUT_MS`，2000ms）让它挂上进程后照常停；等不到就如实说明"启动仍在飞、什么都没停"。加上 `stop` 自己的
-  `waitTimeoutMs`（默认 5000），最坏总时长约 7 秒，仍在会话耐心之内
-- **写完 `.run.xml` MUST 调 `LocalFileSystem.refreshAndFindFileByNioFile`**，别只用 `Files.writeString`：
-  `RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，纯 nio 写的文件 VFS 注意不到就
-  **既不触发监听器也不进配置列表**（实测：文件确实落盘，但 IDE 等满 3 秒也没注册，工具只能如实报"尚未加载"）。刷新一次就正常（实测
-  `canRun` 立刻变 true，`rerun` 立刻能跑）。两个入口都是公开 API，也都不在 `execution.impl` 包里
-- **克隆 = 读源文件改名**：只换 `<configuration>` 标签里的 `name`，`run_configuration_name`（别人的引用）不动；源不在 `.run/`
-  里必须拒绝
+- **日志只能在 `processStarting` 时接** —— 挂到 `processStarted` 就可能漏掉启动横幅
+- **日志文件名里的键 = `sha256(项目路径 + "\0" + 配置名)` 前 16 位** —— 别用官方的 `sanitizeFileName`，它会把 `console-web` 与 `console_web` 抹成同一个名字
+- **历史实例按开始时间倒序，身份就是日志文件路径** —— 平台关掉 Run 标签页就什么都不剩，不靠任何内存表
+- **`.log` 是本体，`.json` sidecar 只补 `pid` / `exitCode` / `endedAt`** —— sidecar 丢了安静降级，不发 warning
+- **终端形态的 Shell（`EXECUTE_IN_TERMINAL=true`）是运行态工具的盲区**（没有 `ProcessHandler` ⇒ 没日志、停不掉、list 看不见）—— 我们的 create 写死 `false`
+- **类型插件没装 ≠ 配置不可读** —— 以 `.run.xml` 里的 `type` 为准并给 `typeKnown: false`，`cloneFrom` / `update` 照常工作
+- **`.run/` 的写入口只有定义态工具** —— 这条规矩**只写在提示词里、不做硬拦截**：用户明确要求手改文件时，工具报错比放行更糟；原生 `write` / `shell` 本来也拦不住
+- **改名必须迁移日志键**（`update_run_configuration` 的 `newName` 分支调 `renameRunLogs`）—— 漏了这步，历史会「凭空消失」
+- **写完 `.run.xml` 必须调 `LocalFileSystem.refreshAndFindFileByNioFile`** —— 否则 VFS 注意不到，文件落盘了但配置不进列表
+- **取进程号别用 `getNativePid()`**（`@ApiStatus.Experimental`）—— 用 `BaseProcessHandler.getProcess().pid()`
+- **MCP Server 只认 header `IJ_MCP_SERVER_PROJECT_PATH` 或入参 `projectPath` 决定项目** —— 每个工具的 schema 都要声明 `projectPath`（可空、不进 `required`）
+- **单次工具调用的总时长必须远小于 MCP Server 的会话耐心（实测约 15 秒）** —— 超时客户端拿到的是空 404
+- **`rerun` 的三道前置判定别删**：中间态拒绝 / 旧实例没停干净不启动 / 平台启动门
+- **`ProcessAdapter` 在 2026.2 已废弃** —— 直接实现 `ProcessListener`，只覆写 `onTextAvailable`
+- **错误结果里没有 `structuredContent`**（只有 `isError == false` 且注册表开关打开才有）⇒ 错误的关键信息一律写进 text
+- **沙箱里的 `config/disabled_plugins.txt` 基本都是陈旧残留** —— 插件加载失败先看它
+- **`pluginUntilBuild=262.*`** —— 内置 MCP Server 的 API 在 263 变了，钉住上限，别让 Marketplace 把它发给 263 用户
+- **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性** —— 调用写 `.getTools()`
+- **平台可能为「这个配置能不能跑」弹模态框，永久卡死 EDT** ⇒ 工具侧必须主动判断「现在是不是有模态对话框在等用户」
+- **`rerun` 的异步模式 `waitForStart = false`**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来
+- **`stop` 必须处理「启动在飞」**（`rerun` 异步提交后进程可能还没挂上）—— 报「没在跑」是假话
+- **克隆 = 读源文件改名** —— 只换 `<configuration>` 里的 `name`，不动 `run_configuration_name`；源不在 `.run/` 必须拒绝
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本
-- **`com.jetbrains.plugins.webDeployment` 是产品内部实现，不是平台 API**：包名是 `com.jetbrains.*` 而不是
-  `com.intellij.*` —— 没有文档、没有稳定性承诺，而且 **只在 Ultimate 里存在**（它依赖 `com.intellij.modules.ultimate`）。它没被标
-  `@ApiStatus.Internal`，所以 Plugin Verifier 不会拦，但这 **不等于**它是公开 API。规矩：引用它的类
-  **只能在确认插件存在之后**才加载——靠的是 **链式 optional 依赖**（`plugin.xml` → `mcpserver.xml` → `deployment.xml`
-  ，平台会递归加载 config-file；实测禁用 webDeployment 后平台日志会打印 `<depends> config 'deployment.xml' ... excluded`
-  ），且全插件的引用集中在 `mcp/DeploymentAccess.kt` 一个文件里。 **这条依赖不能裸写在 `plugin.xml`**（Marketplace 结构校验会警告
-  optional 依赖缺 `config-file`），也不能直接给 `plugin.xml` 那条配 `config-file`（会要求 MCP Server 与 webDeployment
-  同时存在才能解析 `mcpServer.*` 命名空间，MCP Server 缺失时插件反而加载失败）。 **也不要为此加"运行时存在性检查"**：
-  `PluginManagerCore.getPlugin` 与 `PluginManager.findEnabledPlugin` **都是 `@ApiStatus.Internal`**（后者是 Plugin
-  Verifier 实测报出来的），而 config-file 已经把"插件不在"挡在注册之前了，那层检查纯属冗余
-- **Deployment 的两类配置粒度不同，很容易读错**：`Mappings` 与 `Excluded paths` 是 **按服务器**的（存在
-  `PublishConfig$ServerData`，按服务器名/ID 索引），而 **其余全部选项**（`overwriteAll`、`deleteMissingItems`
-  、确认开关、自动上传、排除掩码、权限）都是 **项目级、所有服务器共用**。所以 `list_deployment_servers` 返回里的 `options`
-  描述的是"这个项目的部署策略"，不是"某个服务器的属性"——想按环境差异化行为只能靠调用参数（`PublishConfig.clone()` 改一份副本传给
-  `TransferTask`，不碰用户的持久配置），不能靠配置本身
-- **`overwriteAll` 的语义与字面相反**：`true`（ **默认值**）表示"不做 size+mtime 比较、每次全量覆盖"——
-  `TransferOperation.copyFile` 里是 `if (!isOverwriteAll()) { if (isUpToDate(remote, local, server)) skip }`，为 true
-  时那段跳过逻辑压根不执行。配套的 `preserveTimestamps`（默认 true）是"上传后把远端 mtime 设成本地 mtime"，
-  **关掉它下次就再也没法跳过**（mtime 对不上）
-- **"删远端多余"靠 `deleteMissingItems`，它不是"上传的某个参数"**：上传任务走 `DeploymentMode.CUSTOM`（`TransferTask`
-  的构造器默认就传它），`CUSTOM.sourceNotExist` 里判 `isDeleteMissingItems()` 决定是否生成 `Delete`；若
-  `confirmBeforeDeletion` 为 true 则生成 `UserConfirmedDelete` —— **那个会弹模态框**，MCP 路径必须回避（
-  `PublishConfig.clone()` 里强制设 false）
-- **下载方向的默认策略是 `AlwaysAsk`，会弹框**：`DownloadAction.download(...)` 的默认 `IgnoreOverwritingStrategy` 就是
-  `AlwaysAsk.INSTANCE`（对应 `Overwrite local file "x" with one from server?`）。调它 **必须显式传** `AlwaysOverwrite` /
-  `AlwaysSkip`。另外下载 **没有**上传那种 `isUpToDate` 自动跳过，也 **没有**"删本地多余"（IDEA 不支持）
-- **认证失败会弹模态登录框**：`PublishUtils.showLoginDialogAfterAuthFail` 的调用者包括 `RemoteHostTask`（`TransferTask`
-  那一族的父类）。所以在建连接之前 MUST 先用 `Deployable.create(server, project).hasCredentials()` 预检——它是纯内存判断，不联网、不弹框（
-  `WebServerConfig` 本身 **没有** `hasCredentials()`，那是 `Connectable` 上的，要经 `Deployable` 拿）
+- **`webDeployment` 是产品内部实现，不是平台 API**（只在 Ultimate 有）⇒ 引用它的类只能在确认插件存在后才加载（链式 optional 依赖把守）
+- **下载方向默认 `AlwaysAsk` 会弹框** —— 必须显式传 `AlwaysOverwrite` / `AlwaysSkip`
+- **建连接前先 `hasCredentials()` 预检** —— 否则认证失败会弹模态登录框
 
 ## REFERENCES
 

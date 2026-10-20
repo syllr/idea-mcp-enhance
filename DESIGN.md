@@ -397,7 +397,7 @@ MCP 工具的等待上限（默认 5s / 10s）是 **有意的**：避免 agent �
 | `stop_run_configuration` / `rerun_run_configuration` | 动作      | 停止 / 重启的执行报告                        |
 
 **"一个产物一个写入口"**：`.run/*.run.xml` 的增删改查只走上面三个 CRUD 工具。
-这条规则 **只写在提示词里**（工具描述 + opencode-idea 侧的 guidance / skill）， **不在 `edit_file` 里做硬拦截** ——
+这条规则 **只写在提示词里**（工具描述 + opencode-idea 侧的 guidance / skill）， **不做硬拦截** ——
 硬拦会让"用户明确要求手改某个文件"这件事直接失败，
 比现在更糟；而且原生 `write` / `shell` 本来也拦不住，只会造成"看起来有保障其实没有"。
 
@@ -559,3 +559,67 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 | 诊断的 quick-fix 建议           | 只输出消息 + 出错行       | `HighlightInfo` 有 quick fix 列表，但 API 偏 internal                             |
 | 依赖 `HighlightInfo`（impl 包） | 已确认非 `@Internal`      | 若未来被废弃，改 `collectDiagnostics` 一处即可                                    |
 | 无 i18n                         | 文案硬编码在 `plugin.xml` | 4 个 action/工具的文案量不值得维护 bundle                                         |
+
+## 附录 B：平台细节备忘
+
+从 AGENTS.md 搬过来的机制细节（**规则**在 AGENTS.md，这里是「为什么」）。条目之间无先后。
+
+- **`writeExternal` 不带 `<envs>` / `<method>`**：`RunConfigurationBase.writeExternal` 只序列化类型自己的
+  `options`。所以 **读**定义要走盘上的 `.run.xml`（完整），不要指望平台序列化能拼回整份文件；
+  round-trip 对比只对 `<option>` 的字段名有效
+- **2026.1 → 2026.2 的 API 变化**：`RunContentDescriptor` **没有** `getRunProfile()` 了；而接替它的
+  `getRunConfigurationName()` / `getRunConfigurationTypeId()`，以及 `ExecutionManager.getRunningDescriptors(...)` /
+  `getExecutors(descriptor)` —— **全都是 `@ApiStatus.Internal`**，本插件一个都不用（实例归属见下面那条"事件盖章"）
+- **平台没有 `ExecutionManager.stopRunProfile`**: Stop 按钮走 `ExecutionManagerImpl.stopProcess`（`impl` 包）。本插件用等价的公开
+  API 组合重写（`TERMINATION_REQUESTED` + `killProcess`/`detachProcess`/`destroyProcess`），语义逐条对齐，见
+  `RunConfigAccess.stopHandler` 的 KDoc
+- **`McpToolSchema.propertiesSchema` 只装 properties**，不含根级 `"type": "object"`；根类型由 MCP Server 合成 schema
+  时补（input 与 output 都一样）
+- **服务器会按客户端配置裁剪 schema**：客户端给了 header 时，它会把 **所有**工具的 `projectPath` 参数从 schema
+  里摘掉（官方工具也一样）；只在没给 header 时才保留。所以验"有没有声明 projectPath"必须用 **不带 header**的 `tools/list`
+  ，否则会误判成"没声明"
+- **启动 Run Configuration 是异步的**：`ExecutionManager.restartRunProfile(env)` 发射后不管，紧接着做快照必然读到
+  `runningAfter = 0`、`instances[]` 里只有旧的已死实例。必须走
+  `ProgramRunnerUtil.executeConfigurationAsync(env, false, true, callback)` + `ProgramRunner.Callback`，在
+  `processStarted` 里拿到 `descriptor` 才算"起来了"（内置 `execute_run_configuration` 也是这么做的）
+- **`executeConfigurationAsync` 的第一句就是平台自己的门**：`if (!manager.isStarting(environment)) { … }` —— 同配置 + 同
+  executor + 同 runner 正在启动时，这次提交被 **静默丢弃**（回调都不装，既不回 `processStarted` 也不回
+  `processNotStarted`）。`isStarting` 读的是 `inProgress`，而 `inProgress` 是 `executeConfiguration` 一进来就加、 **进程创建并
+  `startNotify` 之后才减**（`ExecutionManagerImpl.kt` 里 `inProgress.update { it - inProgressEntry }` 紧跟
+  `processHandler.startNotify()`）⇒ **碰撞窗口 = 整个启动过程**， **包含 before-launch 的构建时长**（实测：给配置挂一个永不退出的
+  before-launch 后，第二次 rerun 0 秒返回 "another start is already in
+  progress"；我早先说"窗口只有进程创建那几十毫秒"是错的）。 **平台永远不会起两个实例**，所以"防双实例"不需要我们做；`rerun`
+  只需在发起前用同一个条件问一次，把"静默丢弃"换成立刻、精确的错误
+- **before-launch 步骤可以查出来**：`RunConfiguration.getBeforeRunTasks()`（公开默认方法）。平台在它们跑完之前 **不产出 Run
+  内容**（实测：给 `node-server` 挂一个永不退出的 before-launch 后，`list` 里只有那个 before-launch 配置有实例、
+  `node-server` 什么都没有）。所以启动超时的文案必须点明这一点，而不是让人以为启动失败
+- **中间态判定真的能抓到**（实测，不是推理）：`stop` 等待进程退出的窗口里，另一会话 rerun 会拿到
+  `isError=true` + `"…is currently stopping, and the IDE disables Rerun in that state."`。判据与 GUI 同源：
+  平台的 `FakeRerunAction.isEnabled` 判 `isStarting()` / `isProcessTerminating()`，我们按 **每个实例**读
+  `ProcessHandler` 的同一对状态（`startNotified` / `isProcessTerminating`），粒度更细、且不依赖 UI 组件树
+- **`RunContentDescriptor` 没有任何公开的"配置归属"API**：`getRunConfigurationName()` 与
+  `ExecutionManager.getRunningDescriptors(...)` 从 262 起就都是 `@ApiStatus.Internal`（Plugin Verifier 在 2026.3 上把它报成
+  internal API usage），而 `displayName` 是多实例会被加后缀的 UI 文本。归属因此改成"事件盖章"：
+  `ExecutionListener.processStarting/processStarted`（由 `ExecutionManagerImpl` 发出；IDE 的 Run/Rerun 按钮、内置
+  `execute_run_configuration`、我们自己的 `rerun` 三条路都经过它）把配置名写进 `ProcessHandler`（
+  `ProcessHandler extends UserDataHolderBase`），读的时候用公开的 `descriptor.processHandler` 取回同一个 handler 上的戳——见
+  `mcp/RunConfigurationStamping.kt`。 **没有**戳的 Run 内容会被跳过：宁可少列一个，也不猜一个错的名字
+- **`HighlightInfo` 在 `...daemon.impl` 包里，但只是 `@ApiStatus.NonExtendable`**，可以用
+- **daemon 高亮存在 document 级 `DocumentMarkupModel`**，不是 `editor.markupModel`。读错地方会得到空列表（不报错，静默失败）
+- **写完 `.run.xml` MUST 调 `LocalFileSystem.refreshAndFindFileByNioFile`**，别只用 `Files.writeString`：
+  `RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，纯 nio 写的文件 VFS 注意不到就
+  **既不触发监听器也不进配置列表**（实测：文件确实落盘，但 IDE 等满 3 秒也没注册，工具只能如实报"尚未加载"）。刷新一次就正常（实测
+  `canRun` 立刻变 true，`rerun` 立刻能跑）。两个入口都是公开 API，也都不在 `execution.impl` 包里
+- **Deployment 的两类配置粒度不同，很容易读错**：`Mappings` 与 `Excluded paths` 是 **按服务器**的（存在
+  `PublishConfig$ServerData`，按服务器名/ID 索引），而 **其余全部选项**（`overwriteAll`、`deleteMissingItems`
+  、确认开关、自动上传、排除掩码、权限）都是 **项目级、所有服务器共用**。所以 `list_deployment_servers` 返回里的 `options`
+  描述的是"这个项目的部署策略"，不是"某个服务器的属性"——想按环境差异化行为只能靠调用参数（`PublishConfig.clone()` 改一份副本传给
+  `TransferTask`，不碰用户的持久配置），不能靠配置本身
+- **`overwriteAll` 的语义与字面相反**：`true`（ **默认值**）表示"不做 size+mtime 比较、每次全量覆盖"——
+  `TransferOperation.copyFile` 里是 `if (!isOverwriteAll()) { if (isUpToDate(remote, local, server)) skip }`，为 true
+  时那段跳过逻辑压根不执行。配套的 `preserveTimestamps`（默认 true）是"上传后把远端 mtime 设成本地 mtime"，
+  **关掉它下次就再也没法跳过**（mtime 对不上）
+- **"删远端多余"靠 `deleteMissingItems`，它不是"上传的某个参数"**：上传任务走 `DeploymentMode.CUSTOM`（`TransferTask`
+  的构造器默认就传它），`CUSTOM.sourceNotExist` 里判 `isDeleteMissingItems()` 决定是否生成 `Delete`；若
+  `confirmBeforeDeletion` 为 true 则生成 `UserConfirmedDelete` —— **那个会弹模态框**，MCP 路径必须回避（
+  `PublishConfig.clone()` 里强制设 false）
