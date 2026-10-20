@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-20
+
+### Added
+
+- **Run Configuration 定义态工具（4 个）** —— 补齐内置 MCP Server 只有"列 / 跑"、没有"建 / 改 / 删"的空白：
+  - `inspect_run_configuration`（只读）—— 一个配置的全貌：类型、存储位置、能不能跑、`options` / `attributes` / `envs` / before-launch、原始 XML、当前活实例（pid / 状态 / 启动时间 / 日志路径）、历史运行（按开始时间倒序）、以及按 `[os@]base[@env]` 解析出的平台 / 环境维度。类型插件没装时仍可读：`type` 取文件里声明的值，`typeKnown: false`。
+  - `create_run_configuration` —— 建**任意类型**的项目级配置。内容来源三选一：`cloneFrom`（复制现成的，最稳）、`configurationXml`、平台模板 + 补丁；写盘前用平台自己的 `readExternal` 校验，拼错的字段以 `unknownOptions` 报出来。
+  - `update_run_configuration` —— 改字段（`options` / `attributes` / `envs` 补丁）**和改名**（`newName`）：文件跟着挪、别人对它的引用（before-launch / 复合配置）一起改、历史日志的键也迁移。
+  - `delete_run_configuration` —— 在跑或被人引用时拒绝；`force = true` 才连引用一起清掉。
+- **运行日志采集 + 历史**：进程启动的那一刻开始抓 stdout/stderr，落到 IDE 临时目录的 `ij_enhance_run__*.log`，退出时补一份 sidecar（pid / exitCode / 结束时间）。`list_running_configurations` 与 `inspect_run_configuration` 直接给出每个实例的日志路径，**历史运行按开始时间排序、只保留日志还在的那些**。
+- `list_running_configurations` 的实例现在带 `state`（`running` / `terminating` / `starting`）与 `logFile`。
+
+### Changed
+
+- `list_running_configurations` 改成**索引**：去掉派生计数（配置数 = 数组长度）、恒定字段（`isTemplate` / `running` / `exitCode`）和不可信的 UI 文本（`displayName`）。详情走 `inspect_run_configuration`。
+- `update_run_configuration` 改完会同时刷新三处：磁盘、编辑器里的 Document、RunManager 的内存对象 —— 实测过"文件改了但点 Run 跑的还是旧脚本"。
+
+### Fixed
+
+- **Shell 模板的机器级默认值**：从平台模板新建时会把本机绝对工作目录、`/bin/zsh`、终端模式、`EXECUTE_SCRIPT_FILE=true` 一起带进来。现在归一化为 `$PROJECT_DIR$`、空解释器、非终端模式，并按是否给了 `SCRIPT_TEXT` 决定 `EXECUTE_SCRIPT_FILE`。
+- **Maven / Gradle 这类走 `XmlSerializer` 的类型读不了**：解析 XML 时保留了缩进空白节点，平台反序列化会 `Text as Element` 崩溃。改用平台自己的 `JDOMUtil`。
+- **更新后编辑器里的旧副本**：文件在编辑器打开时只写磁盘，`read_file` 仍读到旧内容、用户一保存就冲掉新值。现在直接改 Document。
+- **日志采集在 `rerun` 路径上抓不到**：我们自己的回调先 `startNotify()`，平台的 `processStarting` 被跳过。改成先接采集、再启动；用户手点 Run 的场景在 `processStarted` 补挂。
+- 历史里混进正在跑的实例（按日志路径去重）。
+- 类型插件缺失时（`Unknown`）不再阻断克隆 / 修改：按文件内容原样处理并给出 warning。
+
+### Removed
+
+- **`create_shell_run_configuration`** —— 它本来就是 `create_run_configuration` 的子集（只能建 Shell、没有平台校验）；现在统一走通用工具，实现只剩一份。
+
 ## [0.0.3] - 2026-10-17
 
 ### Fixed
@@ -89,7 +119,8 @@
 - `rerun_run_configuration` 用配置**名字**定位，不支持 `file:line` 代码位置。
 - **内置 `get_run_configurations` 的 `filePath` 模式未实现**：给定一个文件、列出该文件里可执行的入口点（IDE 行号槽上出现 Run 图标的位置），那需要整套 PSI / `RunConfigurationProducer` / `ConfigurationFromContext` 能力。本插件刻意不碰 PSI（prompt 那半也不碰），因此这块仍由内置工具承担，两个工具组合使用即可。
 
-[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.3...HEAD
+[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.3...0.1.0
 [0.0.3]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...0.0.3
 [0.0.2]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.1...0.0.2
 [0.0.1]: https://github.com/syllr/idea-mcp-enhance/commits/0.0.1

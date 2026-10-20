@@ -96,15 +96,15 @@ internal fun parseConfigurationXml(xml: String): Element? {
     if (trimmed.isEmpty()) return null
     val wrapped = if (trimmed.startsWith("<configuration")) trimmed
     else "<configuration>$trimmed</configuration>"
-    val document = runCatching { secureSaxBuilder().build(wrapped.byteInputStream()) }.getOrNull() ?: return null
-    return document.rootElement.takeIf { it.name == "configuration" }
+    val root = runCatching { com.intellij.openapi.util.JDOMUtil.load(wrapped) }.getOrNull() ?: return null
+    return root.takeIf { it.name == "configuration" }
 }
 
 /** 把 `<configuration>` 包成 IDE 认识的整文件形状。 */
 internal fun runConfigurationFileContent(element: Element): String =
     "<component name=\"ProjectRunConfigurationManager\">\n" +
-        writeConfigurationXml(element) + "\n" +
-        "</component>\n"
+        writeConfigurationXml(element, baseDepth = 1) + "\n" +
+        "</component>"
 
 /**
  * 写配置文件。
@@ -140,8 +140,12 @@ internal fun writeRunConfigurationFileSynced(
     content: String,
     overwrite: Boolean,
 ): Boolean {
-    val virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
-    val document = virtualFile?.let { FileDocumentManager.getInstance().getDocument(it) }
+    // `FileDocumentManager.getDocument` 要求 read access（实测在后台线程直接调会抛
+    // "Read access is allowed from inside read-action only"），所以这一小段必须包在 read action 里。
+    val document = ApplicationManager.getApplication().runReadAction<com.intellij.openapi.editor.Document?> {
+        val virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
+        virtualFile?.let { FileDocumentManager.getInstance().getDocument(it) }
+    }
     if (document == null) return writeRunConfigurationFile(path, content, overwrite)
     if (!overwrite) return false
     ApplicationManager.getApplication().invokeAndWait {
@@ -183,8 +187,8 @@ internal fun findReferencesTo(project: Project, name: String): List<RunConfigura
     runCatching {
         Files.list(directory).use { stream ->
             stream.filter { it.fileName.toString().endsWith(".run.xml") }.forEach { file ->
-                val root = runCatching { secureSaxBuilder().build(file.toFile()) }.getOrNull() ?: return@forEach
-                val configuration = root.rootElement.getChild("configuration") ?: return@forEach
+                val root = runCatching { com.intellij.openapi.util.JDOMUtil.load(file) }.getOrNull() ?: return@forEach
+                val configuration = root.getChild("configuration") ?: return@forEach
                 if (configuration.getAttributeValue("name") == name) return@forEach
                 if (hasReferenceTo(configuration, name)) {
                     references += RunConfigurationReference(
@@ -222,8 +226,8 @@ internal fun rewriteReferences(
     runCatching {
         Files.list(directory).use { stream ->
             stream.filter { it.fileName.toString().endsWith(".run.xml") }.forEach { file ->
-                val root = runCatching { secureSaxBuilder().build(file.toFile()) }.getOrNull() ?: return@forEach
-                val configuration = root.rootElement.getChild("configuration") ?: return@forEach
+                val root = runCatching { com.intellij.openapi.util.JDOMUtil.load(file) }.getOrNull() ?: return@forEach
+                val configuration = root.getChild("configuration") ?: return@forEach
                 if (configuration.getAttributeValue("name") == name) return@forEach
                 var touched = false
                 val method = configuration.getChild("method")

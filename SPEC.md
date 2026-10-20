@@ -149,7 +149,6 @@ diagnostics:
 | 运行态 | `list_running_configurations`                                                    | ✓   | ✗     | ✓   |
 | 运行态 | `stop_run_configuration`                                                         | ✗   | ✓     | ✓   |
 | 运行态 | `rerun_run_configuration`                                                        | ✗   | ✓     | ✗   |
-| 定义态 | `create_shell_run_configuration`（`create_run_configuration` 的 Shell 快捷入口） | ✗   | ✗     | ✗   |
 | 定义态 | `inspect_run_configuration`                                                      | ✓   | ✗     | ✓   |
 | 定义态 | `create_run_configuration`                                                       | ✗   | ✗     | ✗   |
 | 定义态 | `update_run_configuration`（含改名）                                             | ✗   | ✗     | ✓   |
@@ -274,61 +273,6 @@ diagnostics:
   "warnings": []
 }
 ```
-
-### 3.7 `create_shell_run_configuration`
-
-只建 **Shell Script** 类型（`ShConfigurationType`）——没有 `type` 参数。
-用途：Shell 配置自带项目的执行环境（工作目录、环境变量、解释器），agent 需要"用项目环境跑命令"时，
-先用这个工具建一个，再用 `rerun_run_configuration` 启动它。
-
-入参：
-
-| 参数                 | 类型   | 必填 | 默认 | 说明                                                                                |
-|----------------------|--------|------|------|-------------------------------------------------------------------------------------|
-| `configurationName`  | string | 是   | —    | 新配置名，必须与现有配置不重名                                                      |
-| `scriptPath`         | string | 否   | —    | 跑一个脚本文件（相对项目根或绝对路径）；与 `scriptText` / `cloneFrom` 三选一        |
-| `scriptText`         | string | 否   | —    | 直接跑一段内联脚本；与 `scriptPath` / `cloneFrom` 三选一                            |
-| `cloneFrom`          | string | 否   | —    | 克隆一个已有的 **Shell** 配置（脚本 + 环境 + before-launch 一起拷）；与前两者三选一 |
-| `scriptOptions`      | string | 否   | —    | 传给脚本的参数                                                                      |
-| `workingDirectory`   | string | 否   | —    | 脚本的工作目录；不给就是模板默认值                                                  |
-| `interpreterPath`    | string | 否   | —    | 解释器（如 `/bin/zsh`）；不给就是模板默认值                                         |
-| `interpreterOptions` | string | 否   | —    | 传给解释器的参数                                                                    |
-| `envs`               | object | 否   | —    | 额外的环境变量（string 到 string）；非字符串的值跳过                                |
-| `projectPath`        | string | 否   | —    | 见「项目解析」                                                                      |
-
-行为：
-
-- MUST 只创建 **项目级**配置：调 `RunnerAndConfigurationSettings.storeInArbitraryFileInProject(...)`
-  **直接写 `.run.xml` 文件**（纯字符串生成，不调平台创建 API）。 **MUST NOT 提供 `shared` / 本地工作区开关**
-- 默认落点 MUST 与 IDE 一致：`<项目根>/.run/<配置名>.run.xml`（配置叫什么，文件就叫什么）；
-  落点由配置名唯一决定，MUST NOT 暴露成入参（配置一定是项目级的、一定在 `.run/` 里）
-- 工具描述 MUST 说明落点固定为 `<项目根>/.run/<配置名>.run.xml`、且恒为项目级，并 MUST 明确
-  要求 agent **只能经本工具创建 / 克隆**、 **MUST NOT 自行创建或编辑该 `.run.xml` 文件**；
-  MUST NOT 复述 IDE 的存储实现细节（例如 "Store as project file" 复选框），
-  以免诱导 agent 绕过工具直接去改项目里的 `.run/` 文件（这两句由 `RunLifecycleSchemaTest` 钉住）
-- 工具描述 MUST 要求 agent **创建前先取得用户同意**，并 MUST 说明本工具面向项目的固定流程、不是跑一次性命令的手段
-  （理由：run configuration 是项目里的持久产物，一个项目通常只有几个；这三句由 `RunLifecycleSchemaTest` 钉住）
-- 其它固定项同样 MUST NOT 暴露：脚本恒定继承 IDE 的环境（`pass-parent-envs="true"`）、
-  恒定跑在 Run 工具窗口而非终端（`EXECUTE_IN_TERMINAL=false`）
-- 文件形状 MUST 与 IDE 自己写的字节一致：8 个业务 option（`SCRIPT_*` / `INTERPRETER_*` /
-  `EXECUTE_*`）+ `<envs>` + `<method>`，`INDEPENDENT_*` 三行带 `true`；属性值 MUST 转义
-  （`& < > "`，换行写成 `&#10;`——XML 属性里的原始换行会被规整成空格）；
-  相对路径 MUST 转成 `$PROJECT_DIR$` 宏；没给的字段写空值（与 IDE 存"空字段"的方式一致）
-- `cloneFrom` MUST 用 `RunConfiguration.clone()`（选项 + before-launch 一起拷），
-  读源文件改名（只换 `<configuration>` 标签里的 `name`，别人的 `run_configuration_name` 引用不动）；
-  且源 MUST 本身就是 Shell 类型，否则拒绝；目标是 **模板**时 MUST 拒绝（模板不是实例）
-- 结果 MUST 回传 `canRun`（平台自己的 `checkSettings`）与 `canRunBlockedReason`
-  （如脚本文件不存在）；`createdFrom` MUST 是 `script:<路径>` / `script-text` / `clone:<源名>` 之一；
-  文件刚写完、IDE 还没加载时 `canRun` 为 false（原因是"尚未加载"，不是"配置有问题"），MUST 如实报告
-- 重名 MUST 拒绝并回 `RunManager.suggestUniqueName` 给出的建议名；
-  `cloneFrom` 不存在 MUST 走既有的候选名机制；
-  `scriptPath` / `scriptText` / `cloneFrom` 给零个或多个 MUST 拒绝；
-  目标文件已存在 MUST 拒绝（没有 delete 工具，不悄悄覆盖）
-- 写完 MUST **刷新 VFS**（`LocalFileSystem.refreshAndFindFileByNioFile`）再等 IDE 文件监听注册
-  （有界等待）：监听器只处理 `LocalFileSystem` 的创建事件，纯 nio 写入的文件 VFS 注意不到，
-  就既不触发监听器也不进配置列表（实测：文件落盘但等满 3 秒未注册）
-- 注册上就用 `checkSettings` 问"能不能跑"；等不到 MUST 报告"文件已写、尚未加载"，
-  MUST NOT 谎报"创建失败"或"能跑"
 
 ### 3.6 `rerun_run_configuration`
 
@@ -535,6 +479,8 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 - MUST 先查重（精确 + 忽略大小写）→ 名字被占用时报错并给建议名
 - MUST 在写盘前用平台反序列化校验（`RunConfiguration.readExternal`），并把"请求了但平台不认识"的
   option 名字作为 `unknownOptions` 返回（拼写错误的证据）
+- **`cloneFrom` 一个"本机类型插件没装"的配置 MUST 被允许**（按文件内容原样复制、跳过平台校验，并给 warning）：
+  配置是文件驱动的，装了插件的机器就能跑。但调用方**显式**给了 `type` 而该类型不可用时 MUST 拒绝
 - MUST 在描述里要求 agent **先征得用户同意**；一次性命令不该建配置
 
 `update_run_configuration`：

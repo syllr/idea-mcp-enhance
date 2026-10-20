@@ -213,141 +213,14 @@ internal suspend fun awaitPendingStart(
 internal fun runConfigurationFilePath(project: Project, name: String): String? =
     project.basePath?.let { FileUtil.toSystemIndependentName(Path.of(it, ".run", "$name.run.xml").toString()) }
 
-/** Shell Script 配置类型的 id（`ShConfigurationType`，显示名 "Shell Script"）。本工具只建这种。 */
+/** Shell Script 配置类型的 id（`ShConfigurationType`，显示名 "Shell Script"）。定义态工具用它做 Shell 专属的默认值归一化。 */
 internal const val SHELL_CONFIGURATION_TYPE_ID = "ShConfigurationType"
-
-/**
- * Shell 配置的内容（会原样写进 `.run.xml`，见 [shellRunConfigurationXml]）。
- *
- * 两条路二选一：
- * - `scriptPath`：跑一个脚本文件（`EXECUTE_SCRIPT_FILE=true`）
- * - `scriptText`：直接跑一段内联脚本（`EXECUTE_SCRIPT_FILE=false`）
- */
-internal data class ShellRunSpec(
-    val scriptPath: String?,
-    val scriptText: String?,
-    val scriptOptions: String?,
-    val workingDirectory: String?,
-    val interpreterPath: String?,
-    val interpreterOptions: String?,
-    val envs: Map<String, String>,
-)
 
 /** 写完 `.run.xml` 后等 IDE 文件监听注册它的上限。 */
 internal const val CONFIG_REGISTER_TIMEOUT_MS = 3_000L
 
 /** 上面的轮询间隔。 */
 private const val CONFIG_REGISTER_POLL_MS = 50L
-
-/**
- * 属性值转义。换行必须写成 `&#10;`：XML 属性里的原始换行在解析时会被规整成空格，
- * 内联脚本（`SCRIPT_TEXT`）不转义就会坏。
- */
-internal fun xmlEscapeAttr(value: String): String = buildString {
-    for (c in value) {
-        when (c) {
-            '&' -> append("&amp;")
-            '<' -> append("&lt;")
-            '>' -> append("&gt;")
-            '"' -> append("&quot;")
-            '\n' -> append("&#10;")
-            '\r' -> append("&#13;")
-            '\t' -> append("&#9;")
-            else -> append(c)
-        }
-    }
-}
-
-/**
- * 相对路径转 `$PROJECT_DIR$` 宏（fixture 里就是这么存的）。
- *
- * 已经是绝对路径 / 已经带宏的原样返回；相对路径去掉开头的 `./` 后拼上宏。
- */
-internal fun withProjectDirMacro(path: String): String {
-    val t = path.trim()
-    if (t.startsWith("\$PROJECT_DIR\$") || t.startsWith("/") || t.matches(Regex("^[A-Za-z]:.*"))) return t
-    return "\$PROJECT_DIR\$/" + t.removePrefix("./")
-}
-
-/**
- * 按 [ShellRunSpec] 生成 `.run.xml` 文件内容（Shell Script 配置）。
- *
- * 形状与 IDE 自己写的字节一致（对着 fixture + `ShRunConfiguration.writeExternal` 的字节码逐项核过：
- * 8 个业务 option + `<envs>` + `<method>`；`INDEPENDENT_*` 三行照原样带上 `true`——
- * sh 插件 303 个类里没有任何一个在字节码里读写它们，是平台 options 机制自管的标记，
- * 缺省行为不明，手写时带上已知-good 的值最安全，实机验证会覆盖两种模式）。
- *
- * 没给的字段写空值（与 IDE 存"空着的字段"的方式一致），不省略——省略与否的语义不明，不猜。
- *
- * @param beforeRunInnerXml `<method>` 里的 inner XML（克隆时从源文件原样带来）；空 = 自闭合
- */
-internal fun shellRunConfigurationXml(name: String, spec: ShellRunSpec, beforeRunInnerXml: String = ""): String {
-    val scriptPath = spec.scriptPath?.let(::withProjectDirMacro)
-    val workDir = spec.workingDirectory?.let(::withProjectDirMacro)
-    val executeScriptFile = spec.scriptPath != null
-    val method = if (beforeRunInnerXml.isBlank()) "<method v=\"2\" />"
-    else "<method v=\"2\">$beforeRunInnerXml</method>"
-    val envs = if (spec.envs.isEmpty()) "<envs />" else buildString {
-        append("<envs pass-parent-envs=\"true\">")
-        for ((k, v) in spec.envs) append("<env name=\"${xmlEscapeAttr(k)}\" value=\"${xmlEscapeAttr(v)}\" />")
-        append("</envs>")
-    }
-    return "<component name=\"ProjectRunConfigurationManager\">\n" +
-        "  <configuration default=\"false\" name=\"${xmlEscapeAttr(name)}\" type=\"ShConfigurationType\" factoryName=\"Shell Script\">\n" +
-        "    <option name=\"SCRIPT_TEXT\" value=\"${xmlEscapeAttr(spec.scriptText.orEmpty())}\" />\n" +
-        "    <option name=\"INDEPENDENT_SCRIPT_PATH\" value=\"true\" />\n" +
-        "    <option name=\"SCRIPT_PATH\" value=\"${xmlEscapeAttr(scriptPath.orEmpty())}\" />\n" +
-        "    <option name=\"SCRIPT_OPTIONS\" value=\"${xmlEscapeAttr(spec.scriptOptions.orEmpty())}\" />\n" +
-        "    <option name=\"INDEPENDENT_SCRIPT_WORKING_DIRECTORY\" value=\"true\" />\n" +
-        "    <option name=\"SCRIPT_WORKING_DIRECTORY\" value=\"${xmlEscapeAttr(workDir.orEmpty())}\" />\n" +
-        "    <option name=\"INDEPENDENT_INTERPRETER_PATH\" value=\"true\" />\n" +
-        "    <option name=\"INTERPRETER_PATH\" value=\"${xmlEscapeAttr(spec.interpreterPath.orEmpty())}\" />\n" +
-        "    <option name=\"INTERPRETER_OPTIONS\" value=\"${xmlEscapeAttr(spec.interpreterOptions.orEmpty())}\" />\n" +
-        "    <option name=\"EXECUTE_IN_TERMINAL\" value=\"false\" />\n" +
-        "    <option name=\"EXECUTE_SCRIPT_FILE\" value=\"$executeScriptFile\" />\n" +
-        "    $envs\n" +
-        "    $method\n" +
-        "  </configuration>\n" +
-        "</component>\n"
-}
-
-/**
- * 克隆：把源文件内容里的配置名换成新名。
- *
- * 只换 `<configuration ...>` 标签里的 `name="老名"`（精确到标签范围内找首次命中）；
- * `run_configuration_name="老名"`（别人指向它的 before-launch）**不动**——那是别人的引用。
- * 找不到返回 null。
- */
-internal fun cloneRunConfigurationXml(sourceXml: String, oldName: String, newName: String): String? {
-    val tagStart = sourceXml.indexOf("<configuration")
-    if (tagStart < 0) return null
-    val tagEnd = sourceXml.indexOf('>', tagStart)
-    if (tagEnd < 0) return null
-    val needle = " name=\"${xmlEscapeAttr(oldName)}\""
-    val idx = sourceXml.indexOf(needle, tagStart)
-    if (idx < 0 || idx > tagEnd) return null
-    return sourceXml.substring(0, idx) + " name=\"${xmlEscapeAttr(newName)}\"" + sourceXml.substring(idx + needle.length)
-}
-
-/**
- * 写 `.run.xml` 文件。父目录不存在就建；目标已存在就**不覆盖**（返回 false）。
- *
- * **用 VFS（`refreshAndFindFileByNioFile`）而 `java.nio` 写完不刷新是不行的**：平台的
- * `RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，`Files.writeString`
- * 写的文件 VFS 没注意到时就既不触发监听器也不进配置列表——实测过：文件确实落盘，
- * 但 IDE 等满 3 秒也没注册（工具只能如实报"尚未加载"）。刷新一次即可。两个入口都是公开 API，
- * 也都不在 `execution.impl` 包里。
- *
- * 不覆盖是刻意的：没有 delete 工具，覆盖会悄悄吃掉用户在 IDE 里改好的配置；
- * 调用方遇到 false 就报错，让用户自己删文件。
- */
-internal fun writeRunConfigurationFile(storagePath: String, content: String): Boolean = runCatching {
-    val path = Path.of(storagePath)
-    path.parent?.let { Files.createDirectories(it) }
-    Files.writeString(path, content, StandardOpenOption.CREATE_NEW)
-    LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
-    true
-}.getOrDefault(false)
 
 /**
  * 等 IDE 的文件监听把刚写的 `.run.xml` 注册成可用配置（`RunManager.findConfigurationByName` 能查到）。

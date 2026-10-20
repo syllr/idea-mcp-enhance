@@ -17,7 +17,7 @@
             <li><b>Copy Diagnostics as Prompt</b> - copy the current file's errors and warnings as one clean list.</li>
             <li><b>Run Lifecycle MCP tools</b> - <code>list_running_configurations</code>,
                 <code>stop_run_configuration</code>, <code>rerun_run_configuration</code> and
-                <code>create_shell_run_configuration</code>, driving the IDE's own process handlers:
+                <code>create_run_configuration</code>, driving the IDE's own process handlers:
                 no port guessing, no command-line matching, no changes to your start scripts.</li>
         </ul>
         <p>Requires IntelliJ IDEA 2026.2 with the bundled MCP Server plugin enabled.</p>

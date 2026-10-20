@@ -222,6 +222,7 @@ class RunLogAndNamingTest {
             configurationName = "win@console-web@testenv",
             typeId = "ShConfigurationType",
             typeDisplayName = "Shell Script",
+            typeKnown = true,
             storage = RunConfigurationStorage.RUN_FILE,
             storagePath = "/p/.run/win@console-web@testenv.run.xml",
             shared = true,
@@ -242,7 +243,7 @@ class RunLogAndNamingTest {
 
         assertEquals(
             setOf(
-                "configurationName", "type", "typeDisplayName", "storage", "isTemplate", "canRun",
+                "configurationName", "type", "typeDisplayName", "typeKnown", "storage", "isTemplate", "canRun",
                 "canRunBlockedReason", "naming", "attributes", "options", "envs", "beforeLaunchSteps",
                 "configurationXml", "instances", "history", "warnings",
             ),

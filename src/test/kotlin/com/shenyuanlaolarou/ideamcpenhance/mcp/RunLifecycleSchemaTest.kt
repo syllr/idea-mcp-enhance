@@ -37,74 +37,10 @@ class RunLifecycleSchemaTest {
     // ---------- 工具集合 ----------
 
     @Test
-    fun `provider 暴露且只暴露四个工具`() {
+    fun `provider 暴露且只暴露三个工具`() {
         assertEquals(
-            listOf(LIST_TOOL_NAME, STOP_TOOL_NAME, RERUN_TOOL_NAME, CREATE_TOOL_NAME),
+            listOf(LIST_TOOL_NAME, STOP_TOOL_NAME, RERUN_TOOL_NAME),
             tools().map { it.descriptor.name },
-        )
-    }
-
-    @Test
-    fun `create 工具的入参契约`() {
-        // 只建 Shell 类型：没有 `type` 参数。落点/是否继承环境/是否终端运行都是写死的，不开放给调用方。
-        // 三选一：scriptPath / scriptText / cloneFrom。
-        val schema = toolByName(CREATE_TOOL_NAME).descriptor.inputSchema
-        assertEquals(
-            setOf(
-                "configurationName", "scriptPath", "scriptText", "cloneFrom", "scriptOptions",
-                "workingDirectory", "interpreterPath", "interpreterOptions", "envs", "projectPath",
-            ),
-            schema.propertiesSchema.keys,
-        )
-        assertEquals("只有配置名必填", setOf("configurationName"), schema.requiredProperties)
-        assertEquals("工具名必须带 shell", "create_shell_run_configuration", CREATE_TOOL_NAME)
-        assertFalse(
-            "不该有 delete 工具：删除是用户在 IDE 里的动作",
-            tools().any { it.descriptor.name.contains("delete") },
-        )
-    }
-
-    @Test
-    fun `create 工具的说明要求先取得用户同意`() {
-        // 建 run configuration 是重操作：会落进项目 `.run/`（通常还会提交、全队共享），一个项目一般只有几个。
-        // 这条约束只写在描述里，模型看不到就等于没有 —— 所以用测试钉住它。
-        val description = toolByName(CREATE_TOOL_NAME).descriptor.description
-
-        assertTrue(
-            "必须写明创建前要征得用户同意",
-            description.contains("Ask the user before creating"),
-        )
-        assertTrue(
-            "必须写明它只用于项目的固定流程，不是跑一次性命令的手段",
-            description.contains("permanent workflow"),
-        )
-        assertTrue(
-            "必须写明一次性命令不该走这里",
-            description.contains("one-off"),
-        )
-        // 落点是写死的、且只能经本工具创建：必须明确禁止 agent 自行创建 / 编辑该文件，
-        // 否则 agent 看到路径后会绕过工具直接去改 `.run/` 下的文件。
-        assertTrue(
-            "必须写明不得自行创建 / 编辑该配置文件",
-            description.contains("Do not create or edit that file yourself"),
-        )
-        assertTrue(
-            "必须写明创建 / 修改 / 删除都走工具",
-            description.contains("creating, changing and deleting a configuration all go") &&
-                description.contains("update_run_configuration") &&
-                description.contains("delete_run_configuration"),
-        )
-        // 反例：不能出现鼓励"需要跑命令就去建一个"的表述。
-        assertFalse(
-            "描述里不该再有'agent 需要跑命令就建一个'的表述",
-            description.contains("agent that needs to run project commands with that environment creates one"),
-        )
-        // 反例：不要扯"提交给全队 / 走 VCS 共享"——落点在 `.run/`，提不提交只看用户想不想。
-        assertFalse(
-            "不要写提交 / VCS 共享之类的描述",
-            description.contains("usually committed") ||
-                description.contains("shared through VCS") ||
-                description.contains("whole team"),
         )
     }
 
@@ -140,95 +76,6 @@ class RunLifecycleSchemaTest {
             description.contains("Do not shrink `stopTimeoutMs`"),
         )
         assertTrue("必须给出服务器耐心的量级", description.contains("roughly 15"))
-    }
-
-    @Test
-    fun `envs 参数是对象类型`() {
-        val schema = toolByName(CREATE_TOOL_NAME).descriptor.inputSchema
-        val envs = schema.propertiesSchema["envs"]!!.jsonObject
-        assertEquals("object", envs["type"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun `shellRunConfigurationXml 按 fixture 形状生成 scriptPath 模式`() {
-        // 形状必须与 IDE 自己写的字节一致（对着 fixture + writeExternal 字节码逐项核过），
-        // 否则文件监听加载出来的东西可能与预期不符。
-        val xml = shellRunConfigurationXml(
-            "my-app",
-            ShellRunSpec(
-                scriptPath = "scripts/dev.sh",
-                scriptText = null,
-                scriptOptions = "--watch",
-                workingDirectory = "scripts",
-                interpreterPath = "/bin/zsh",
-                interpreterOptions = null,
-                envs = mapOf("PORT" to "3201"),
-            ),
-        )
-        assertTrue(xml, xml.contains("name=\"my-app\""))
-        assertTrue(xml, xml.contains("type=\"ShConfigurationType\""))
-        assertTrue("相对路径转宏", xml.contains("value=\"\$PROJECT_DIR\$/scripts/dev.sh\""))
-        assertTrue(xml, xml.contains("value=\"\$PROJECT_DIR\$/scripts\""))
-        assertTrue(xml, xml.contains("EXECUTE_SCRIPT_FILE\" value=\"true\""))
-        assertTrue(xml, xml.contains("<env name=\"PORT\" value=\"3201\" />"))
-        assertTrue(xml, xml.contains("pass-parent-envs=\"true\""))
-        assertTrue("空 before-launch 自闭合", xml.contains("<method v=\"2\" />"))
-    }
-
-    @Test
-    fun `shellRunConfigurationXml 内联脚本转义换行与特殊字符`() {
-        val xml = shellRunConfigurationXml(
-            "t",
-            ShellRunSpec(null, "echo a&b\nsleep 1", null, null, null, null, emptyMap()),
-        )
-        assertTrue(xml, xml.contains("EXECUTE_SCRIPT_FILE\" value=\"false\""))
-        val line = xml.lines().first { it.contains("SCRIPT_TEXT") }
-        assertTrue("换行必须转成 &#10;，否则解析时会被规整成空格", line.contains("echo a&amp;b&#10;sleep 1"))
-    }
-
-    @Test
-    fun `cloneRunConfigurationXml 只换 configuration 标签的名`() {
-        val src = "<component>\n" +
-            "  <configuration name=\"old\" type=\"ShConfigurationType\">\n" +
-            "    <option name=\"RunConfigurationTask\" enabled=\"true\" run_configuration_name=\"old\" />\n" +
-            "  </configuration>\n</component>"
-        val out = cloneRunConfigurationXml(src, "old", "new")
-        assertTrue(out != null && out.contains("name=\"new\""))
-        assertTrue("别人指向它的 before-launch 引用不动", out!!.contains("run_configuration_name=\"old\""))
-        assertNull("找不到标签返回 null", cloneRunConfigurationXml(src, "missing", "new"))
-        assertNull("没有 configuration 标签返回 null", cloneRunConfigurationXml("<component />", "old", "new"))
-    }
-
-    @Test
-    fun `withProjectDirMacro 规则`() {
-        assertEquals("\$PROJECT_DIR\$/a/b.sh", withProjectDirMacro("a/b.sh"))
-        assertEquals("\$PROJECT_DIR\$/a/b.sh", withProjectDirMacro("./a/b.sh"))
-        assertEquals("/abs/x.sh", withProjectDirMacro("/abs/x.sh"))
-        assertEquals("\$PROJECT_DIR\$/a.sh", withProjectDirMacro("\$PROJECT_DIR\$/a.sh"))
-    }
-
-    @Test
-    fun `create 报告输出带上能不能跑与落点`() {
-        val json = CreateReport(
-            configurationName = "node-server-copy",
-            type = "ShConfigurationType",
-            typeDisplayName = "Shell Script",
-            createdFrom = "clone:node-server",
-            storagePath = "/tmp/project/.run/node-server-copy.run.xml",
-            uniqueID = "Shell Script.node-server-copy",
-            canRun = true,
-            canRunBlockedReason = null,
-            beforeLaunchSteps = 1,
-            warnings = listOf("copied a before-launch step"),
-        ).toJson()
-
-        assertEquals("node-server-copy", json["configurationName"]!!.jsonPrimitive.content)
-        assertEquals("clone:node-server", json["createdFrom"]!!.jsonPrimitive.content)
-        assertTrue("本工具只产出项目级配置", json["shared"]!!.jsonPrimitive.boolean)
-        assertTrue(json["canRun"]!!.jsonPrimitive.boolean)
-        assertEquals(JsonNull, json["canRunBlockedReason"])
-        assertEquals(1, json["beforeLaunchSteps"]!!.jsonPrimitive.int)
-        assertTrue("落点必须回传，调用方才好去核对文件", json["storagePath"]!!.jsonPrimitive.content.endsWith(".run.xml"))
     }
 
     @Test

@@ -3,7 +3,6 @@ package com.shenyuanlaolarou.ideamcpenhance.mcp
 import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.openapi.project.Project
 import org.jdom.Element
-import org.jdom.input.SAXBuilder
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -116,21 +115,14 @@ internal fun readRunConfigurationElement(
 ): Element? {
     val file = runConfigurationFileOf(project, settings) ?: return null
     if (!Files.isRegularFile(file)) return null
-    val document = runCatching { secureSaxBuilder().build(file.toFile()) }.getOrNull() ?: return null
-    return document.rootElement.getChild("configuration")
+    // 用平台的 `JDOMUtil.load` 而不是裸 `SAXBuilder`：后者会把缩进空白保留成 `org.jdom.Text` 节点，
+    // 而 Maven / Gradle 那类走 `XmlSerializer` 的反序列化器会直接 `Text as Element` 崩掉
+    // （实测：`ClassCastException: class org.jdom.Text cannot be cast to class org.jdom.Element`）。
+    // `JDOMUtil` 是平台自己的加载器，与 IDE 读 `.run.xml` 时用的是同一套语义。
+    val root = runCatching { com.intellij.openapi.util.JDOMUtil.load(file) }.getOrNull() ?: return null
+    return root.getChild("configuration")
 }
 
-/**
- * 关掉 DOCTYPE 与外部实体的 SAX 解析器。
- *
- * 解析的 XML 来自两处：项目里的 `.run.xml`，以及**调用方传进来的** `configurationXml`（agent 生成的）。
- * 后者是模型输出，不该有机会触发外部实体解析（XXE）。特性是否支持因解析器而异，所以逐条 `runCatching`。
- */
-internal fun secureSaxBuilder(): SAXBuilder = SAXBuilder().apply {
-    runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-    runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-    runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-}
 
 /** 解析 `<configuration>` 元素。 */
 internal fun parseRunConfigurationDefinition(configuration: Element): RunConfigurationDefinition {
@@ -178,9 +170,9 @@ internal fun parseRunConfigurationDefinition(configuration: Element): RunConfigu
  * 格式与 IDE 自己写的 `.run/` 目录下的 `*.run.xml` 一致：两格缩进、自闭合标签是 `<tag … />`（斜杠前有空格）、
  * 属性值里的换行写成 `&#10;`（XML 属性里的原始换行在解析时会被规整成空格）。
  */
-internal fun writeConfigurationXml(configuration: Element): String {
+internal fun writeConfigurationXml(configuration: Element, baseDepth: Int = 0): String {
     val builder = StringBuilder()
-    appendElement(builder, configuration, 0)
+    appendElement(builder, configuration, baseDepth)
     return builder.toString()
 }
 

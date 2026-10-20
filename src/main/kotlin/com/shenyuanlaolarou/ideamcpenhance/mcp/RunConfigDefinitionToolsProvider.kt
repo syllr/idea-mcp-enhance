@@ -43,6 +43,9 @@ class RunConfigDefinitionToolsProvider : McpToolsProvider {
     )
 }
 
+/** 平台在"类型插件没装"时给出的类型 id。 */
+private const val UNKNOWN_CONFIGURATION_TYPE_ID = "Unknown"
+
 /** `history[]` 默认返回多少条。 */
 internal const val DEFAULT_HISTORY_LIMIT = 20
 
@@ -67,10 +70,15 @@ private class InspectRunConfigurationTool : BaseRunTool() {
         // 同一个 run 不能既算"活实例"又算"历史"：历史是"已经结束的那些"，
         // 用日志路径做去重键（一次运行一个文件）。
         val liveLogs = liveInstances.mapNotNull { it.logFile }.toSet()
+        // 插件没装时平台会把类型解析成 `Unknown`，但文件里的 `type` 属性还在 —— 那个才是这个配置
+        // 真正声明的类型（别的机器上装了插件就能跑）。所以这里优先用文件里的值。
+        val declaredType = readRunConfigurationElement(project, settings)?.getAttributeValue("type")
+        val typeKnown = settings.type.id != UNKNOWN_CONFIGURATION_TYPE_ID
         val inspection = RunConfigurationInspection(
             configurationName = settings.name,
-            typeId = settings.type.id,
-            typeDisplayName = settings.type.displayName,
+            typeId = if (typeKnown) settings.type.id else declaredType ?: settings.type.id,
+            typeDisplayName = if (typeKnown) settings.type.displayName else "Unknown (plugin not installed)",
+            typeKnown = typeKnown,
             storage = storage,
             storagePath = runConfigurationFileOf(project, settings)?.toString(),
             shared = settings.isShared,
@@ -187,29 +195,37 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
             settings
         }
 
-        val typeId = requestedType ?: source?.type?.id
+        val sourceElement = source?.let { readRunConfigurationElement(project, it) }
+        val sourceTypeId = source?.let { sourceElement?.getAttributeValue("type") ?: it.type.id }
+        val typeId = requestedType ?: sourceTypeId
             ?: return errorResult(
                 "Missing `type`: give the configuration type id (e.g. `ShConfigurationType`), " +
                     "or `cloneFrom` an existing configuration so the type can be inferred.",
                 null,
             )
-        if (source != null && source.type.id != typeId) {
+        // 源的类型以**文件里的 `type` 属性**为准：插件没装时 `source.type.id` 是 `Unknown`，
+        // 而文件里仍然写着真实类型（换台装了插件的机器就能跑）。
+        if (source != null && sourceTypeId != typeId) {
             return errorResult(
-                "\"${source.name}\" is a ${source.type.displayName} configuration, not `$typeId`. " +
-                    "Nothing was created.",
+                "\"${source.name}\" is a `$sourceTypeId` configuration, not `$typeId`. Nothing was created.",
                 null,
             )
         }
+        // 从**克隆**推断出的类型允许在这台机器上不可用：配置是文件驱动的，原样复制出去，
+        // 装了对应插件的机器就能跑。但调用方**显式**指定了一个不可用的类型时仍然拒绝 ——
+        // 那种情况下我们没有任何可信的字段来源，写出去只会是一个跑不起来的空壳。
         val typeInfo = findConfigurationTypeInfo(typeId)
-            ?: return errorResult(
+        if (typeInfo == null && (requestedType != null || source == null)) {
+            return errorResult(
                 "Configuration type `$typeId` is not available in this IDE — the plugin that provides it is " +
                     "not installed or not enabled. Nothing was created.",
                 null,
             )
+        }
 
         val element = when {
             source != null -> {
-                val sourceElement = readRunConfigurationElement(project, source)
+                val sourceElement = sourceElement
                     ?: return errorResult(
                         "\"${source.name}\" has no readable `.run.xml` file, so there is nothing to copy. " +
                             "Nothing was created.",
@@ -221,12 +237,13 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
             }
             providedXml != null -> parseConfigurationXml(providedXml)
                 ?: return errorResult("`configurationXml` is not valid XML. Nothing was created.", null)
-            else -> templateConfigurationElement(project, typeInfo, name)
+            // 走到这里 typeInfo 必然非空（没有来源又没有可用类型时，上面已经报错返回了）。
+            else -> templateConfigurationElement(project, typeInfo ?: return errorResult("No usable type for \"$name\". Nothing was created.", null), name)
         }
 
         element.setAttribute("name", name)
-        element.setAttribute("type", typeInfo.id)
-        if (element.getAttribute("factoryName") == null) {
+        element.setAttribute("type", typeId)
+        if (typeInfo != null && element.getAttribute("factoryName") == null) {
             element.setAttribute("factoryName", typeInfo.factory.name)
         }
 
@@ -234,7 +251,7 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
         // `SCRIPT_WORKING_DIRECTORY=/Users/…/<project>`（绝对路径）和 `INTERPRETER_PATH=/bin/zsh`。
         // 这两样都不能进要提交到 git 的配置（违反"项目级可共享"）。
         // 注意顺序：先归一化模板默认值，再套调用方的补丁 —— 调用方显式给的值必须赢。
-        if (typeInfo.id == SHELL_CONFIGURATION_TYPE_ID && source == null && providedXml == null) {
+        if (typeId == SHELL_CONFIGURATION_TYPE_ID && source == null && providedXml == null) {
             normalizeShellTemplateDefaults(element, project)
         }
 
@@ -249,7 +266,7 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
 
         // 补丁之后再收一次尾：模板的 `EXECUTE_IN_TERMINAL=true` 会让配置在终端里跑
         // （没有 ProcessHandler → 没日志、停不掉、list 看不见）。只有调用方**没显式给**时才改。
-        if (typeInfo.id == SHELL_CONFIGURATION_TYPE_ID) {
+        if (typeId == SHELL_CONFIGURATION_TYPE_ID) {
             val explicit = optionSet.keys
             if ("EXECUTE_IN_TERMINAL" !in explicit) element.setOption("EXECUTE_IN_TERMINAL", "false")
             val scriptText = element.optionValue("SCRIPT_TEXT")
@@ -259,14 +276,18 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
             }
         }
 
-        val unknown = runCatching {
-            validateConfigurationElement(project, typeInfo, name, element, optionSet.keys)
-        }.getOrElse { error ->
-            return errorResult(
-                "The ${typeInfo.displayName} configuration rejected this body: " +
-                    (error.message ?: error::class.java.simpleName) + ". Nothing was created.",
-                null,
-            )
+        val unknown = if (typeInfo == null) {
+            emptySet()
+        } else {
+            runCatching {
+                validateConfigurationElement(project, typeInfo, name, element, optionSet.keys)
+            }.getOrElse { error ->
+                return errorResult(
+                    "The ${typeInfo.displayName} configuration rejected this body: " +
+                        (error.message ?: error::class.java.simpleName) + ". Nothing was created.",
+                    null,
+                )
+            }
         }
 
         // 平台不认识的字段不写进文件：它们本来就会被忽略，留下只会让下一个读文件的人困惑。
@@ -283,22 +304,28 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
             if (registered == null) {
                 add("The file was written but the IDE has not loaded it yet — check again shortly with `inspect_run_configuration`.")
             }
+            if (typeInfo == null) {
+                add(
+                    "Type `$typeId` is not available in this IDE (plugin missing), so the body was copied " +
+                        "without platform validation. It will work on a machine that has the plugin.",
+                )
+            }
             if (unknown.isNotEmpty()) {
                 add(
-                    "These option names were not kept by ${typeInfo.displayName} and are probably misspelled: " +
-                        unknown.joinToString(", "),
+                    "These option names were not kept by ${typeInfo?.displayName ?: typeId} and are probably " +
+                        "misspelled: " + unknown.joinToString(", "),
                 )
             }
         }
         val createdFrom = when {
             source != null -> "clone:${source.name}"
             providedXml != null -> "xml"
-            else -> "template:${typeInfo.id}"
+            else -> "template:$typeId"
         }
         val report = buildJsonObject {
             put("configurationName", name)
-            put("type", typeInfo.id)
-            put("typeDisplayName", typeInfo.displayName)
+            put("type", typeId)
+            put("typeDisplayName", typeInfo?.displayName ?: "Unknown (plugin not installed)")
             put("createdFrom", createdFrom)
             put("storagePath", storagePath.toString())
             put("canRun", blocked == null && registered != null)
@@ -307,7 +334,7 @@ private class CreateRunConfigurationDefinitionTool : BaseRunTool() {
             putJsonArray("warnings") { warnings.forEach { add(it) } }
         }
         return McpToolCallResult.text(
-            "Created ${typeInfo.displayName} configuration \"$name\" at $storagePath. " +
+            "Created ${typeInfo?.displayName ?: typeId} configuration \"$name\" at $storagePath. " +
                 when {
                     registered == null -> "The IDE has not loaded it yet — check again shortly."
                     blocked == null -> "It can run right now."
@@ -406,20 +433,23 @@ private class UpdateRunConfigurationTool : BaseRunTool() {
         )
         applyEnvPatch(target, envValues, envRemovals)
 
+        // 类型不认识（插件没装）时**不阻断**修改：配置是文件驱动的，改完在装了插件的机器上照样生效。
+        // 代价是跳过平台校验 —— 这一点如实写进 warnings。
         val typeInfo = findConfigurationTypeInfo(settings.type.id)
-            ?: return errorResult(
-                "Configuration type `${settings.type.id}` is not available in this IDE, so the change cannot be " +
-                    "validated. Nothing was changed.",
-                null,
-            )
-        val unknown = runCatching {
-            validateConfigurationElement(project, typeInfo, effectiveName, target, optionValues.keys)
-        }.getOrElse { error ->
-            return errorResult(
-                "The ${typeInfo.displayName} configuration rejected the change: " +
-                    (error.message ?: error::class.java.simpleName) + ". Nothing was changed.",
-                null,
-            )
+        val unknown = if (typeInfo == null) {
+            emptySet()
+        } else {
+            runCatching {
+                validateConfigurationElement(project, typeInfo, effectiveName, target, optionValues.keys)
+            }.getOrElse { error ->
+                com.intellij.openapi.diagnostic.Logger.getInstance("com.shenyuanlaolarou.ideamcpenhance.Definition")
+                    .warn("update validation failed for ${settings.name}", error)
+                return errorResult(
+                    "The ${typeInfo.displayName} configuration rejected the change: " +
+                        (error.message ?: error::class.java.simpleName) + ". Nothing was changed.",
+                    null,
+                )
+            }
         }
 
         val content = runConfigurationFileContent(target)
@@ -482,10 +512,16 @@ private class UpdateRunConfigurationTool : BaseRunTool() {
             put("canRunBlockedReason", blocked ?: if (registered == null) "The IDE has not loaded it yet." else null)
             putJsonArray("unknownOptions") { unknown.sorted().forEach { add(it) } }
             putJsonArray("warnings") {
+                if (typeInfo == null) {
+                    add(
+                        "Type `${settings.type.id}` is not available in this IDE (plugin missing), so the change " +
+                            "was written without platform validation.",
+                    )
+                }
                 if (unknown.isNotEmpty()) {
                     add(
-                        "These option names were not kept by ${typeInfo.displayName} and are probably misspelled: " +
-                            unknown.joinToString(", "),
+                        "These option names were not kept by ${typeInfo?.displayName ?: settings.type.id} and are " +
+                            "probably misspelled: " + unknown.joinToString(", "),
                     )
                 }
                 if (registered == null) add("The IDE has not loaded it yet — inspect it again shortly.")

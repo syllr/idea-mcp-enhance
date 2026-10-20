@@ -15,6 +15,61 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-20
+
+### Added
+
+- **Run configuration definition tools (4)** — the built-in MCP server could list and run configurations but
+  had no way to create, change or delete one:
+  - `inspect_run_configuration` (read-only) — everything about one configuration: type, storage, whether it
+    can run, `options` / `attributes` / `envs` / before-launch steps, the raw XML, live instances (pid, state,
+    start time, log file), earlier runs (newest first), and the name parsed into platform / environment. Still
+    works when the type's plugin is missing: `type` comes from the file, `typeKnown` is false.
+  - `create_run_configuration` — create a configuration of **any type**. The body comes from `cloneFrom`
+    (safest), `configurationXml`, or the IDE's template plus patches; it is validated through the platform's
+    own `readExternal` before it is written, and misspelled fields are reported as `unknownOptions`.
+  - `update_run_configuration` — patch fields (`options` / `attributes` / `envs`) **and rename** (`newName`):
+    the file moves, references to it (before-launch steps, compound configurations) are rewritten, and its
+    recorded run logs are migrated.
+  - `delete_run_configuration` — refused while the configuration is running or referenced; `force = true`
+    deletes it and removes those references.
+- **Run logs and history**: output is captured from the moment the process starts into `ij_enhance_run__*.log`
+  in the IDE temp directory, with a sidecar (pid, exit code, end time) written on exit.
+  `list_running_configurations` and `inspect_run_configuration` report the log file per instance, and earlier
+  runs are listed newest first, with only the ones whose log still exists.
+- Instances in `list_running_configurations` now carry `state` (`running` / `terminating` / `starting`) and
+  `logFile`.
+
+### Changed
+
+- `list_running_configurations` is now an **index**: derived counts, constant fields (`isTemplate`, `running`,
+  `exitCode`) and the unreliable UI text (`displayName`) are gone. Details live in
+  `inspect_run_configuration`.
+- `update_run_configuration` now refreshes all three copies: the file on disk, the open editor document, and
+  the IDE's in-memory configuration — "the file changed but Run still executes the old script" was a real bug.
+
+### Fixed
+
+- **Machine-specific defaults from the Shell template**: a newly created Shell configuration inherited an
+  absolute working directory, `/bin/zsh`, terminal mode and `EXECUTE_SCRIPT_FILE=true`. They are now normalised
+  to `$PROJECT_DIR$`, an empty interpreter, non-terminal mode, and `EXECUTE_SCRIPT_FILE` derived from whether
+  `SCRIPT_TEXT` was given.
+- **Types that deserialize via `XmlSerializer` (Maven, Gradle) could not be read**: whitespace text nodes made
+  the platform throw `Text as Element`. The platform's `JDOMUtil` is used instead.
+- **Stale editor copy after an update**: writing only to disk left the open document stale, so `read_file`
+  returned the old content and saving it reverted the change. The document is updated now.
+- **Log capture missed the `rerun` path**: our own callback called `startNotify()` first, which made the
+  platform skip `processStarting`. Capture is attached before starting; runs started by hand are covered by a
+  fallback in `processStarted`.
+- Live runs no longer appear in the history twice (deduplicated by log file).
+- When the type's plugin is missing (`Unknown`), cloning and updating are no longer blocked: the body is
+  handled as-is with a warning.
+
+### Removed
+
+- **`create_shell_run_configuration`** — it was a subset of `create_run_configuration` (Shell only, no platform
+  validation). Creating a Shell configuration now goes through the generic tool, so there is one implementation.
+
 ## [0.0.3] - 2026-10-17
 
 ### Fixed

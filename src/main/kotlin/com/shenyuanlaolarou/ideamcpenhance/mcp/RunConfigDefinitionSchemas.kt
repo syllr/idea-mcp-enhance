@@ -71,7 +71,17 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
         properties = properties(
             "configurationName" to property("string", "Name of the run configuration."),
             "type" to property("string", "Run configuration type id, e.g. ShConfigurationType."),
-            "typeDisplayName" to property("string", "Human readable type name, e.g. Shell Script."),
+            "typeDisplayName" to property(
+                "string",
+                "Human readable type name, e.g. Shell Script. `Unknown` when the plugin that provides the type " +
+                    "is not installed.",
+            ),
+            "typeKnown" to property(
+                "boolean",
+                "false when this IDE cannot resolve the type (the plugin is missing). The file's `type` attribute " +
+                    "is still reported in `type`, and `configurationXml` is intact — the configuration would work " +
+                    "on a machine that has the plugin.",
+            ),
             "storage" to buildJsonObject {
                 put("type", JsonPrimitive("object"))
                 put("description", JsonPrimitive("Where the configuration is stored."))
@@ -111,7 +121,12 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
                 })
             },
             "attributes" to property("object", "Attributes of the configuration tag; some types keep fields there."),
-            "options" to property("object", "The `<option name= value=>` entries of this configuration."),
+            "options" to property(
+                "object",
+                "The `<option name= value=>` entries of this configuration. Types that keep their fields in " +
+                    "child elements instead (npm: `<package-json>`, Gradle: `<ExternalSystemSettings>`) show them " +
+                    "in `configurationXml`, not here.",
+            ),
             "envs" to property("object", "The environment variables this configuration sets."),
             "beforeLaunchSteps" to arrayOf(
                 buildJsonObject {
@@ -188,6 +203,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
             "configurationName",
             "type",
             "typeDisplayName",
+            "typeKnown",
             "storage",
             "isTemplate",
             "canRun",
@@ -301,6 +317,7 @@ internal val createRunConfigurationDefinitionDescriptor = McpToolDescriptor(
             "configurationName",
             "type",
             "typeDisplayName",
+            "typeKnown",
             "createdFrom",
             "storagePath",
             "canRun",
@@ -371,7 +388,10 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
             ),
             "replaceConfigurationXml" to property(
                 "string",
-                "Replace the whole `<configuration>` body with this XML. Advanced; conflicts with the patch arguments.",
+                "Replace the whole `<configuration>` body with this XML. Advanced; conflicts with the patch " +
+                    "arguments. This is the way to change a type whose fields are child elements rather than " +
+                    "`<option>` entries (npm, Gradle) — read `configurationXml` with `inspect_run_configuration` " +
+                    "first, edit it, and pass it back here.",
             ),
             "newName" to property(
                 "string",

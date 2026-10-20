@@ -112,7 +112,7 @@ internal object FileEditAccess {
      * 找文件；找不到时刷新一次 VFS 再找。
      *
      * 刷新是必要的：目标文件可能是**上一次调用**刚创建的，纯 nio 写出去的文件 VFS 未必已经知道
-     * （这与 `create_shell_run_configuration` 里那条约束同源）。
+     * （这与定义态工具里那条约束同源）。
      */
     private fun findFile(absolutePath: String): VirtualFile? {
         val fs = LocalFileSystem.getInstance()

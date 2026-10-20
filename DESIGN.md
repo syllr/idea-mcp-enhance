@@ -404,9 +404,9 @@ MCP 工具的等待上限（默认 5s / 10s）是 **有意的**：避免 agent �
 **枚举不重复造轮子**：内置的 `get_run_configurations` 已经回答"项目里有哪些配置"，
 所以 **不新增** `list_run_configurations`；定义态的读取由 `inspect_run_configuration` 承担。
 
-**`create_shell_run_configuration` 保留为 `create_run_configuration` 的别名**：
-名字保留是给旧客户端兜底（旧版 opencode-idea 的能力探测按名字匹配），
-实现上只有一份，描述里标注是 Shell 快捷入口。
+**旧的 Shell 专用创建工具已删除**（`create_shell_run_configuration`）：它本来就是通用 create 的一个子集，
+留着只会让"写文件 / 平台校验 / 默认值归一化"出现第二套实现。现在建 Shell 配置直接用
+`create_run_configuration`（`type: "ShConfigurationType"`，或 `cloneFrom` 一个现成的 Shell 配置）。
 
 ### 7.2 一个配置、多个实例、一个实例一份日志
 

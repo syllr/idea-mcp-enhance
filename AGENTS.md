@@ -61,7 +61,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │   ├── RunLifecycleModels.kt      纯数据 + 纯函数：状态快照 → JSON（含精简列表形状）
 │   ├── RunLifecycleSchemas.kt     工具描述符 / 输入 schema / 参数解析
 │   ├── RunConfigAccess.kt         平台接线：RunManager / RunContentManager / ProcessHandler
-│   ├── RunLifecycleToolsProvider.kt  运行态 4 个 McpTool + 异常兜底
+│   ├── RunLifecycleToolsProvider.kt  运行态 3 个 McpTool + 异常兜底
 │   ├── RunLogModels.kt            纯：日志键 / 文件名 / 历史条目 JSON
 │   ├── RunLogAccess.kt            平台：启动即采集输出、写 sidecar、扫历史、清理
 │   ├── RunConfigNaming.kt         纯：`[os@]base[@env]` 解析
@@ -98,7 +98,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 测试                                   | 类型                   | 覆盖                                                                                        | 状态            |
 |----------------------------------------|------------------------|---------------------------------------------------------------------------------------------|-----------------|
 | `prompt/format/PromptFormatTest`       | 纯 JUnit 4（11 例）    | 两个 prompt 格式契约 + 稳定排序                                                             | ✅ 通过         |
-| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（50 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
+| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（42 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
 | `mcp/DeploymentSchemaTest`             | 纯 JUnit 4（15 例）    | deployment 描述符 / 风险提示（危险组合的判定）/ 输出 JSON 形状                              | ✅ 通过         |
 | `mcp/RunLogAndNamingTest`              | 纯 JUnit 4（22 例）    | 命名文法 / 日志键与文件名 / 历史条目 null 键 / 列表精简形状 / 定义态 schema                 | ✅ 通过         |
 | `prompt/actions/EditorDiagnosticsTest` | `BasePlatformTestCase` | 诊断采集能从 markup model 捞出编译错误                                                      | ⛔ 禁用（见下） |
@@ -244,6 +244,9 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - **终端形态的 Shell（`EXECUTE_IN_TERMINAL=true`）是运行态工具的盲区**：`ShRunConfigurationProfileState.execute`
   在终端分支直接 `return null`，没有 `ProcessHandler` ⇒ 没日志、也 **停不掉 / 重启不了、list 看不见**。
   `inspect` 会针对这种配置给一条 warning；我们自己的 create 工具写死 `EXECUTE_IN_TERMINAL=false`
+- **类型插件没装 ≠ 配置不可读**：平台会把这类配置加载成 `UnknownConfigurationType`（`settings.type.id == "Unknown"`），
+  但 `.run.xml` 里的 `type` 属性仍是真实类型。`inspect` MUST 以文件里的 `type` 为准并给 `typeKnown: false`；
+  `cloneFrom` / `update` 照常工作（跳过平台校验 + warning）。只有"调用方显式指定了一个本机不可用的 type"才拒绝
 - **`.run/` 的写入口只有定义态工具**（create / update / delete）。这条规矩 **写在提示词里**
   （工具描述 + opencode-idea 的 guidance）， **不在 `edit_file` 里做硬拦截** —— 用户明确要求手改文件时，
   工具报错比放行更糟；而且原生 `write` / `shell` 也拦不住，硬拦只会造成"看起来有保障其实没有"
@@ -358,12 +361,6 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
   `hasPendingRunContent` / `ExecutionManager.isStarting(env)` 判断"有启动在飞"，再 **有界等待**（
   `PENDING_START_ATTACH_TIMEOUT_MS`，2000ms）让它挂上进程后照常停；等不到就如实说明"启动仍在飞、什么都没停"。加上 `stop` 自己的
   `waitTimeoutMs`（默认 5000），最坏总时长约 7 秒，仍在会话耐心之内
-- **`create_shell_run_configuration` 直接写 `.run.xml` 文件，不调平台创建 API**：平台本来就是文件驱动的（
-  `RunConfigurationInArbitraryFileScanner` 启动扫描 + `RCInArbitraryFileListener` 监听 `*.run.xml`）。文件形状与 IDE
-  自己写的字节一致（8 个业务 option + `<envs>` + `<method>`，`INDEPENDENT_*` 带 `true`——sh 插件 303
-  个类里无一在字节码里读写它们，是平台自管标记；属性值转义 `& < > "` + 换行 `&#10;`；相对路径转 `$PROJECT_DIR$` 宏）。 **不需要
-  `com.jetbrains.sh` 依赖**（纯字符串生成 + `java.nio` 写文件 + `RunManager.findConfigurationByName` 轮询注册）。
-  **目标文件已存在必须拒绝**（没有 delete 工具，不悄悄覆盖）
 - **写完 `.run.xml` MUST 调 `LocalFileSystem.refreshAndFindFileByNioFile`**，别只用 `Files.writeString`：
   `RCInArbitraryFileListener` 只处理 `LocalFileSystem` 的 `VFileCreateEvent`，纯 nio 写的文件 VFS 注意不到就
   **既不触发监听器也不进配置列表**（实测：文件确实落盘，但 IDE 等满 3 秒也没注册，工具只能如实报"尚未加载"）。刷新一次就正常（实测

@@ -27,6 +27,8 @@ internal data class RunConfigurationInspection(
     val configurationName: String,
     val typeId: String,
     val typeDisplayName: String,
+    /** IDE 是否认识这个类型。false = 插件没装，配置以 `Unknown` 类型加载（但文件里的 `type` 属性仍在）。 */
+    val typeKnown: Boolean,
     val storage: RunConfigurationStorage,
     val storagePath: String?,
     val shared: Boolean,
@@ -66,6 +68,7 @@ internal fun RunConfigurationInspection.toJson(): JsonObject = buildJsonObject {
     put("configurationName", configurationName)
     put("type", typeId)
     put("typeDisplayName", typeDisplayName)
+    put("typeKnown", typeKnown)
     putJsonObject("storage") {
         put("kind", storage.id)
         put("path", storagePath)
