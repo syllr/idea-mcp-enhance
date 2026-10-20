@@ -369,6 +369,24 @@ internal suspend fun awaitConfigurationRegistered(
 }
 
 /**
+ * 等一个配置从 RunManager 里消失（删除 / 改名之后）。
+ *
+ * 返回 true = 已经不在列表里。超时返回 false —— 调用方 MUST 如实报告，不能谎报删干净了。
+ */
+internal suspend fun awaitConfigurationGone(
+    project: Project,
+    name: String,
+    timeoutMs: Long = CONFIG_REGISTER_TIMEOUT_MS,
+): Boolean {
+    val deadline = deadlineNanos(timeoutMs)
+    do {
+        if (RunManager.getInstance(project).findConfigurationByName(name) == null) return true
+        delay(CONFIG_REGISTER_POLL_MS)
+    } while (System.nanoTime() < deadline)
+    return RunManager.getInstance(project).findConfigurationByName(name) == null
+}
+
+/**
  * 检查脚本文件是否存在（相对路径按项目根解）。
  *
  * 只是给调用方一个**即时**的提示；真正"能不能跑"仍以注册后的 `checkSettings` 为准。
@@ -427,6 +445,9 @@ internal fun RunContentDescriptor.toInstanceState(): RunInstanceState? {
         startNotified = handler.isStartNotified,
         pid = processPidOrNull(handler),
         exitCode = handler.exitCode,
+        // 日志路径是盖在同一个 handler 上的（见 RunLogAccess），所以活着的实例都能对上它自己的日志。
+        logFile = handler.runLogStamp()?.logFile,
+        startedAtMillis = handler.runLogStamp()?.startedAtMillis,
     )
 }
 
@@ -443,8 +464,10 @@ internal fun RunContentDescriptor.toInstanceState(): RunInstanceState? {
  *
  * 拿不到就返回 null（handler 不是 `BaseProcessHandler`、或该 `Process` 实现不支持 `pid()`）：
  * pid 只是辅助信息，不影响工具正确性，也不值得为它阻塞或抛错。
+ *
+ * 包内可见：日志侧（[RunLogAccess] 写 sidecar）也要用它。
  */
-private fun processPidOrNull(handler: ProcessHandler): Long? =
+internal fun processPidOrNull(handler: ProcessHandler): Long? =
     (handler as? BaseProcessHandler<*>)?.process?.let { process -> runCatching { process.pid() }.getOrNull() }
 
 /**
@@ -582,14 +605,36 @@ internal suspend fun startRunAndAwait(
 ): StartOutcome {
     val sessionName = settings.name
     val startedAtNanos = System.nanoTime()
-    val outputPath = createRunOutputFile(sessionName)
-    val collector = RunOutputCollector(outputPath)
+
+    // 输出采集分两种：
+    // - **全局采集器**已经在写（`processStarting` 时就挂上了，见 RunLogAccess）→ 复用那份文件，只留内存预览
+    // - 没采到（比如平台没给我们 handler）→ 这里自己建一份，行为与以前一致
+    // 变量在回调里被赋值；`settled.await()` 提供了 happens-before 关系，读到的一定是回调里写的那份。
+    var outputPath: Path? = null
+    var collector = RunOutputCollector(null)
 
     val settled = CompletableDeferred<Result<RunContentDescriptor>>()
     val callback = object : ProgramRunner.Callback {
         override fun processStarted(descriptor: RunContentDescriptor) {
             // 官方也是在这里挂监听 + startNotify：descriptor 到手时进程可能已创建但输出还没被订阅
             descriptor.processHandler?.let { handler ->
+                // **必须先接采集、再 startNotify**：我们自己的这个回调一旦先 startNotify，
+                // 平台的 `processStarting` 就会因为 `isStartNotified == true` 被整个跳过
+                // （ExecutionManagerImpl 里 offset 270 的分支），日志就只能落到 `processStarted` 之后 ——
+                // 那时短命令已经跑完、长命令也丢了启动横幅。实测踩到过：collector 拿到了输出，
+                // 全局日志文件却是 0 字节。
+                if (handler.runLogStamp() == null) {
+                    startRunLogCapture(project, settings.name, settings.type.id, handler)?.let { stampRunLog(handler, it) }
+                }
+                val stamp = handler.runLogStamp()
+                if (stamp != null) {
+                    outputPath = Path.of(stamp.logFile)
+                    collector = RunOutputCollector(null)
+                } else {
+                    val path = createRunOutputFile(sessionName)
+                    outputPath = path
+                    collector = RunOutputCollector(path)
+                }
                 handler.addProcessListener(collector.listener)
                 handler.startNotify()
             }

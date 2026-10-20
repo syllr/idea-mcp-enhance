@@ -166,24 +166,49 @@ private val RUN_INSTANCE_SCHEMA: JsonObject = buildJsonObject {
     })
 }
 
-/** 一个 Run Configuration 及其全部实例，对应 `RunConfigurationState.toJson()`。 */
-private val RUN_CONFIGURATION_STATE_SCHEMA: JsonObject = buildJsonObject {
+/**
+ * 列表工具用的**精简**实例形状。
+ *
+ * 刻意比 [RUN_INSTANCE_SCHEMA] 少几个字段：`isTemplate` / `running` / `exitCode` 在"只列活实例"
+ * 的前提下全是常量，`displayName` 是不可信的 UI 文本；`terminating` + `startNotified` 两个布尔
+ * 合并成一个 [INSTANCE_STATE_RUNNING] 之类的三态。
+ */
+private val LIST_INSTANCE_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
-    put("description", JsonPrimitive("One run configuration together with its current Run contents."))
+    put("description", JsonPrimitive("One live instance (one execution) of this configuration."))
+    put("properties", properties(
+        "executionId" to property("integer", "IDE-assigned execution id of this Run content."),
+        "state" to property(
+            "string",
+            "`running` (the process is alive), `terminating` (a stop was requested but the process has not exited yet) " +
+                "or `starting` (the process is not up yet — still running before-launch steps).",
+        ),
+        "pid" to nullableProperty("integer", "Operating system process id; null when the process does not exist (yet)."),
+        "logFile" to nullableProperty(
+            "string",
+            "Path of the log file this instance writes to; null when no log could be captured for it.",
+        ),
+    ))
+    put("required", buildJsonArray {
+        add(JsonPrimitive("executionId"))
+        add(JsonPrimitive("state"))
+        add(JsonPrimitive("pid"))
+        add(JsonPrimitive("logFile"))
+    })
+}
+
+/** 列表工具用的配置级形状：名字、类型、活着的实例。 */
+private val LIST_CONFIGURATION_SCHEMA: JsonObject = buildJsonObject {
+    put("type", JsonPrimitive("object"))
+    put("description", JsonPrimitive("One run configuration together with its live instances."))
     put("properties", properties(
         "name" to property("string", "Run configuration name."),
         "type" to property("string", "Run configuration type id, e.g. ShConfigurationType or MavenRunConfiguration."),
-        "isTemplate" to property("boolean", "true for run configuration templates."),
-        "running" to property("boolean", "At least one instance is live."),
-        "runningInstanceCount" to property("integer", "Number of live instances. Greater than 1 means the configuration was started more than once."),
-        "instances" to arrayOf(RUN_INSTANCE_SCHEMA, "Run contents of this configuration."),
+        "instances" to arrayOf(LIST_INSTANCE_SCHEMA, "Live instances of this configuration."),
     ))
     put("required", buildJsonArray {
         add(JsonPrimitive("name"))
         add(JsonPrimitive("type"))
-        add(JsonPrimitive("isTemplate"))
-        add(JsonPrimitive("running"))
-        add(JsonPrimitive("runningInstanceCount"))
         add(JsonPrimitive("instances"))
     })
 }
@@ -227,11 +252,14 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     execution, and a configuration can be running with only one of its processes visible in the IDE
     (`execute_run_configuration` spawns a new process on every call).
 
-    Everything returned is live: configurations with no running process do not appear at all (which covers
-    templates), and `instances[]` holds live instances only — so a `runningInstanceCount` above 1 means the
-    configuration was started more than once.
+    This is an **index**, not a report: each live instance comes with its process id, its state
+    (`running` / `terminating` / `starting`) and the path of the log file it writes to. Read that log
+    file directly when you need to know what the process printed. For the full picture of a single
+    configuration — its settings, and the logs of its earlier runs — call `inspect_run_configuration`.
 
-    Use this before `stop_run_configuration` / `rerun_run_configuration`, and after them to confirm.
+    Everything returned is live: configurations with no running process do not appear at all (which covers
+    templates), and `instances[]` holds live instances only — so more than one entry under a configuration
+    means it was started more than once.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_running_configurations",
@@ -242,13 +270,12 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     ),
     schema(
         properties = properties(
-            "runningCount" to property("integer", "Number of configurations that currently have at least one live process."),
             "configurations" to arrayOf(
-                RUN_CONFIGURATION_STATE_SCHEMA,
+                LIST_CONFIGURATION_SCHEMA,
                 "One entry per configuration that currently has at least one live process; its `instances` are the live ones only.",
             ),
         ),
-        required = setOf("runningCount", "configurations"),
+        required = setOf("configurations"),
     ),
     annotations(readOnly = true, destructive = false, idempotent = true),
 )
@@ -467,8 +494,9 @@ internal val createRunConfigurationDescriptor = McpToolDescriptor(
     `rerun_run_configuration`.
 
     Where it lives is fixed: `<project>/.run/<configurationName>.run.xml`, always project-level.
-    **Do not create or edit that file yourself**: a configuration is created only through this tool.
-    There is no storage-path parameter, and no delete tool.
+    **Do not create or edit that file yourself**: creating, changing and deleting a configuration all go
+    through these tools (this one, `update_run_configuration`, `delete_run_configuration`). There is no
+    storage-path parameter. This tool is the **Shell shortcut** for `create_run_configuration`.
 
     Why this exists: a Shell configuration carries the project's environment (working directory,
     environment variables, interpreter), so a project command that needs that environment can be started

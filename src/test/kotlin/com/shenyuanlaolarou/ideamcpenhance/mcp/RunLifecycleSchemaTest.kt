@@ -89,8 +89,10 @@ class RunLifecycleSchemaTest {
             description.contains("Do not create or edit that file yourself"),
         )
         assertTrue(
-            "必须写明配置只能经本工具创建",
-            description.contains("created only through this tool"),
+            "必须写明创建 / 修改 / 删除都走工具",
+            description.contains("creating, changing and deleting a configuration all go") &&
+                description.contains("update_run_configuration") &&
+                description.contains("delete_run_configuration"),
         )
         // 反例：不能出现鼓励"需要跑命令就去建一个"的表述。
         assertFalse(
@@ -239,7 +241,8 @@ class RunLifecycleSchemaTest {
         assertTrue("list 没有必填参数", schema.requiredProperties.isEmpty())
 
         val output = toolByName(LIST_TOOL_NAME).descriptor.outputSchema!!
-        assertEquals(setOf("runningCount", "configurations"), output.requiredProperties)
+        // 没有 runningCount：配置数就是 configurations 的长度，派生计数不重复给。
+        assertEquals(setOf("configurations"), output.requiredProperties)
     }
 
     @Test
@@ -394,10 +397,11 @@ class RunLifecycleSchemaTest {
         val configurationItems = toolByName(LIST_TOOL_NAME).descriptor.outputSchema!!
             .propertiesSchema["configurations"]!!.jsonObject["items"]!!.jsonObject["properties"]!!.jsonObject
         val instanceProperties = configurationItems["instances"]!!.jsonObject["items"]!!.jsonObject["properties"]!!.jsonObject
-        for (key in listOf("pid", "exitCode")) {
+        val nullableTypes = mapOf("pid" to "integer", "logFile" to "string")
+        for ((key, type) in nullableTypes) {
             assertEquals(
                 "$key 应声明为可空（[类型, null]）",
-                listOf("integer", "null"),
+                listOf(type, "null"),
                 instanceProperties[key]!!.jsonObject["type"]!!.jsonArray.map { it.jsonPrimitive.content },
             )
         }

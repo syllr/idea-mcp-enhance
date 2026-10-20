@@ -68,7 +68,13 @@ class RunLifecycleToolsProvider : McpToolsProvider {
  * 统一在这里捕获是刻意的：MCP 工具把异常抛出去，agent 拿到的是不可读的失败，而不是结构化错误。
  * 一律转成 `McpToolCallResult.error(...)`，`structuredContent` 里保留同样的信息。
  */
-private abstract class BaseRunTool : McpTool {
+/**
+ * 工具共用的骨架：兜住异常 → 跑具体逻辑。
+ *
+ * 包内可见：定义态工具（`inspect` / `create` / `update` / `delete`）也复用它，
+ * 所以"异常一律转成 `McpToolCallResult.error`"这条规矩只有一处实现。
+ */
+internal abstract class BaseRunTool : McpTool {
 
     // 参数名与父接口保持一致（`McpTool.call(args)`），避免具名实参调用时对不上。
     final override suspend fun call(args: JsonObject): McpToolCallResult = try {
@@ -124,17 +130,17 @@ private class ListRunConfigurationsTool : BaseRunTool() {
             .filter { it.running }
             .map { it.onlyRunningInstances() }
 
+        val instanceCount = running.sumOf { it.instances.size }
         return McpToolCallResult.text(
             if (running.isEmpty()) {
                 "Nothing is running in this project."
             } else {
-                "Found ${running.size} running run configuration(s)."
+                "Found ${running.size} running run configuration(s), $instanceCount live instance(s)."
             },
             buildJsonObject {
-                put("runningCount", running.size)
                 putJsonArray("configurations") {
                     for (state in running) {
-                        add(state.toJson())
+                        add(state.toListJson())
                     }
                 }
             },
@@ -281,12 +287,12 @@ private class CreateRunConfigurationTool : BaseRunTool() {
             settings
         }
 
-        // 目标文件已存在就拒绝：没有 delete 工具，不悄悄覆盖用户在 IDE 里改好的文件
+        // 目标文件已存在就拒绝：不悄悄覆盖用户在 IDE 里改好的文件
         if (Files.exists(Path.of(storagePath))) {
             return errorResult(
                 "A file already exists at $storagePath, so a configuration named \"$name\" is already there. " +
-                    "Nothing was created or overwritten — delete it in the IDE (there is deliberately no delete " +
-                    "tool) or pick another name.",
+                    "Nothing was created or overwritten — delete it with `delete_run_configuration` or pick " +
+                    "another name.",
                 null,
             )
         }

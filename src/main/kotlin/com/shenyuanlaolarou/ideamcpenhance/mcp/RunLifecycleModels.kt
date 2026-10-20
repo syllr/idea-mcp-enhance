@@ -20,6 +20,15 @@ import kotlinx.serialization.json.putJsonObject
  * 纯 JUnit 里逐字段断言，不需要启动 IDE，也就不必启动一个 Run Configuration 去验证。
  */
 
+/** 实例状态：`running`（进程在跑）。 */
+internal const val INSTANCE_STATE_RUNNING = "running"
+
+/** 实例状态：`terminating`（已请求停止，还没退出）。 */
+internal const val INSTANCE_STATE_TERMINATING = "terminating"
+
+/** 实例状态：`starting`（进程还没挂上，还在 before-launch / 启动中）。 */
+internal const val INSTANCE_STATE_STARTING = "starting"
+
 /**
  * 一个运行实例（一次 Run 执行）的实时状态。
  *
@@ -33,6 +42,8 @@ import kotlinx.serialization.json.putJsonObject
  * @param startNotified IDE 已经收到"进程启动"通知；false 表示还卡在启动阶段（跑的是构建脚本，不是被测进程）
  * @param pid 操作系统进程号；拿不到时为 null（进程尚未真正创建）
  * @param exitCode 退出码；仍在运行时为 null
+ * @param logFile 这次运行的日志文件路径；没采到时为 null（见 [RunLogAccess]）
+ * @param startedAtMillis 这次运行的开始时刻；从日志戳里读（没采到日志时为 null）
  */
 data class RunInstanceState(
     val executionId: Long,
@@ -42,6 +53,8 @@ data class RunInstanceState(
     val startNotified: Boolean,
     val pid: Long?,
     val exitCode: Int?,
+    val logFile: String? = null,
+    val startedAtMillis: Long? = null,
 ) {
     /** 是否处于"已经要求停、但还没停下来"的中间态——`stop` 超时后需要 force 的就是这些。 */
     val stuckTerminating: Boolean get() = terminating && !running
@@ -53,6 +66,19 @@ data class RunInstanceState(
      * `ExecutionEnvironmentProxy.isStarting()` 与 `ProcessHandler.isProcessTerminating()`）。
      */
     val inTransientState: Boolean get() = terminating || (running && !startNotified)
+
+    /**
+     * 三态。
+     *
+     * 列表工具用它替代 `running` / `terminating` / `startNotified` 三个布尔 ——
+     * 三个布尔要靠组合判断，一个字段一眼就能看出"现在能不能 rerun"。
+     */
+    val state: String
+        get() = when {
+            terminating -> INSTANCE_STATE_TERMINATING
+            running && !startNotified -> INSTANCE_STATE_STARTING
+            else -> INSTANCE_STATE_RUNNING
+        }
 }
 
 /**
@@ -347,6 +373,37 @@ internal fun RunConfigurationState.toJson(): JsonObject = buildJsonObject {
     putJsonArray("instances") {
         for (instance in instances) {
             add(instance.toJson())
+        }
+    }
+}
+
+/**
+ * 列表工具用的**精简**形状。
+ *
+ * 列表是**索引**，不是详情：它只回答"谁在跑、几个实例、各自的 pid / 状态 / 日志在哪"。
+ * 定义详情（options / envs / XML）、历史实例、日志内容都走 `inspect_run_configuration`。
+ *
+ * 相比完整形状，这里刻意去掉：
+ *
+ * - `isTemplate` / `running` —— 列表已经过滤到"有活实例"，这两个恒为 false / true
+ * - `exitCode` —— 活着的进程没有退出码，恒为 null
+ * - `displayName` —— Run 标签页的 UI 文本，多实例会带后缀，不能当标识
+ * - 各种**派生计数** —— 数组长度就是计数，不重复给
+ */
+internal fun RunInstanceState.toListJson(): JsonObject = buildJsonObject {
+    put("executionId", executionId)
+    put("state", state)
+    put("pid", pid)
+    put("logFile", logFile)
+}
+
+/** 列表工具的配置级形状。见 [toListJson]。 */
+internal fun RunConfigurationState.toListJson(): JsonObject = buildJsonObject {
+    put("name", name)
+    put("type", typeId)
+    putJsonArray("instances") {
+        for (instance in instances) {
+            add(instance.toListJson())
         }
     }
 }

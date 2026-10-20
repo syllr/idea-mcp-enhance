@@ -57,13 +57,26 @@ internal fun RunContentDescriptor.stampedConfigurationName(): String? =
     processHandler?.getUserData(RUN_CONFIGURATION_NAME)
 
 /**
- * 项目打开时挂上监听，给每个新建的进程盖上配置名。
+ * 项目打开时挂上监听，给每个新建的进程盖上配置名，**并开始采集它的输出**。
  *
  * 由 `META-INF/mcpserver.xml` 注册（`<postStartupActivity>`）：MCP Server 不存在时这个类根本不会被加载，
  * prompt 那一半不受影响。
+ *
+ * ## 为什么采集要挂在这里
+ *
+ * `processStarting` 在 `processHandler.startNotify()` **之前**发出（字节码核实见 [RunLogAccess] 的类注释），
+ * 所以在这里挂 [com.intellij.execution.process.ProcessListener] 能抓到**第一行**输出。
+ * 挂晚了（像平台自己在 `processStarted` 之后才做的事）就可能漏掉启动横幅。
+ *
+ * ## 覆盖范围
+ *
+ * 监听在项目打开时挂上，所以"项目里跑起来的进程"都会被盖章、都会被采集：IDE 的 Run/Rerun 按钮、
+ * 内置 `execute_run_configuration`、本插件的 `rerun` 都走 `ExecutionManagerImpl` 这条路。
  */
 internal class RunConfigurationNameStamper : ProjectActivity {
     override suspend fun execute(project: Project) {
+        // 过期日志在项目打开时清一次：日志目录在 IDE 的 temp 下，IDE 自己也会清，但我们的保留期更短。
+        cleanupExpiredRunLogs()
         project.messageBus.connect(project).subscribe(
             ExecutionManager.EXECUTION_TOPIC,
             object : ExecutionListener {
@@ -71,14 +84,40 @@ internal class RunConfigurationNameStamper : ProjectActivity {
                     executorId: String,
                     environment: ExecutionEnvironment,
                     handler: ProcessHandler,
-                ) = stampConfigurationName(handler, environment)
+                ) {
+                    stampConfigurationName(handler, environment)
+                    startRunLogCapture(
+                        project = project,
+                        configurationName = configurationNameOf(environment),
+                        typeId = environment.runnerAndConfigurationSettings?.type?.id,
+                        handler = handler,
+                    )?.let { stamp -> stampRunLog(handler, stamp) }
+                }
 
                 override fun processStarted(
                     executorId: String,
                     environment: ExecutionEnvironment,
                     handler: ProcessHandler,
-                ) = stampConfigurationName(handler, environment)
+                ) {
+                    stampConfigurationName(handler, environment)
+                    // 有些 runner（实测：Shell Script）在 Run 内容建出来时进程**已经被** startNotify 过了，
+                    // 平台只在 `!isStartNotified` 时才发 `processStarting`（字节码里是 offset 270 的跳转）——
+                    // 于是上面那个分支根本不会触发，日志也就没有。这里补挂一次：
+                    // 会漏掉最早的一小段输出，但至少"这次运行有日志"成立。
+                    if (handler.runLogStamp() == null) {
+                        startRunLogCapture(
+                            project = project,
+                            configurationName = configurationNameOf(environment),
+                            typeId = environment.runnerAndConfigurationSettings?.type?.id,
+                            handler = handler,
+                        )?.let { stamp -> stampRunLog(handler, stamp) }
+                    }
+                }
             },
         )
     }
 }
+
+/** 配置名：优先取配置本身，退化取 run profile。 */
+private fun configurationNameOf(environment: ExecutionEnvironment): String =
+    environment.runnerAndConfigurationSettings?.name ?: environment.runProfile.name
