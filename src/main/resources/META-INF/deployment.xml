@@ -10,6 +10,9 @@
   扩展点全名：com.intellij.mcpServer.mcpToolsProvider
 -->
 <idea-plugin>
+    <!-- 远程终端 tab 需要 remote-run 的类；它依赖 Ultimate，和 webDeployment 同一层。 -->
+    <depends optional="true" config-file="remote-terminal.xml">org.jetbrains.plugins.remote-run</depends>
+
     <extensions defaultExtensionNs="com.intellij">
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.DeploymentToolsProvider"/>

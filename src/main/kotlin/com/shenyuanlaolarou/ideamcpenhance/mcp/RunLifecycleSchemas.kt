@@ -368,38 +368,25 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     RERUN_TOOL_NAME,
     "Rerun Run Configuration",
     """
-    Restart a run configuration — the same observable effect as the IDE's **Rerun** button.
+    Restart a run configuration — the same effect as the IDE's **Rerun** button.
 
-    Semantics: running → stop the live instances, then start again (`mode: RESTARTED`); not running → just
-    start it (`mode: STARTED`); the IDE cannot launch this configuration type → nothing happens
-    (`mode: NO_OP`). Read `started` — not `mode` — to know whether a new process really came up;
-    `started: false` comes with `startFailure`. `transition[]` reports every step in order (what was
-    stopped, with its exit codes, then the new process, with timings).
+    Running → stop the live instances, then start again (`mode: RESTARTED`). Not running → start it
+    (`mode: STARTED`). Unsupported configuration type → `mode: NO_OP`. Read `started`, not `mode`:
+    `false` comes with `startFailure`, and `transition[]` lists each step.
 
-    The call waits until the new process really exists before returning, so `started` is a real answer.
+    The call waits until the new process exists, then returns `started` / `output`. It fails fast if
+    the configuration is stopping or starting, if old instances could not be stopped, or if the IDE is
+    already starting it (a second platform start would otherwise be dropped silently).
 
-    A restart only makes sense from a settled state, so the call fails fast with a structured error when the
-    configuration is **stopping** or **starting** (a run was requested but its process is not up yet), when
-    its previous instances could not be stopped (nothing new is started then — that is the state that would
-    leave two instances running), or when the IDE itself is already starting it (the platform would silently
-    drop a second start, so this call reports it instead of being ignored). All three read the IDE's own
-    state, so starts made by hand or by the built-in `execute_run_configuration` are covered too.
+    Before-launch steps delay the Run content. The whole call must fit the MCP server's patience
+    (roughly 15 seconds): the total is `stopTimeoutMs` + `startTimeoutMs` + a ~2 second output
+    window, so a slow stop plus a slow start can exceed it. For those cases use the asynchronous mode
+    (`waitForStart = false`): old instances are stopped within `stopTimeoutMs`, the start is submitted,
+    and the call returns `started = null`; poll `list_running_configurations` for the real state.
+    Do not shrink `stopTimeoutMs` to fit the budget: that only gives up graceful shutdown sooner.
 
-    Long before-launch steps (a build, or another run configuration) delay the Run content — the platform
-    creates it only after they finish. The whole call must stay inside the MCP server's patience (roughly 15
-    seconds; beyond that it drops the session and the caller gets an empty HTTP 404 instead of this answer):
-    the total is `stopTimeoutMs` + `startTimeoutMs` + a ~2 second output window, so a slow stop plus a slow
-    start already exceeds it. **Whenever the call is going to be that slow — long before-launch steps, or
-    instances that take a while to shut down — use the asynchronous mode instead of waiting**: with
-    `waitForStart = false` the start is submitted and the call returns right after it is submitted (the old
-    instances are still stopped first, within `stopTimeoutMs`), with `started = null` because the outcome is
-    unknown, so poll `list_running_configurations` for the real state. Do not shrink `stopTimeoutMs` to fit
-    the budget: that only gives up on a graceful shutdown sooner (whatever has not exited is killed).
-
-    The name is matched exactly first, then case-insensitively; when nothing matches, the error lists the
-    names that do exist.
-
-    Use this after editing source code of a process that has no hot reload.
+    The name is matched exactly first, then case-insensitively; errors list the existing names.
+    Use this after editing source code of a process without hot reload.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.rerun_run_configuration",

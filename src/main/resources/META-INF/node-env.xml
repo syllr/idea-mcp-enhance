@@ -1,0 +1,7 @@
+<!-- 项目 Node.js runtime 注入。只有 JavaScript 插件存在时才会被读取。 -->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.NodeTerminalEnvRegistrar"/>
+    </extensions>
+</idea-plugin>

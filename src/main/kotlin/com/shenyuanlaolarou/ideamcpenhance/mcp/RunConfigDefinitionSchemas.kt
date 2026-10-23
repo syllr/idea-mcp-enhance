@@ -32,23 +32,18 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
     INSPECT_TOOL_NAME,
     "Inspect Run Configuration",
     """
-    Everything about **one** run configuration: what it is set up to do, whether it can run right now,
-    which instances are alive, and the log files of its earlier runs.
+    Show one run configuration in detail: settings, runnability, live instances and earlier run logs.
 
-    Use `list_running_configurations` for the index of what is running right now. This tool is for the
-    details: the settings (options, environment variables, before-launch steps), the raw XML, and the
-    history.
+    Use `list_running_configurations` for the live index; use this tool for options, environment,
+    before-launch steps, raw XML and history.
 
-    The name is parsed into its parts, so a variant is recognisable without guessing: `win@console-web`
-    is the Windows variant of `console-web`, `console-web@testenv` is one environment of it. A name
-    without a prefix is the macOS/Linux variant; a name without an environment suffix applies to every
-    environment.
+    Names are parsed as `[os@]base[@env]`: `win@console-web` is the Windows variant,
+    `console-web@testenv` is one environment. No prefix means macOS/Linux; no environment suffix
+    means the configuration applies to every environment.
 
-    `instances[]` are the live ones, each with its process id, its state and the log file it writes to.
-    `history[]` are the earlier runs, newest first, each with the log file that run produced — read that
-    file to see what the process printed. History covers the runs this plugin captured; a run started
-    outside the IDE's execution channel (a shell configuration that runs inside the IDE terminal) has no
-    log and does not appear.
+    `instances[]` are live, with pid, state and log path. `history[]` is newest-first; read its log
+    file for the output of an earlier run. History only covers runs captured by this plugin; a shell
+    configuration executed in the IDE terminal has no captured log.
     """.trimIndent(),
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.inspect_run_configuration",
@@ -235,28 +230,24 @@ internal val createRunConfigurationDefinitionDescriptor = McpToolDescriptor(
     CREATE_DEFINITION_TOOL_NAME,
     "Create Run Configuration",
     """
-    Create a **project-level** run configuration of any type — a team asset, stored with the project.
+    Create a project-level run configuration — a durable team asset.
 
-    **Do not create or edit that file yourself** — this tool (with `update_run_configuration` and
-    `delete_run_configuration`) is the only writer. A hand-written file fails silently: a wrong `type`
-    makes the IDE ignore the whole file, and a misspelled field name is silently treated as its default.
+    Do not create or edit that file yourself: this tool (with `update_run_configuration` and
+    `delete_run_configuration`) is the only writer. A hand-written file fails silently when its type
+    or field names are wrong.
 
-    **Ask the user before creating anything.** A run configuration is a durable artefact and a project
-    normally has only a handful of them. State what you intend to create, what it will run and why it is
-    worth keeping, then wait for the user's agreement. For a one-off command, run it another way.
+    Ask the user before creating anything. State the name, type, command and why it is worth keeping,
+    then wait for agreement. For a one-off command, run it another way.
 
-    Content comes from exactly one of these sources (in this order of preference):
+    Body source, in order of preference:
+    1. `cloneFrom`: copy an existing configuration of the same type. Safest for variants and when the
+       type's field names are unknown.
+    2. `configurationXml`: the `<configuration>` XML (advanced; needed for nested settings such as
+       Gradle).
+    3. Neither: use the IDE's template for `type`, then patch it.
 
-    1. `cloneFrom` — copy an existing configuration of the same type. This is the **safest** path for a
-       variant (`win@base`, `base@env`) and the only reliable way to get a type whose field names you
-       do not know: copy a real one, then patch it.
-    2. `configurationXml` — the inner XML of `<configuration>` (advanced; for a shape `options` /
-       `attributes` / `envs` cannot express, such as Gradle's nested settings).
-    3. Neither — the IDE's own template for `type`, which gives an empty configuration you then patch.
-
-    `options` / `attributes` / `envs` are applied on top of whichever source you chose. Only Shell
-    configurations are guaranteed to be field-complete this way; for other types the field names come
-    from the platform, so use `cloneFrom` when in doubt.
+    `options` / `attributes` / `envs` are applied on top. Shell configurations are reliably
+    field-complete this way; for other types, prefer `cloneFrom`.
     """.trimIndent(),
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.create_run_configuration",
@@ -338,30 +329,20 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
     UPDATE_TOOL_NAME,
     "Update Run Configuration",
     """
-    Change an existing project-level run configuration — its settings **and its name**.
+    Change an existing project-level run configuration, including its name.
 
-    **Do not edit the configuration's file yourself** — this tool is the writer. It keeps the file in
-    the IDE's own shape and re-checks that the result still runs.
+    Do not edit the configuration's file yourself: this tool is the writer and re-checks that the
+    result still runs.
 
-    ## Two kinds of change
+    Fields (omit `newName`): `options` / `attributes` / `envs` are patches; `null` removes a key.
+    `replaceConfigurationXml` replaces the body for nested types such as Gradle/npm. Changes apply on
+    the next start; if it is running, call `rerun_run_configuration` afterwards.
 
-    **Fields** (omit `newName`): `options` / `attributes` / `envs` are applied as a patch — a value of
-    `null` removes that key, any other value sets it. `replaceConfigurationXml` replaces the whole body
-    (advanced). Changes take effect on the next start; if the configuration is running right now, call
-    `rerun_run_configuration` afterwards.
+    Rename (`newName`): moves the file and rewrites references from before-launch steps and compound
+    configurations. Recorded run history moves too. Refused while running or when the name is taken.
 
-    **Name** (`newName`): the file is moved, the `name` attribute is changed, and **references to it are
-    rewritten** — the before-launch steps of other configurations and compound configurations point at
-    the new name. Its recorded run history is moved to the new name as well. This is how you rename
-    `win-...` to `win@...` or add an `@env` suffix without leaving broken references behind.
-
-    ## Safety
-
-    - `expectedContentHash` (optional) makes the call fail instead of overwriting a file that changed
-      since you read it.
-    - Renaming is refused while the configuration is running (the IDE names run contents after the
-      configuration, so the two would disagree afterwards) and when the target name is taken.
-    - Only project-level configurations can be changed here. For IDE-level ones, edit them in the IDE.
+    `expectedContentHash` prevents overwriting a file that changed since you read it. Only project-level
+    configurations can be changed here; edit IDE-level ones in the IDE.
     """.trimIndent(),
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.update_run_configuration",

@@ -15,6 +15,62 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+### Added
+
+- **Four terminal MCP tools**:
+  - `project_sdk_terminal` runs commands in the project's SDK terminal and returns the output. Each call
+    creates a real Terminal tab and supports `input`, `timeoutMs`, `maxChars`, `workingDirectory` and
+    `env`.
+  - `execute_in_remote_host` opens a real SSH terminal through a Deployment SFTP/SSH server and supports
+    `loginShell`, `strictHostKey`, `workingDirectory` and interactive input.
+  - `terminal_io` reads incremental output, `tail` command segments or the `full` buffer from an existing
+    local/remote tab, and writes input to it.
+  - `list_terminals` lists `mcp_project_sdk`, `mcp_remote` and `user` tabs. Only MCP tabs with a tab id and
+    `addressable: true` can be passed to `terminal_io`.
+- **Project terminal environment injection**: Maven home, Node runtime/package manager, Go SDK
+  (`GOROOT` / `GOPATH` / `GOBIN`) and Python SDK / venv are derived from IDE settings and added to the
+  Terminal environment. Explicit tool `env` values win.
+- **Per-project terminal session registry** for local command-block offsets, remote command markers, tab
+  kind and last-command state, enabling incremental reads and closed-tab detection.
+- **Built-in `execute_terminal_command` filter**: a `McpToolFilterProvider` hides the overlapping built-in
+  tool in favour of `project_sdk_terminal`.
+
+### Changed
+
+- Terminal error results now include the machine-readable code in the text as `[code] message` while keeping
+  the structured error payload.
+- Remote preflight checks host and Key pair key path before credentials, so `deployment_host_missing` and
+  `deployment_key_missing` are no longer reported as missing credentials.
+- New tab names only avoid tabs that are still alive; tabs left over from a previous IDE session do not
+  affect naming.
+- Remote `running` is best-effort: known for synchronous completion/timeout and `null` for asynchronous
+  runs when completion cannot be detected. `exitCode` remains `null`.
+- Compressed the terminal, run-configuration and deployment tool descriptions; added the new-tab
+  lifecycle, defaults, `list_terminals` entry point and async polling rules.
+
+### Fixed
+
+- Incremental reads, `tail` truncation warnings and closed-tab detection after local `clear` / `reset`.
+- Remote host-key policy, unknown-host, network, authentication and missing-key error classification and
+  Chinese guidance.
+- Go `GOPATH` / `GOBIN` injection: prefer IDE/environment values and fall back to the Go SDK's `go env`.
+- Node package-manager path detection for both executable-file and directory paths.
+- Python terminal selection: prefer project/module SDK, then a registered project-directory SDK, then
+  `.venv`.
+
+### Notes
+
+- Remote terminals never report an `exitCode`; asynchronous remote `running` may also be `null` because the
+  remote shell has no command-finished signal.
+- User-opened tabs are visible but not addressable, so `terminal_io` cannot accidentally write into a shell
+  the user is using.
+- Run configurations keep their own lifecycle. A configuration with `EXECUTE_IN_TERMINAL=true` may appear as
+  a `user` tab in `list_terminals`, but must be controlled through the Run tools.
+- Remote terminals require Ultimate's `remote-run` / Deployment plugins; local terminals require the
+  Terminal plugin.
+
 ## [0.1.1] - 2026-10-20
 
 ### Removed

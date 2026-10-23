@@ -4,6 +4,42 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+### Added
+
+- **终端 MCP 工具（4 个）**：
+  - `project_sdk_terminal` —— 在本项目 SDK 终端里执行命令，返回命令输出；每次调用创建一个真实 Terminal tab，支持 `input`、`timeoutMs`、`maxChars`、`workingDirectory`、`env`。
+  - `execute_in_remote_host` —— 通过 Deployment SFTP/SSH 服务器创建真实远程 SSH 终端，支持 `loginShell`、`strictHostKey`、`workingDirectory` 和交互输入。
+  - `terminal_io` —— 对已创建的本地/远程 tab 做增量读取、`tail` 命令段、`full` 全量读取和交互写入。
+  - `list_terminals` —— 列出 `mcp_project_sdk`、`mcp_remote` 和 `user` 终端；只有带 tab id 且 `addressable: true` 的 MCP tab 能传给 `terminal_io`。
+- **项目终端环境注入**：根据 IDE 配置把 Maven home、Node runtime/package manager、Go SDK（`GOROOT` / `GOPATH` / `GOBIN`）、Python SDK / venv 注入 Terminal 环境；用户显式 `env` 最后覆盖。
+- **终端会话 registry**：按项目保存本地 command block 游标、远程命令 marker、tab 来源和最近一次命令状态，支持关闭检测与增量读取。
+- **内置 `execute_terminal_command` 过滤**：用 `McpToolFilterProvider` 隐藏与 `project_sdk_terminal` 重叠的内置工具。
+
+### Changed
+
+- 终端错误结果统一把 machine-readable code 写进文案，格式为 `[code] message`；同时保留错误 JSON。
+- 远程预检先检查 host / Key pair 私钥，再检查凭据，`deployment_host_missing` / `deployment_key_missing` 不再被“无凭据”掩盖。
+- 新建 tab 只避开当前仍存活的 tab，IDE 重启后遗留的非存活 tab 不参与命名。
+- 远程 `running` 改为 best-effort：同步完成/超时可判断，异步在无法确认时为 `null`；`exitCode` 仍为 `null`。
+- 压缩终端、Run Configuration 和 Deployment 工具的描述，补充每次调用新建 tab、默认值、`list_terminals` 入口和异步轮询规则。
+
+### Fixed
+
+- 本地终端 `clear` / `reset` 后的增量读取游标、`tail` 截断提示和关闭检测。
+- 远程 host key 严格模式、未知主机、网络不通、认证失败和 Key pair 缺失的分类与中文提示。
+- Go `GOPATH` / `GOBIN` 注入：优先使用 IDE/环境配置，缺失时用 Go SDK 的 `go env` 兜底。
+- Node package manager 路径识别，兼容可执行文件路径与目录路径。
+- Python 终端优先使用项目/模块 SDK，其次项目目录已注册 SDK，最后 `.venv` 兜底。
+
+### Notes
+
+- 远程终端的 `exitCode` 永远为 `null`；异步远程的 `running` 也可能为 `null`，因为远程 shell 没有 command-finished 信号。
+- 用户手动打开的 tab 只展示、不可寻址，避免 `terminal_io` 误写用户正在使用的交互式终端。
+- Run Configuration 的生命周期仍由 Run 工具管理；`EXECUTE_IN_TERMINAL=true` 的配置可能以 `user` tab 出现在 `list_terminals` 中，但不能用 `terminal_io` 控制。
+- 远程终端依赖 Ultimate 的 `remote-run` / Deployment 插件；本地终端依赖 Terminal 插件。
+
 ## [0.1.1] - 2026-10-20
 
 ### Removed

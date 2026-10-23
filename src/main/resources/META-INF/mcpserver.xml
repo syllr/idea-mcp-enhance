@@ -24,7 +24,22 @@
     -->
     <depends optional="true" config-file="deployment.xml">com.jetbrains.plugins.webDeployment</depends>
 
+    <!-- 本地终端工具：需要 Terminal 插件（Community / Ultimate 都自带）。 -->
+    <depends optional="true" config-file="terminal.xml">org.jetbrains.plugins.terminal</depends>
+
     <extensions defaultExtensionNs="com.intellij">
+        <!-- 终端会话状态：按项目存 tab 游标 / 远程命令段。 -->
+        <projectService
+                serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalSessionRegistry"/>
+        <projectService
+                serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.ProjectTerminalEnvRegistry"/>
+        <!-- terminal_io 的远程实现由 remote-run 的 provider 注册到这里的 app service。 -->
+        <applicationService
+                serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalIoRouter"/>
+
+        <!-- 屏蔽内置 execute_terminal_command：它和 project_sdk_terminal 重叠且不加载登录 shell 环境。 -->
+        <mcpServer.mcpToolFilterProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalToolFilterProvider"/>
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
 

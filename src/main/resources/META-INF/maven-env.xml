@@ -1,0 +1,9 @@
+<!--
+  项目 Maven 环境注入。只有 org.jetbrains.idea.maven 存在时才会被读取。
+-->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.MavenTerminalEnvRegistrar"/>
+    </extensions>
+</idea-plugin>

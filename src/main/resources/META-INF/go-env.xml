@@ -1,0 +1,7 @@
+<!-- 项目 Go SDK 注入。只有 org.jetbrains.plugins.go 存在时才会被读取。 -->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.GoTerminalEnvRegistrar"/>
+    </extensions>
+</idea-plugin>

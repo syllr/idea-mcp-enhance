@@ -225,29 +225,21 @@ internal val listDeploymentServersDescriptor = McpToolDescriptor(
     LIST_DEPLOYMENT_SERVERS_TOOL_NAME,
     "List Deployment Servers",
     """
-    Report every deployment server this project can use, how they are configured, and the project-wide deployment
-    options that govern all of them.
+    List deployment servers usable from this project and the project-wide deployment policy.
 
-    Why this exists: the IDE's deployment settings are split across two stores with different scopes, which is easy
-    to misread. Server definitions can be application-level (shared by all projects) or project-level, while the
-    **path mappings** and **all behaviour options** are stored per project — and the options are shared by every
-    server, they are NOT per server.
+    Call this before upload/download: pass a reported name as `serverName`. An empty list means no
+    deployment server is configured.
 
-    What the result tells you:
+    Returns:
+    - `servers[]`: name, level, accessType, host/port, mappings, `hasCredentials`, `validationIssue`.
+      Do not connect when `hasCredentials=false`; the IDE would open a modal login dialog and block
+      the MCP call.
+    - `defaultServerOrGroupName`: target of "upload to default server"; null means none.
+    - `options`: project-wide policy (overwrite, delete-missing, confirmations, automatic upload),
+      not per-server settings.
+    - `warnings[]`: risky combinations; read before uploading.
 
-    - `servers[]` — each server's name (use it as the `serverName` argument of the other deployment tools), level,
-      access type, host/port, its mappings in THIS project, and two health flags:
-      `hasCredentials` and `validationIssue`. Both exist so a later call does not walk into a server that cannot be
-      connected to: connecting without credentials makes the IDE open a modal login dialog, which would block the
-      MCP call.
-    - `defaultServerOrGroupName` — the target of "upload to default server" and of automatic upload. `null` means
-      none is set, so both have no target at all.
-    - `options` — project-wide behaviour (overwrite policy, delete-missing, confirmation prompts, automatic upload).
-      Read them as "this project's deployment policy", not as properties of one server.
-    - `warnings[]` — dangerous or surprising combinations found in the current configuration, spelled out. Worth
-      reading before running any upload.
-
-    Nothing here touches the network: it only reads the IDE's stored settings.
+    Read-only; this tool does not touch the network.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_deployment_servers",
@@ -283,49 +275,30 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
     "Upload To Deployment",
     """
     Upload this project's mapped directories to a deployment server — the same operation as the IDE's
-    "Deployment | Upload to ...", driven through the platform so the IDE's own connection, path resolution
-    and transfer machinery do the work.
+    "Deployment | Upload to ...".
 
-    What gets uploaded: **the local roots of the server's path mappings in this project**. There is no per-file
-    or per-directory argument — the mapping already says what belongs to this server, so narrowing the scope is
-    a matter of configuring a mapping, not of passing a path here.
+    Only the local roots of the server's path mappings are uploaded. There is no path argument;
+    configure mappings in Deployment settings to narrow the scope.
 
-    `mode` decides what happens to files that exist on the server but not locally:
+    `mode` controls remote files that have no local counterpart:
 
-    - `"mirror"` (**the default**) — send local files **and delete remote files that have no local counterpart**,
-      so the server ends up matching the local state. **This is destructive** and there is no confirmation step
-      here: remote files the project no longer contains are gone afterwards. Pass `"upload"` to keep them.
-    - `"upload"` — only send local files. Remote files with no local counterpart are left alone.
+    - `"mirror"` (**default**): upload local files **and delete remote extras**. **Destructive**;
+      there is no confirmation step here. Use `"upload"` to keep remote extras.
+    - `"upload"`: send local files only.
 
-    ## This tool is asynchronous underneath, and returns a handle
+    The transfer runs in the background. The call waits up to `waitMs` (default 10000, max 12000):
 
-    Uploading runs in the IDE's background (`Task.Backgroundable`), and how long it takes is not bounded: a
-    few dozen files finish in about a second over SFTP, several hundred take a quarter of a minute.
+    - finished → `state: "completed"` with real counts.
+    - not finished → `state: "in_progress"` with a `handle`; the transfer **keeps running**. Poll it
+      with `get_deployment_task_status`. Do not call upload again — that starts another transfer.
+      An upload already running for the same server returns its existing handle instead.
 
-    The call waits up to `waitMs` (default 10000) for the transfer to actually finish:
+    Project-wide settings control unchanged-file skipping and deletion confirmation; this tool
+    overrides confirmation off because a modal dialog would block the MCP call.
 
-    - finished in time → `state: "completed"` with the real counts
-    - not finished → `state: "in_progress"` with a **`handle`**. The transfer **keeps running in the IDE**;
-      poll it with `get_deployment_task_status`. Calling this tool again will NOT report progress —
-      it would start yet another upload.
-
-    If an upload to the same server is already running, this call does not start a second one: it returns that
-    upload's `handle` and state instead.
-
-    Two settings are taken from the project (they are project-wide, see `list_deployment_servers`):
-    whether unchanged files are skipped (`overwriteAll`), and whether the IDE confirms before deleting.
-    This tool always overrides the deletion confirmation off — a modal dialog cannot be answered on the MCP
-    path and would block the call. Everything else is left to the project's configuration.
-
-    Read the result as the IDE's own accounting:
-
-    - `counters` — per-operation counts (`transfer.details.transferred`, `transfer.details.deleted`, ...).
-      Each number counts operations, not files: with `mode: "mirror"` a removed directory counts as 1
-      `delete` operation however many files it held.
-    - `handle` — always returned, and the only way to look this upload up later.
-    - `state: "in_progress"` — the counts are zero and mean nothing; poll `get_deployment_task_status`.
-
-    Like every deployment operation this needs the server to be reachable and its credentials usable.
+    `counters` count operations, not files (a removed directory counts as one delete). With
+    `state: "in_progress"` the counts are meaningless until polled. The server must be reachable
+    and its credentials usable.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.upload_to_deployment",
@@ -365,24 +338,17 @@ internal val getDeploymentTaskStatusDescriptor = McpToolDescriptor(
     GET_TASK_STATUS_TOOL_NAME,
     "Get Deployment Task Status",
     """
-    Check on one deployment task started earlier — an upload by `upload_to_deployment` or a download by
-    `download_from_deployment`.
+    Read the current state of an upload or download task by its handle.
 
-    **This tool never starts anything.** It only reads the state of the task named by `handle`. Use it to poll a
-    task that came back as `state: "in_progress"`.
+    This tool never starts a transfer. Use it to poll a task that came back with
+    `state: "in_progress"`; the handle identifies that one task, even when a server has many.
+    `kind` tells you whether it is an upload or a download.
 
-    Why a handle rather than the server name: one server accumulates many tasks over time, so a status query has
-    to name *which* transfer it means. The handle does exactly that — a server that has been transferred to or
-    from several times will not be confused.
+    While running, `processed` / `total` come from platform counters (`total` may still be 0 while
+    counting). When finished, `counters` are per-operation counts, not file counts — a removed
+    directory counts as one delete.
 
-    The answer has the same shape whichever tool started the task; `kind` tells you which (`upload` / `download`).
-
-    While a transfer runs you get `processed` / `total` from the platform's own counters (`total` may still be 0
-    while the platform is still counting). When it is done you get the same per-operation `counters` as the
-    original call — each number counts operations, not files (a removed directory counts as 1).
-
-    A handle that never existed, or one of the oldest finished tasks that has since been dropped (only the 20
-    most recent finished transfers per project are kept), comes back as an error.
+    An unknown handle, or a finished task older than the 20 most recent per project, returns an error.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.get_deployment_task_status",
@@ -416,29 +382,21 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     DOWNLOAD_TOOL_NAME,
     "Download From Deployment",
     """
-    Pull the server's copy of this project's mapped directories back into the local project — the same operation
-    as the IDE's "Deployment | Download from ...".
+    Pull the mapped remote directories into this project — the same operation as the IDE's
+    "Deployment | Download from ...".
 
-    What gets downloaded: **the remote side of the server's path mappings in this project**, written into the
-    matching local roots. There is no path argument — the mapping already says which directories belong together.
+    Only the remote side of the server's path mappings is downloaded, into the matching local roots.
+    There is no path argument.
 
-    Files that exist on **both** sides are replaced by the server's copy, as long as they actually differ; files
-    already in sync are left alone. There is no "keep my local version" option: the IDE's own download asks a
-    dialog for that, and nothing can answer a dialog on the MCP path — so this tool always takes the remote
-    copy. Treat the server as the source of truth for the mapped directories.
+    Files present on both sides are replaced by the server's copy when they differ; in-sync files are
+    left alone. There is no "keep my local version" option: a dialog cannot be answered on the MCP path,
+    so the server is always the source of truth.
 
-    ## This tool is asynchronous underneath, and returns a handle
-
-    Transfers run in the IDE's background and how long they take is not bounded. The call waits up to `waitMs`
-    (default 10000) for the download to actually finish:
-
-    - finished in time → `state: "completed"`
-    - not finished → `state: "in_progress"` with a **`handle`** and the live `processed` / `total` counts. The
-      download **keeps running in the IDE**; poll it with `get_deployment_task_status`. Calling this tool again
-      would NOT report progress — it would start yet another download.
-
-    If a transfer to or from the same server is already running, this call does not start a second one: it
-    returns that task's `handle` and state instead.
+    The transfer runs in the background. The call waits up to `waitMs` (default 10000, max 12000):
+    - finished → `state: "completed"`.
+    - not finished → `state: "in_progress"` with a `handle`; the download keeps running. Poll it with
+      `get_deployment_task_status`; do not call download again — that starts another transfer.
+      A transfer already running for the same server returns its existing handle instead.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.download_from_deployment",

@@ -1,0 +1,10 @@
+<!--
+  远程终端工具（execute_in_remote_host）的注册文件。
+  只有 org.jetbrains.plugins.remote-run（Ultimate）存在时才会被读取。
+-->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <mcpServer.mcpToolsProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RemoteTerminalToolsProvider"/>
+    </extensions>
+</idea-plugin>
