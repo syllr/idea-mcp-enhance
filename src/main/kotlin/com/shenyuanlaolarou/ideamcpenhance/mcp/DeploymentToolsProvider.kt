@@ -57,7 +57,7 @@ import kotlin.coroutines.coroutineContext
 class DeploymentToolsProvider : McpToolsProvider {
 
     override fun getTools(): List<McpTool> = listOf(
-        ListDeploymentServersTool(),
+        ListServerDeploymentsTool(),
         UploadToDeploymentTool(),
         DownloadFromDeploymentTool(),
         GetDeploymentTaskStatusTool(),
@@ -87,16 +87,16 @@ private abstract class BaseDeploymentTool : McpTool {
 }
 
 // ---------------------------------------------------------------------------
-// list_deployment_servers
+// list_server_deployments
 // ---------------------------------------------------------------------------
 
-private class ListDeploymentServersTool : BaseDeploymentTool() {
+private class ListServerDeploymentsTool : BaseDeploymentTool() {
 
-    override val descriptor: McpToolDescriptor = listDeploymentServersDescriptor
+    override val descriptor: McpToolDescriptor = listServerDeploymentsDescriptor
 
     override suspend fun body(arguments: JsonObject): McpToolCallResult {
         val project = currentProject() ?: return McpToolCallResult.error(
-            "$LIST_DEPLOYMENT_SERVERS_TOOL_NAME: no project is bound to this MCP session.",
+            "$LIST_SERVER_DEPLOYMENTS_TOOL_NAME: no project is bound to this MCP session.",
             null,
         )
 
@@ -112,15 +112,15 @@ private class ListDeploymentServersTool : BaseDeploymentTool() {
             warnings = deploymentWarnings(defaultName, servers, options),
         )
 
-        // summary 必须自带「有哪些服务器、哪台是默认」：这两条是调用方决定**要不要传 serverName**
-        // 的前提（不传就落到默认那台），而完整字段只在 structuredContent 里 —— 客户端是否读它不可控，
-        // 只有 text 会稳定到达。把它们塞进 text，调用方就不必依赖 structuredContent 才能做选择。
+        // summary 必须自带「有哪些服务器、哪台是默认、每台挂哪些 deployment」：这些是调用方决定
+        // 传 `serverName`（远程终端）还是 `deploymentName`（上传/下载）的前提。完整字段只在
+        // structuredContent 里 —— 客户端是否读它不可控，只有 text 会稳定到达。
         //
         // (default) 标记打在每台自己身上，而不是只在首行写一次名字：这样台数一多也不用把首行和
         // 列表逐个对名字，名字相近或重名时不会看错。
         val summary = when {
             servers.isEmpty() ->
-                "No deployment servers are configured for this project."
+                "No servers are configured for this project."
 
             else -> {
                 // 默认服务器是**组**（而不是某台具体服务器）时，没有哪台能挂 (default)，
@@ -131,12 +131,14 @@ private class ListDeploymentServersTool : BaseDeploymentTool() {
                     else -> ""
                 }
                 buildString {
-                    append("Found ").append(servers.size).append(" deployment server(s);")
+                    append("Found ").append(servers.size).append(" server(s);")
                     append(defaultClause).append('\n')
                     servers.forEach { server ->
                         append("- \"").append(server.name.ifEmpty { "(unnamed)" }).append('"')
                         if (server.name == defaultName) append(" (default)")
-                        append('\n')
+                        append(" deployments=")
+                            .append(server.deployments.joinToString(",") { it.name }.ifEmpty { "none" })
+                            .append('\n')
                     }
                 }.trimEnd('\n')
             }
@@ -159,7 +161,11 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
             null,
         )
 
-        val requested = arguments.optionalString("serverName")
+        val deploymentName = arguments.requiredString("deploymentName")
+            ?: return McpToolCallResult.error(
+                "`deploymentName` is required; use a name from `list_server_deployments.servers[].deployments[].name`.",
+                null,
+            )
         val mode = arguments.optionalString("mode") ?: MODE_MIRROR
         if (mode != MODE_UPLOAD && mode != MODE_MIRROR) {
             return McpToolCallResult.error(
@@ -169,13 +175,14 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
         }
         val waitMs = arguments.optionalInt("waitMs", DEFAULT_DEPLOYMENT_WAIT_MS.toInt()).toLong()
 
-        val (server, resolveFailure) = resolveTargetServer(project, requested)
-        if (server == null) {
+        val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
+        if (target == null) {
             return McpToolCallResult.error(
-                resolveFailure ?: "$UPLOAD_TO_DEPLOYMENT_TOOL_NAME: could not resolve a deployment server.",
+                resolveFailure ?: "$UPLOAD_TO_DEPLOYMENT_TOOL_NAME: could not resolve a deployment.",
                 null,
             )
         }
+        val server = target.server
 
         // 建连接之前先问清楚——尤其是凭据：没有它，连下去会弹模态登录框。
         connectionPreflightFailure(project, server)?.let { failure ->
@@ -187,14 +194,12 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
             ?: return McpToolCallResult.error("Could not read this project's deployment configuration.", null)
 
         val serverName = server.getName().orEmpty()
-        val roots = pathMappingsOf(config, server)
-            .mapNotNull { mapping ->
-                runCatching { mapping.localPath }.getOrNull()?.takeIf { it.isNotEmpty() }
-            }
+        val roots = listOfNotNull(
+            runCatching { target.deployment.localPath }.getOrNull()?.takeIf { it.isNotEmpty() },
+        )
         if (roots.isEmpty()) {
             return McpToolCallResult.error(
-                "\"$serverName\" has no path mapping in this project, so there is nothing to upload. " +
-                    "Add a Mapping in its Deployment settings.",
+                "Deployment \"$deploymentName\" has no local path, so there is nothing to upload.",
                 null,
             )
         }
@@ -379,16 +384,21 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
             null,
         )
 
-        val requested = arguments.optionalString("serverName")
+        val deploymentName = arguments.requiredString("deploymentName")
+            ?: return McpToolCallResult.error(
+                "`deploymentName` is required; use a name from `list_server_deployments.servers[].deployments[].name`.",
+                null,
+            )
         val waitMs = arguments.optionalInt("waitMs", DEFAULT_DEPLOYMENT_WAIT_MS.toInt()).toLong()
 
-        val (server, resolveFailure) = resolveTargetServer(project, requested)
-        if (server == null) {
+        val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
+        if (target == null) {
             return McpToolCallResult.error(
-                resolveFailure ?: "$DOWNLOAD_TOOL_NAME: could not resolve a deployment server.",
+                resolveFailure ?: "$DOWNLOAD_TOOL_NAME: could not resolve a deployment.",
                 null,
             )
         }
+        val server = target.server
 
         // 建连接之前先问清楚——尤其是凭据：没有它，连下去会弹模态登录框。
         connectionPreflightFailure(project, server)?.let { failure ->
@@ -396,13 +406,12 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
         }
 
         val serverName = server.getName().orEmpty()
-        val roots = pathMappingsOf(publishConfigOf(project), server).mapNotNull { mapping ->
-            runCatching { mapping.localPath }.getOrNull()?.takeIf { it.isNotEmpty() }
-        }
+        val roots = listOfNotNull(
+            runCatching { target.deployment.localPath }.getOrNull()?.takeIf { it.isNotEmpty() },
+        )
         if (roots.isEmpty()) {
             return McpToolCallResult.error(
-                "\"$serverName\" has no path mapping in this project, so there is nothing to download. " +
-                    "Add a Mapping in its Deployment settings.",
+                "Deployment \"$deploymentName\" has no local path, so there is nothing to download.",
                 null,
             )
         }

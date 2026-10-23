@@ -178,23 +178,20 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
     EXECUTE_REMOTE_TOOL_NAME,
     "Execute in Remote Host",
     """
-    Run a command in a real SSH terminal tab on a remote host and return its output.
+    Run a command in a real SSH terminal tab on a remote host.
 
-    The host and credentials come from a project-level Deployment server that supports
-    SFTP/SSH; pass its name as `serverName`. Every call creates a new remote tab. To continue
-    an existing tab, call `list_terminals` and use `terminal_io` with `target: "remote"`.
+    The host and credentials come from a Server in Deployment settings. `serverName` is the
+    server display name, not its hostname: call `list_server_deployments` first and pass
+    `servers[].name`; never invent a host. Every call creates a new remote tab. To continue an
+    existing tab, call `list_terminals` and use `terminal_io` with `target: "remote"`.
 
-    `loginShell` (default true) wraps the command in the user's login shell so PATH and tool
-    managers are loaded. `input` is written once immediately after the command; include the
-    newline yourself.
+    `loginShell` (default true) loads PATH and tool managers. `input` is written once after the
+    command; include the newline. `timeoutMs` (default 10000): `0` returns immediately; `> 0`
+    waits for stable output (max 12000). Remote shells have no command-finished signal:
+    `exitCode` is always null and `running` is best-effort.
 
-    `timeoutMs` (default 10000): `0` sends the command and returns immediately; `> 0` waits
-    for stable output (max 12000). Remote shells have no command-finished signal: `exitCode`
-    is always null, and `running` is best-effort (may be null).
-
-    Host keys: `strictHostKey=false` (default) accepts and records a new key; `true` requires
-    an existing known host key. No dialog is ever shown. The tool fails with instructions when
-    the Deployment server, credentials or host key check is not usable.
+    Host keys: `strictHostKey=false` (default) accepts and records a new key; `true` requires a
+    known key. No dialog is shown. Credential and host-key failures return instructions.
     """.trimIndent(),
     TERMINAL_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.execute_in_remote_host",
@@ -202,7 +199,8 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
         properties = properties(
             "serverName" to property(
                 "string",
-                "Deployment server name, as reported by `list_deployment_servers`.",
+                "Server display name, as reported by `servers[].name` from `list_server_deployments`. " +
+                    "Not a hostname.",
             ),
             "command" to property("string", "Shell command to run on the remote host."),
             "input" to property(
@@ -300,7 +298,7 @@ private val TERMINAL_TAB_PROPERTIES: JsonObject = buildJsonObject {
             "shell" to nullableProperty("string", "Shell basename, e.g. zsh or bash."),
             "workingDirectory" to nullableProperty("string", "Working directory requested when the tab was created."),
             "currentDirectory" to nullableProperty("string", "Directory the terminal reports now."),
-            "serverName" to nullableProperty("string", "Deployment server name for remote tabs."),
+            "serverName" to nullableProperty("string", "Server display name for remote tabs."),
             "lastCommand" to nullableProperty("string", "Last command sent through this plugin."),
             "lastCommandAt" to nullableProperty("integer", "Epoch milliseconds of the last command."),
             "lastExitCode" to nullableProperty("integer", "Exit code of the last command; null for remote tabs."),
@@ -333,17 +331,15 @@ internal val listTerminalsDescriptor = McpToolDescriptor(
     - `user`: opened manually, or by a terminal-executed run configuration; `tab` is null.
 
     Only entries with a non-null `tab` and `addressable: true` can be passed to `terminal_io`.
-    User tabs are listed for visibility only and are never controllable. Never use a title as
-    an id: ids are registry keys for this IDE session and survive only while the tab is alive.
+    User tabs are view-only. Never use a title as an id: ids are registry keys for this IDE
+    session and survive only while the tab is alive.
 
     Select by `kind`, `serverName`, `workingDirectory` and `lastCommand`; prefer the newest
-    `lastUsedAt`. If none matches, create a new tab with `project_sdk_terminal` or
-    `execute_in_remote_host`.
+    `lastUsedAt`. If none matches, create a new tab.
 
-    Run configurations have a separate lifecycle. Use `list_running_configurations` /
-    `inspect_run_configuration` for them. With `EXECUTE_IN_TERMINAL=true`, their terminal may
-    appear here as a `user` tab, but it must still be controlled through the Run tools. With
-    `EXECUTE_IN_TERMINAL=false`, it runs in the Run tool window and does not appear here.
+    Run configurations have a separate lifecycle: use `list_running_configurations` /
+    `inspect_run_configuration`. `EXECUTE_IN_TERMINAL=true` may appear here as a `user` tab,
+    but must be controlled through the Run tools; `false` does not appear here.
 
     `includeUnmanaged: false` returns only addressable MCP tabs. `kind` filters `all`,
     `mcp_project_sdk`, `mcp_remote` or `user`.

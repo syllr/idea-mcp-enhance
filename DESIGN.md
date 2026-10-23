@@ -612,7 +612,7 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
   `canRun` 立刻变 true，`rerun` 立刻能跑）。两个入口都是公开 API，也都不在 `execution.impl` 包里
 - **Deployment 的两类配置粒度不同，很容易读错**：`Mappings` 与 `Excluded paths` 是 **按服务器**的（存在
   `PublishConfig$ServerData`，按服务器名/ID 索引），而 **其余全部选项**（`overwriteAll`、`deleteMissingItems`
-  、确认开关、自动上传、排除掩码、权限）都是 **项目级、所有服务器共用**。所以 `list_deployment_servers` 返回里的 `options`
+  、确认开关、自动上传、排除掩码、权限）都是 **项目级、所有服务器共用**。所以 `list_server_deployments` 返回里的 `options`
   描述的是"这个项目的部署策略"，不是"某个服务器的属性"——想按环境差异化行为只能靠调用参数（`PublishConfig.clone()` 改一份副本传给
   `TransferTask`，不碰用户的持久配置），不能靠配置本身
 - **`overwriteAll` 的语义与字面相反**：`true`（ **默认值**）表示"不做 size+mtime 比较、每次全量覆盖"——

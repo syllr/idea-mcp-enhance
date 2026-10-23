@@ -92,15 +92,21 @@ internal fun allDeploymentServers(project: Project): List<DeploymentServerState>
     val servers = runCatching { GroupedServersConfigManager.getInstance(project).flattenedServers }
         .getOrNull()
         .orEmpty()
+    val allMappings = runCatching { config.allPathMappings }.getOrNull().orEmpty()
+    val defaultMappings = defaultDeploymentMappings(project)
 
-    return servers.map { server -> server.toState(project, config, defaultName) }
+    return servers.map { server ->
+        val id = server.id.orEmpty()
+        server.toState(project, defaultName, allMappings[id].orEmpty(), defaultMappings)
+    }
 }
 
 /** 一个 `WebServerConfig` → 纯数据快照。 */
 private fun WebServerConfig.toState(
     project: Project,
-    config: PublishConfig,
     defaultServerOrGroupName: String?,
+    serverMappings: List<DeploymentPathMapping>,
+    defaultMappings: List<DeploymentMappingState>,
 ): DeploymentServerState {
     // getName() 在 Kotlin 里不是属性访问（编译器要求显式调用），且被标注为可空；
     // 名字是后续工具的入参，所以统一兜成空串——宁可给空也不能给 null。
@@ -126,7 +132,9 @@ private fun WebServerConfig.toState(
         hasCredentials = deployable?.let { runCatching { it.hasCredentials() }.getOrDefault(false) } ?: false,
         validationIssue = runCatching { validateFast() }.getOrNull(),
         isDefault = serverName == defaultServerOrGroupName,
-        mappings = pathMappingsOf(config, this).map { it.toState() },
+        deployments = serverMappings.map { it.toState() }
+            .takeUnless { it == defaultMappings }
+            .orEmpty(),
     )
 }
 
@@ -139,77 +147,73 @@ private fun DeploymentPathMapping.toState(): DeploymentMappingState = Deployment
 )
 
 /**
- * 一台服务器在本项目的路径映射 —— **必须按 id 取**。
+ * 平台为“没有配置 mapping 的 Server”生成的默认映射。
  *
- * `PublishConfig.getPathMappings(String)` 的形参名就是 `serverId`，平台内部每一处调用都传
- * `getId()`（`WebServerConfig.isUsedInProject`、部署设置里的 Mappings 页、`PublishConfig` 自己的
- * `getNearestMapping*` 都是 `getServerData(server.getId())`）。
- *
- * **传显示名不会报错，只会读到编造件**：`getServerData(serverId)` 是 get-or-create，
- * 键查不到时它会 new 一份、调 `addDefaultMappings()` 补一条"每个 content root → 服务器根"
- * 的默认映射、并写进内存里的 `myState.myServerData`，然后把这它返回给你 —— 看起来完全正常
- * （`@NotNull`、非空、形状合理），所以错误是静默的。详见 AGENTS.md 的注意事项。
- *
- * id 为空（理论上不该发生）时返回空列表：宁可少报映射，也不要拿空串去 miss 一次、白造一份默认。
+ * `PublishConfig.getAllPathMappings()` 会把这类默认 mapping 一起返回；用平台自己的
+ * `addDefaultMappings()` 生成同一份结果并比较，就能把“用户真的配了 deployment”和
+ * “平台补出来的默认值”区分开。这里仍然只走 IDE API，不读项目文件 —— 应用级 Server
+ * 也由 `GroupedServersConfigManager` / `PublishConfig` 统一覆盖。
  */
-internal fun pathMappingsOf(config: PublishConfig, server: WebServerConfig): List<DeploymentPathMapping> {
-    val serverId = server.id.orEmpty()
-    if (serverId.isEmpty()) return emptyList()
-    return runCatching { config.getPathMappings(serverId) }.getOrNull().orEmpty()
+private fun defaultDeploymentMappings(project: Project): List<DeploymentMappingState> {
+    val mappings = mutableListOf<DeploymentPathMapping>()
+    runCatching { PublishConfig.addDefaultMappings(project, mappings) }
+    return mappings.map { it.toState() }
+}
+
+/** Server 在本项目下的 deployments；没有显式配置时是空列表，不是平台默认映射。 */
+internal fun deploymentsOf(
+    project: Project,
+    config: PublishConfig,
+    server: WebServerConfig,
+): List<DeploymentPathMapping> {
+    val id = server.id.orEmpty()
+    if (id.isEmpty()) return emptyList()
+    val mappings = runCatching { config.allPathMappings }.getOrNull().orEmpty()[id].orEmpty()
+    return mappings.takeUnless { it.map { mapping -> mapping.toState() } == defaultDeploymentMappings(project) }
+        .orEmpty()
 }
 
 // ---------------------------------------------------------------------------
 // upload / download 共用的平台侧
 // ---------------------------------------------------------------------------
 
-/**
- * 按**显示名**找服务器；找不到就是 null（调用方负责给出候选列表）。
- *
- * 刻意不走平台的 `GroupedServersConfigManager.findServer(name)`：它的形参叫 name，实现里比的却是
- * `WebServerConfig.getId()`（每台服务器自己的 UUID），所以传显示名永远匹配不上 —— 报出来的是
- * `No deployment server named "X" … Existing: [X]` 这种自相矛盾的错误（候选列表用 getName 拼，
- * 查找却按 getId 比）。按名字查的平台方法是 `findByName`，但它返回 `Pair<组, 服务器>`，
- * 名字命中「组」时 second 为 null，要多一层判空；这里直接用 API 取全部服务器再按 `getName()` 过滤，
- * 与工具 schema 里「用 `servers[]` 的 name 当 `serverName`」的约定一致。
- */
-internal fun findDeploymentServer(project: Project, name: String): WebServerConfig? =
-    runCatching {
-        // getFlattenedServers() 是 Java 方法、平台类型：没有配置 mapping 时它会返回 null 而不是空列表，
-        // 所以先 orEmpty() 再过滤（同 allDeploymentServers 里的处理）。
-        GroupedServersConfigManager.getInstance(project).flattenedServers.orEmpty()
-            .firstOrNull { it.getName() == name }
-    }.getOrNull()
+/** 一次上传/下载的目标：Server 以及它上面选中的那条 deployment。 */
+internal data class DeploymentTarget(
+    val server: WebServerConfig,
+    val deployment: DeploymentPathMapping,
+)
 
-/**
- * 解析"这次操作哪个服务器"。返回 (server, 失败原因)，两者必有其一。
- *
- * 给了名字就按名字；没给就用默认。默认是**组**（多个服务器）时直接拒绝：
- * "一次 diff 多个服务器"要让每个服务器各返回一份结果，那是另一种返回形状，
- * 不该在这里悄悄取第一个糊弄过去。
- */
-internal fun resolveTargetServer(project: Project, requested: String?): Pair<WebServerConfig?, String?> {
-    if (requested != null) {
-        val server = findDeploymentServer(project, requested)
-            ?: return null to "No deployment server named \"$requested\" in this project. Existing: " +
-                allDeploymentServers(project).map { it.name } + "."
-        return server to null
-    }
-
+/** 按全局唯一的 `deploymentName` 解析目标 Server 和 deployment。 */
+internal fun resolveDeploymentTarget(
+    project: Project,
+    deploymentName: String,
+): Pair<DeploymentTarget?, String?> {
+    val servers = runCatching { GroupedServersConfigManager.getInstance(project).flattenedServers }
+        .getOrNull()
+        .orEmpty()
     val config = publishConfigOf(project)
-    val defaultName = config.getDefaultServerOrGroupName()
-        ?: return null to "No default server or group is configured, so there is nothing to target. " +
-            "Pass `serverName` explicitly, or set a default in Settings | Build, Execution, Deployment | Deployment."
-
-    val valid = runCatching { config.findValidDefaultTransferableServers() }.getOrNull().orEmpty()
-    return when {
-        valid.size == 1 -> valid.first() to null
-
-        valid.isEmpty() -> null to "The default \"$defaultName\" is not usable: it is either a group without a " +
-            "transferable member, or its configuration is invalid. Pass `serverName` explicitly."
-
-        else -> null to "The default \"$defaultName\" is a group of ${valid.size} servers. Comparing a whole group " +
-            "is not supported yet — pass `serverName` to pick one of them."
+    val matches = servers.flatMap { server ->
+        runCatching {
+            deploymentsOf(project, config, server)
+                .filter { it.toState().name == deploymentName }
+                .map { DeploymentTarget(server, it) }
+        }.getOrDefault(emptyList())
     }
+
+    if (matches.size == 1) return matches.first() to null
+    if (matches.size > 1) {
+        // IDE normally enforces unique deployment names; this is a defensive check.
+        val serversWithMatch = matches.map { it.server.getName() }.distinct()
+        return null to "Deployment name \"$deploymentName\" is duplicated (servers: $serversWithMatch). " +
+            "Fix the mapping names in Deployment settings."
+    }
+
+    val available = servers.flatMap { server ->
+        runCatching {
+            deploymentsOf(project, config, server).map { it.toState().name }
+        }.getOrDefault(emptyList())
+    }.distinct()
+    return null to "No deployment named \"$deploymentName\" in this project. Existing: $available."
 }
 
 /**

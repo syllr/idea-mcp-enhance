@@ -15,7 +15,7 @@
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-10-23
+## [0.1.3] - 2026-10-23
 
 ### Added
 
@@ -47,6 +47,12 @@
   affect naming.
 - Remote `running` is best-effort: known for synchronous completion/timeout and `null` for asynchronous
   runs when completion cannot be detected. `exitCode` remains `null`.
+- Renamed `list_deployment_servers` to `list_server_deployments`: it is now a server-centric list whose
+  `deployments[]` contains only deployment names (derived from the local path; mapping paths are not
+  expanded). A server may have no deployments; it can still be used by `execute_in_remote_host` but cannot
+  upload/download. `upload_to_deployment` / `download_from_deployment` now select a target only by the
+  globally unique `deploymentName`. Servers without explicit mappings
+  are no longer reported as configured because of the platform's default mapping.
 - Compressed the terminal, run-configuration and deployment tool descriptions; added the new-tab
   lifecycle, defaults, `list_terminals` entry point and async polling rules.
 

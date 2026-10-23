@@ -52,7 +52,7 @@ class DeploymentSchemaTest {
         needsTransfer: Boolean = true,
         hasCredentials: Boolean = true,
         validationIssue: String? = null,
-        mappings: List<DeploymentMappingState> = listOf(
+        deployments: List<DeploymentMappingState> = listOf(
             DeploymentMappingState(localPath = "/local", deployPath = "./", webPath = "/"),
         ),
     ) = DeploymentServerState(
@@ -67,7 +67,7 @@ class DeploymentSchemaTest {
         hasCredentials = hasCredentials,
         validationIssue = validationIssue,
         isDefault = false,
-        mappings = mappings,
+        deployments = deployments,
     )
 
     private fun warnings(
@@ -143,7 +143,14 @@ class DeploymentSchemaTest {
         // needsTransfer=false 时，凭据那条警告带 `needsTransfer &&` 前缀，所以不该出现：
         // 对本地/挂载类型谈"凭据"是噪音。
         val result = warnings(
-            servers = listOf(server(name = "local", needsTransfer = false, hasCredentials = false, mappings = emptyList())),
+            servers = listOf(
+                server(
+                    name = "local",
+                    needsTransfer = false,
+                    hasCredentials = false,
+                    deployments = listOf(DeploymentMappingState("/local", "/", "/")),
+                ),
+            ),
         )
         assertEquals(1, result.size)
         assertTrue(result.single().contains("does not transfer anything"))
@@ -163,16 +170,16 @@ class DeploymentSchemaTest {
     // ---------- 描述符契约 ----------
 
     @Test
-    fun `list_deployment_servers 的入参只有 projectPath`() {
+    fun `list_server_deployments 的入参只有 projectPath`() {
         assertEquals(
             setOf("projectPath"),
-            listDeploymentServersDescriptor.inputSchema.propertiesSchema.keys,
+            listServerDeploymentsDescriptor.inputSchema.propertiesSchema.keys,
         )
     }
 
     @Test
-    fun `list_deployment_servers 的必填项与 toJson 一致`() {
-        val required = listDeploymentServersDescriptor.outputSchema!!.requiredProperties
+    fun `list_server_deployments 的必填项与 toJson 一致`() {
+        val required = listServerDeploymentsDescriptor.outputSchema!!.requiredProperties
         val produced = DeploymentServersReport(
             defaultServerOrGroupName = null,
             servers = emptyList(),
@@ -183,9 +190,9 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `list_deployment_servers 标记为只读`() {
-        assertTrue(listDeploymentServersDescriptor.annotations!!.readOnlyHint == true)
-        assertFalse(listDeploymentServersDescriptor.annotations!!.destructiveHint == true)
+    fun `list_server_deployments 标记为只读`() {
+        assertTrue(listServerDeploymentsDescriptor.annotations!!.readOnlyHint == true)
+        assertFalse(listServerDeploymentsDescriptor.annotations!!.destructiveHint == true)
     }
 
     @Test
@@ -205,15 +212,16 @@ class DeploymentSchemaTest {
         assertEquals(
             setOf(
                 "name", "id", "level", "accessType", "host", "port", "rootFolder", "needsTransfer",
-                "hasCredentials", "validationIssue", "isDefault", "mappings",
+                "hasCredentials", "validationIssue", "isDefault", "deployments",
             ),
             serverJson.keys,
         )
         // null 键必须保留：agent 要能区分"键不存在"（工具出错）与"值为 null"（确实读不到）。
         assertTrue(serverJson["validationIssue"] is kotlinx.serialization.json.JsonNull)
 
-        val mappingJson = serverJson["mappings"]!!.jsonArray.single().jsonObject
-        assertEquals(setOf("localPath", "deployPath", "webPath"), mappingJson.keys)
+        val deploymentJson = serverJson["deployments"]!!.jsonArray.single().jsonObject
+        assertEquals(setOf("name"), deploymentJson.keys)
+        assertEquals("local", deploymentJson["name"]!!.jsonPrimitive.content)
 
         assertEquals(setOf("w1", "w2"), json["warnings"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
     }
@@ -221,12 +229,12 @@ class DeploymentSchemaTest {
     // ---------- upload_to_deployment 契约 ----------
 
     @Test
-    fun `upload 的入参是 serverName、mode、waitMs（都可选）`() {
+    fun `upload 的入参是 deploymentName、mode、waitMs`() {
         assertEquals(
-            setOf("serverName", "mode", "waitMs", "projectPath"),
+            setOf("deploymentName", "mode", "waitMs", "projectPath"),
             uploadToDeploymentDescriptor.inputSchema.propertiesSchema.keys,
         )
-        assertEquals(emptySet<String>(), uploadToDeploymentDescriptor.inputSchema.requiredProperties)
+        assertEquals(setOf("deploymentName"), uploadToDeploymentDescriptor.inputSchema.requiredProperties)
     }
 
     @Test
@@ -326,12 +334,12 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `download 的入参是 serverName、waitMs（都可选）`() {
+    fun `download 的入参是 deploymentName、waitMs`() {
         assertEquals(
-            setOf("serverName", "waitMs", "projectPath"),
+            setOf("deploymentName", "waitMs", "projectPath"),
             downloadFromDeploymentDescriptor.inputSchema.propertiesSchema.keys,
         )
-        assertEquals(emptySet<String>(), downloadFromDeploymentDescriptor.inputSchema.requiredProperties)
+        assertEquals(setOf("deploymentName"), downloadFromDeploymentDescriptor.inputSchema.requiredProperties)
     }
 
     @Test

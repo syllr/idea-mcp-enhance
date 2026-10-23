@@ -245,21 +245,15 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     LIST_TOOL_NAME,
     "List Running Configurations",
     """
-    Report what is **actually running right now** in this project: which configurations have live
-    processes, how many each, and with which process id.
+    Report what is actually running right now, with one entry per configuration and its live
+    processes.
 
-    Why this exists: the built-in `get_run_configurations` lists what exists but says nothing about
-    execution, and a configuration can be running with only one of its processes visible in the IDE
-    (`execute_run_configuration` spawns a new process on every call).
+    Unlike the built-in `get_run_configurations` (which lists definitions), this is an index of
+    live instances: pid, state (`running` / `terminating` / `starting`) and `logFile`. Read that
+    log for output; use `inspect_run_configuration` for settings and earlier-run history.
 
-    This is an **index**, not a report: each live instance comes with its process id, its state
-    (`running` / `terminating` / `starting`) and the path of the log file it writes to. Read that log
-    file directly when you need to know what the process printed. For the full picture of a single
-    configuration — its settings, and the logs of its earlier runs — call `inspect_run_configuration`.
-
-    Everything returned is live: configurations with no running process do not appear at all (which covers
-    templates), and `instances[]` holds live instances only — so more than one entry under a configuration
-    means it was started more than once.
+    Only live processes appear; templates never appear, and multiple instances under one
+    configuration mean it was started more than once.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_running_configurations",
@@ -290,22 +284,17 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
     STOP_TOOL_NAME,
     "Stop Run Configuration",
     """
-    Stop **all** running instances of a run configuration and wait for them to actually exit.
+    Stop every running instance of a configuration and wait for it to exit.
 
-    Why this exists: every instance is stopped, not just the newest one — a configuration can easily have
-    several live processes while the IDE shows one, and stopping a single one would leave its port held.
-    The stop goes through the IDE's own `ProcessHandler`, so the Run tool window stays consistent (unlike
-    an external `pkill`).
+    All instances are stopped, not just the newest, through the IDE's `ProcessHandler`; the Run
+    window stays consistent (unlike `pkill`).
 
-    Idempotent: a configuration that is not running stops successfully with nothing to do
-    (`matchedInstances: 0`, `isError: false`), so asking again never turns into an error. One case needs
-    care: when a start is **in flight** (submitted, its process not up yet) the tool waits briefly for it,
-    and if the process still does not appear it returns that same success **plus a warning** that a start
-    may come up shortly — do not read `matchedInstances: 0` as "definitely down", re-check with
+    Idempotent: not running → success with `matchedInstances: 0`. If a start is **in flight**, the
+    tool waits briefly; if the process still does not appear it returns success plus a warning —
+    do not treat `matchedInstances: 0` as definitely down, re-check with
     `list_running_configurations`.
 
-    The name is matched exactly first, then case-insensitively; when nothing matches, the error lists the
-    names that do exist.
+    Names match exactly first, then case-insensitively; errors list the existing names.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.stop_run_configuration",
@@ -368,25 +357,22 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     RERUN_TOOL_NAME,
     "Rerun Run Configuration",
     """
-    Restart a run configuration — the same effect as the IDE's **Rerun** button.
+    Restart a run configuration, like the IDE's **Rerun** button.
 
-    Running → stop the live instances, then start again (`mode: RESTARTED`). Not running → start it
-    (`mode: STARTED`). Unsupported configuration type → `mode: NO_OP`. Read `started`, not `mode`:
-    `false` comes with `startFailure`, and `transition[]` lists each step.
+    Running → stop then start (`RESTARTED`); not running → start (`STARTED`); unsupported type →
+    `NO_OP`. Read `started`, not `mode`: `false` has `startFailure`; `transition[]` lists steps.
 
-    The call waits until the new process exists, then returns `started` / `output`. It fails fast if
-    the configuration is stopping or starting, if old instances could not be stopped, or if the IDE is
-    already starting it (a second platform start would otherwise be dropped silently).
+    It waits until the new process exists. It fails fast if the configuration is stopping or
+    starting, old instances cannot be stopped, or the IDE is already starting it.
 
-    Before-launch steps delay the Run content. The whole call must fit the MCP server's patience
-    (roughly 15 seconds): the total is `stopTimeoutMs` + `startTimeoutMs` + a ~2 second output
-    window, so a slow stop plus a slow start can exceed it. For those cases use the asynchronous mode
-    (`waitForStart = false`): old instances are stopped within `stopTimeoutMs`, the start is submitted,
-    and the call returns `started = null`; poll `list_running_configurations` for the real state.
-    Do not shrink `stopTimeoutMs` to fit the budget: that only gives up graceful shutdown sooner.
+    Before-launch steps delay the Run content. Total budget is `stopTimeoutMs` + `startTimeoutMs`
+    + ~2s; MCP patience is roughly 15 seconds, so a slow stop plus start can drop the session.
+    For those cases use the asynchronous mode (`waitForStart=false`): old instances stop within
+    `stopTimeoutMs`, the start is submitted, and `started=null`; poll
+    `list_running_configurations` for the real state. Do not shrink `stopTimeoutMs` to fit: that
+    only gives up graceful shutdown sooner.
 
-    The name is matched exactly first, then case-insensitively; errors list the existing names.
-    Use this after editing source code of a process without hot reload.
+    Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.rerun_run_configuration",

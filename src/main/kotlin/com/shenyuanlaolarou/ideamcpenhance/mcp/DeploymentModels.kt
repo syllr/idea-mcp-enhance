@@ -32,18 +32,27 @@ data class DeploymentMappingState(
     val deployPath: String,
     val webPath: String,
 ) {
+    /** 对外只暴露这个稳定名称；由 localPath 的最后一段派生，例如 `.../mcp-test-project` → `mcp-test-project`。 */
+    val name: String
+        get() = localPath.trimEnd('/', '\\')
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .ifBlank { deployPath.trimEnd('/', '\\').substringAfterLast('/').ifBlank { "deployment" } }
+
     fun toJson(): JsonObject = buildJsonObject {
-        put("localPath", localPath)
-        put("deployPath", deployPath)
-        put("webPath", webPath)
+        put("name", name)
     }
 }
 
 /**
- * 一个 Deployment 服务器的快照（对应 `WebServerConfig` + 它在**本项目**下的 Mappings）。
+ * 一个 **Server** 的快照，以及它在本项目下挂的 deployments（路径映射）。
  *
- * @param name 服务器名。**后续的 diff / upload / download 工具用它当入参** ——
- *   服务器 ID 是生成的本机 UUID（换台机器就不同），只有名字跨机器可读、可复用。
+ * Server 是连接目标；deployment 是挂在 Server 上的发布映射。一个 Server 可以有 0 到 N 个
+ * deployments —— 没有 deployment 时仍可用于远程终端，但不能上传/下载。
+ *
+ * @param name 服务器名。**远程终端把它当 `serverName` 入参**；上传/下载使用
+ *   deployment 派生出的全局唯一 `deploymentName`。服务器 ID 是生成的本机 UUID
+ *   （换台机器就不同），只有名字跨机器可读、可复用。
  * @param id 本机 UUID，仅作参考，不要拿它做跨机器匹配
  * @param projectLevel true = 只对这个项目可见（存在 `.idea/webServers.xml`）；false = 应用级（所有项目共享）
  * @param accessType SFTP / FTP / FTPS / WEBDAV / MOUNT / LOCAL
@@ -53,7 +62,8 @@ data class DeploymentMappingState(
  * @param validationIssue `validateFast()` 的就地校验结果（不联网）；非 null 表示配置有毛病，
  *   平台自己也会把它从"可上传的默认服务器"里剔掉
  * @param isDefault 是不是当前默认服务器/组
- * @param mappings 该服务器在**本项目**下的路径映射（来自 `PublishConfig`，不来自 `WebServerConfig`）
+ * @param deployments 该 Server 在**本项目**下显式配置的 deployment（来自 `PublishConfig` 的
+ *   path mappings，不来自 `WebServerConfig`）；空列表表示这个 Server 没挂 deployment
  */
 data class DeploymentServerState(
     val name: String,
@@ -67,7 +77,7 @@ data class DeploymentServerState(
     val hasCredentials: Boolean,
     val validationIssue: String?,
     val isDefault: Boolean,
-    val mappings: List<DeploymentMappingState>,
+    val deployments: List<DeploymentMappingState>,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("name", name)
@@ -81,7 +91,7 @@ data class DeploymentServerState(
         put("hasCredentials", hasCredentials)
         put("validationIssue", validationIssue)
         put("isDefault", isDefault)
-        putJsonArray("mappings") { for (mapping in mappings) add(mapping.toJson()) }
+        putJsonArray("deployments") { for (deployment in deployments) add(deployment.toJson()) }
     }
 }
 
@@ -89,7 +99,7 @@ data class DeploymentServerState(
  * 项目级的部署选项。
  *
  * **它们是整个项目一套，所有 server 共用**（见文件头的说明）——这也是为什么把它放在
- * `list_deployment_servers` 的返回里：它不是"某个服务器"的属性。
+ * `list_server_deployments` 的返回里：它不是"某个服务器"的属性。
  *
  * @param autoUpload ALWAYS / ON_EXPLICIT_SAVE / NEVER
  * @param overwriteAll true = **不做** size+mtime 比较，每次全量覆盖（注意语义与字面相反：
@@ -124,7 +134,7 @@ data class DeploymentOptionsState(
     }
 }
 
-/** `list_deployment_servers` 的完整返回。 */
+/** `list_server_deployments` 的完整返回：Server 列表，每个 Server 带自己的 deployments。 */
 data class DeploymentServersReport(
     val defaultServerOrGroupName: String?,
     val servers: List<DeploymentServerState>,
@@ -186,7 +196,7 @@ internal fun deploymentWarnings(
         add(
             "Automatic upload is '${options.autoUpload}': changing the default server changes the target of every " +
                 "subsequent save, immediately. If you rely on automatic upload, keep the default pointed at your " +
-                "everyday environment and use this tool's `serverName` argument for one-off uploads.",
+                "everyday environment and pass `deploymentName` to upload_to_deployment for one-off uploads.",
         )
     }
 
@@ -206,10 +216,12 @@ internal fun deploymentWarnings(
                     "dialog, which blocks the MCP call. Fix the credentials in the IDE first.",
             )
         }
-        // 刻意**不**检查 mappings 是否为空：平台会给每台服务器都物化一份 ServerData
-        // （`doLoadState` 结尾对每台 `getServerData(id)`），没配过也会补一条"项目根 → 服务器根"
-        // 的默认映射 ⇒ 这个列表几乎不可能为空；而"为空 ⇒ 无事可做"的推论本身也不成立
-        // （真没配时照样会把整个项目传上去）。何况那是用户的配置，IDE 自己已经校验过。
+        if (server.deployments.isEmpty()) {
+            add(
+                "\"${server.name}\" has no deployment mapping. It can still be used by `execute_in_remote_host`, " +
+                    "but upload/download have no target until a mapping is added in Deployment settings.",
+            )
+        }
     }
 }
 

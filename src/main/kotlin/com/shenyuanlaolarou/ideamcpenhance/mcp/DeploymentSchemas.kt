@@ -29,30 +29,24 @@ internal val DEPLOYMENT_CATEGORY = McpToolCategory(
 // 输出 schema 片段
 // ---------------------------------------------------------------------------
 
-/** 一条路径映射，对应 `DeploymentMappingState.toJson()`。 */
-private val DEPLOYMENT_MAPPING_SCHEMA: JsonObject = buildJsonObject {
+/** 一个 deployment 的对外名称，对应 `DeploymentMappingState.toJson()`。 */
+private val DEPLOYMENT_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
-    put("description", JsonPrimitive("One path mapping of this server within the current project."))
+    put("description", JsonPrimitive("One deployment attached to this server."))
     put("properties", properties(
-        "localPath" to property("string", "Local directory this mapping takes files from."),
-        "deployPath" to property(
+        "name" to property(
             "string",
-            "Remote directory those files are deployed to, relative to the server root folder. " +
-                "Empty means the server's rootFolder itself.",
+            "Deployment name derived from its local path; pass this to upload_to_deployment / " +
+                "download_from_deployment as `deploymentName`.",
         ),
-        "webPath" to property("string", "Web path used for browsing the deployed files; unrelated to the actual transfer."),
     ))
-    put("required", buildJsonArray {
-        add(JsonPrimitive("localPath"))
-        add(JsonPrimitive("deployPath"))
-        add(JsonPrimitive("webPath"))
-    })
+    put("required", buildJsonArray { add(JsonPrimitive("name")) })
 }
 
-/** 一个服务器，对应 `DeploymentServerState.toJson()`。 */
+/** 一个 Server 以及它在本项目下挂的 deployments，对应 `DeploymentServerState.toJson()`。 */
 private val DEPLOYMENT_SERVER_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
-    put("description", JsonPrimitive("One deployment server together with its mappings in this project."))
+    put("description", JsonPrimitive("One server and its deployments in this project."))
     put("properties", properties(
         "name" to property(
             "string",
@@ -80,9 +74,10 @@ private val DEPLOYMENT_SERVER_SCHEMA: JsonObject = buildJsonObject {
                 "itself would exclude it from ``upload to default server``.",
         ),
         "isDefault" to property("boolean", "true for the server (or a member of the group) currently set as default."),
-        "mappings" to arrayOf(
-            DEPLOYMENT_MAPPING_SCHEMA,
-            "Path mappings of this server in the current project — the local roots upload/download work on.",
+        "deployments" to arrayOf(
+            DEPLOYMENT_SCHEMA,
+            "Deployments explicitly configured for this server in this project. Empty means the server can " +
+                "still be used by `execute_in_remote_host`, but upload/download have no target.",
         ),
     ))
     put("required", buildJsonArray {
@@ -97,7 +92,7 @@ private val DEPLOYMENT_SERVER_SCHEMA: JsonObject = buildJsonObject {
         add(JsonPrimitive("hasCredentials"))
         add(JsonPrimitive("validationIssue"))
         add(JsonPrimitive("isDefault"))
-        add(JsonPrimitive("mappings"))
+        add(JsonPrimitive("deployments"))
     })
 }
 
@@ -108,7 +103,7 @@ private val DEPLOYMENT_OPTIONS_SCHEMA: JsonObject = buildJsonObject {
         "description",
         JsonPrimitive(
             "Project-wide deployment options. These are shared by EVERY server in this project — unlike " +
-                "`mappings`, which are per server.",
+                "`deployments`, which are per server.",
         ),
     )
     put("properties", properties(
@@ -216,33 +211,32 @@ private val DEPLOYMENT_TASK_RESULT_REQUIRED: Set<String> = setOf(
 
 
 // ---------------------------------------------------------------------------
-// list_deployment_servers
+// list_server_deployments
 // ---------------------------------------------------------------------------
 
-internal const val LIST_DEPLOYMENT_SERVERS_TOOL_NAME = "list_deployment_servers"
+internal const val LIST_SERVER_DEPLOYMENTS_TOOL_NAME = "list_server_deployments"
 
-internal val listDeploymentServersDescriptor = McpToolDescriptor(
-    LIST_DEPLOYMENT_SERVERS_TOOL_NAME,
-    "List Deployment Servers",
+internal val listServerDeploymentsDescriptor = McpToolDescriptor(
+    LIST_SERVER_DEPLOYMENTS_TOOL_NAME,
+    "List Server Deployments",
     """
-    List deployment servers usable from this project and the project-wide deployment policy.
+    List servers usable from this project, each with its deployments.
 
-    Call this before upload/download: pass a reported name as `serverName`. An empty list means no
-    deployment server is configured.
+    A server is the connection target; deployments are path mappings. A server may have zero
+    deployments: `execute_in_remote_host` still works, but upload/download need one.
 
-    Returns:
-    - `servers[]`: name, level, accessType, host/port, mappings, `hasCredentials`, `validationIssue`.
-      Do not connect when `hasCredentials=false`; the IDE would open a modal login dialog and block
-      the MCP call.
-    - `defaultServerOrGroupName`: target of "upload to default server"; null means none.
-    - `options`: project-wide policy (overwrite, delete-missing, confirmations, automatic upload),
-      not per-server settings.
-    - `warnings[]`: risky combinations; read before uploading.
+    Remote terminal: pass `servers[].name` as `serverName`.
+    Upload/download: pass `servers[].deployments[].name` as `deploymentName`.
 
-    Read-only; this tool does not touch the network.
+    Each server reports level, accessType, host/port, `deployments[]`, `hasCredentials` and
+    `validationIssue`. Do not connect when `hasCredentials=false` (the IDE would open a modal
+    login dialog and block the MCP call). `options` are project-wide; `warnings` flags risky
+    combinations and servers without deployments.
+
+    Read-only; no network access.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
-    "com.shenyuanlaolarou.ideamcpenhance.mcp.list_deployment_servers",
+    "com.shenyuanlaolarou.ideamcpenhance.mcp.list_server_deployments",
     schema(
         properties = properties(
             "projectPath" to projectPathProperty(),
@@ -255,7 +249,7 @@ internal val listDeploymentServersDescriptor = McpToolDescriptor(
                 "Name of the server or group currently used as the default; null when none is configured.",
             ),
             "serverCount" to property("integer", "Number of servers reported."),
-            "servers" to arrayOf(DEPLOYMENT_SERVER_SCHEMA, "Every deployment server usable from this project."),
+            "servers" to arrayOf(DEPLOYMENT_SERVER_SCHEMA, "Every server usable from this project."),
             "options" to DEPLOYMENT_OPTIONS_SCHEMA,
             "warnings" to WARNINGS_SCHEMA,
         ),
@@ -274,41 +268,32 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
     UPLOAD_TO_DEPLOYMENT_TOOL_NAME,
     "Upload To Deployment",
     """
-    Upload this project's mapped directories to a deployment server — the same operation as the IDE's
-    "Deployment | Upload to ...".
+    Upload one deployment to its remote target — the IDE's "Deployment | Upload to ...".
 
-    Only the local roots of the server's path mappings are uploaded. There is no path argument;
-    configure mappings in Deployment settings to narrow the scope.
+    Resolve `deploymentName` from `list_server_deployments.servers[].deployments[].name`;
+    deployment names are globally unique.
 
-    `mode` controls remote files that have no local counterpart:
-
+    `mode`:
     - `"mirror"` (**default**): upload local files **and delete remote extras**. **Destructive**;
-      there is no confirmation step here. Use `"upload"` to keep remote extras.
+      no confirmation step here.
     - `"upload"`: send local files only.
 
-    The transfer runs in the background. The call waits up to `waitMs` (default 10000, max 12000):
+    The transfer runs in the background. It waits up to `waitMs` (default 10000, max 12000).
+    Finished → `state: "completed"`. Not finished → `state: "in_progress"` plus `handle`; poll
+    `get_deployment_task_status`. Do not call upload again — that starts another transfer; an
+    upload already running for the same server returns its existing handle.
 
-    - finished → `state: "completed"` with real counts.
-    - not finished → `state: "in_progress"` with a `handle`; the transfer **keeps running**. Poll it
-      with `get_deployment_task_status`. Do not call upload again — that starts another transfer.
-      An upload already running for the same server returns its existing handle instead.
-
-    Project-wide settings control unchanged-file skipping and deletion confirmation; this tool
-    overrides confirmation off because a modal dialog would block the MCP call.
-
-    `counters` count operations, not files (a removed directory counts as one delete). With
-    `state: "in_progress"` the counts are meaningless until polled. The server must be reachable
-    and its credentials usable.
+    `counters` count operations, not files (a removed directory is one delete); counts are
+    meaningless while in progress. Project-wide settings control skipping/confirmation; this
+    tool disables deletion confirmation. The server must be reachable with usable credentials.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.upload_to_deployment",
     schema(
         properties = properties(
-            "serverName" to property(
+            "deploymentName" to property(
                 "string",
-                "Name of the deployment server to upload to, as reported by `list_deployment_servers`. " +
-                    "Omit it to use the configured default server. A default that is a *group* is rejected — " +
-                    "pick one server explicitly.",
+                "Deployment name from `list_server_deployments.servers[].deployments[].name`.",
             ),
             "mode" to property(
                 "string",
@@ -323,6 +308,7 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
             ),
             "projectPath" to projectPathProperty(),
         ),
+        required = setOf("deploymentName"),
     ),
     schema(DEPLOYMENT_TASK_RESULT_PROPERTIES, DEPLOYMENT_TASK_RESULT_REQUIRED),
     annotations(readOnly = false, destructive = true, idempotent = false, openWorld = true),
@@ -382,11 +368,11 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     DOWNLOAD_TOOL_NAME,
     "Download From Deployment",
     """
-    Pull the mapped remote directories into this project — the same operation as the IDE's
-    "Deployment | Download from ...".
+    Pull one deployment (one server + one path mapping) into this project — the same operation as
+    the IDE's "Deployment | Download from ...".
 
-    Only the remote side of the server's path mappings is downloaded, into the matching local roots.
-    There is no path argument.
+    Resolve `deploymentName` from `list_server_deployments.servers[].deployments[].name` first.
+    Deployment names are globally unique in the project.
 
     Files present on both sides are replaced by the server's copy when they differ; in-sync files are
     left alone. There is no "keep my local version" option: a dialog cannot be answered on the MCP path,
@@ -402,11 +388,9 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     "com.shenyuanlaolarou.ideamcpenhance.mcp.download_from_deployment",
     schema(
         properties = properties(
-            "serverName" to property(
+            "deploymentName" to property(
                 "string",
-                "Name of the deployment server to download from, as reported by `list_deployment_servers`. " +
-                    "Omit it to use the configured default server. A default that is a *group* is rejected — " +
-                    "pick one server explicitly.",
+                "Deployment name from `list_server_deployments.servers[].deployments[].name`.",
             ),
             "waitMs" to property(
                 "integer",
@@ -416,6 +400,7 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
             ),
             "projectPath" to projectPathProperty(),
         ),
+        required = setOf("deploymentName"),
     ),
     schema(DEPLOYMENT_TASK_RESULT_PROPERTIES, DEPLOYMENT_TASK_RESULT_REQUIRED),
     annotations(readOnly = false, destructive = true, idempotent = false, openWorld = true),

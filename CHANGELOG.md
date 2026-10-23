@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-10-23
+## [0.1.3] - 2026-10-23
 
 ### Added
 
@@ -23,6 +23,7 @@
 - 远程预检先检查 host / Key pair 私钥，再检查凭据，`deployment_host_missing` / `deployment_key_missing` 不再被“无凭据”掩盖。
 - 新建 tab 只避开当前仍存活的 tab，IDE 重启后遗留的非存活 tab 不参与命名。
 - 远程 `running` 改为 best-effort：同步完成/超时可判断，异步在无法确认时为 `null`；`exitCode` 仍为 `null`。
+- `list_deployment_servers` 改名为 `list_server_deployments`：视角从 Deployment 改为 Server，每个 Server 的 `deployments[]` 只返回 deployment name（由 localPath 派生，不展开 mapping 路径）；Server 可以没有 deployment，此时仍可用于 `execute_in_remote_host`，但不能上传/下载。`upload_to_deployment` / `download_from_deployment` 改为只按全局唯一的 `deploymentName` 选择目标。没有显式 mapping 的 Server 不再被平台默认映射误报为已配置。
 - 压缩终端、Run Configuration 和 Deployment 工具的描述，补充每次调用新建 tab、默认值、`list_terminals` 入口和异步轮询规则。
 
 ### Fixed
