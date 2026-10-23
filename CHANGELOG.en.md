@@ -15,6 +15,15 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-20
+
+### Removed
+
+- **The `edit_file` tool** — its purpose (writes must go through the IDE, otherwise the stale editor copy is
+  written back by `reformat_file`) is fully covered by `create_run_configuration` / `update_run_configuration`
+  for configurations, and keeping a generic file-writing door only made "which way should this edit go"
+  ambiguous. Change `.run/*.run.xml` through those definition tools.
+
 ## [0.1.0] - 2026-10-20
 
 ### Added

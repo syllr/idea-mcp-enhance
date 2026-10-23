@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-20
+
+### Removed
+
+- **`edit_file` 工具** —— 它的职责（"写文件要经过 IDE，否则编辑器里的旧副本会在 `reformat_file` 时把新内容冲掉"）已经由
+  `create_run_configuration` / `update_run_configuration` 在配置这条路上完整覆盖，单留一个通用写文件口子只会让"改配置该走
+  哪边"变得含糊。改 `.run/*.run.xml` 请走那三个定义态工具。
+
 ## [0.1.0] - 2026-10-20
 
 ### Added
@@ -119,7 +127,8 @@
 - `rerun_run_configuration` 用配置**名字**定位，不支持 `file:line` 代码位置。
 - **内置 `get_run_configurations` 的 `filePath` 模式未实现**：给定一个文件、列出该文件里可执行的入口点（IDE 行号槽上出现 Run 图标的位置），那需要整套 PSI / `RunConfigurationProducer` / `ConfigurationFromContext` 能力。本插件刻意不碰 PSI（prompt 那半也不碰），因此这块仍由内置工具承担，两个工具组合使用即可。
 
-[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.3...0.1.0
 [0.0.3]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...0.0.3
 [0.0.2]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.1...0.0.2
