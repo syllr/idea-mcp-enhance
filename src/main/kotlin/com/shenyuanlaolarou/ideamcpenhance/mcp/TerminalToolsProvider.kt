@@ -15,7 +15,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlin.coroutines.coroutineContext
 
 /**
- * 本地终端工具（`project_sdk_terminal` / `terminal_io`）。
+ * 本地终端工具（`project_sdk_terminal` / `terminal_read` / `terminal_interrupt`）。
  *
  * 注册在 `META-INF/terminal.xml`：只有 Terminal 插件存在时这个 provider 才会被加载，
  * 所以这里的类可以安全 import `org.jetbrains.plugins.terminal.*`。
@@ -24,38 +24,38 @@ class TerminalToolsProvider : McpToolsProvider {
 
     override fun getTools(): List<McpTool> = listOf(
         ProjectSdkTerminalTool(),
-        TerminalIoTool(),
+        TerminalReadTool(),
+        TerminalInterruptTool(),
         ListTerminalsTool(),
     )
 }
 
 /**
- * `terminal_io` 的远程分支。
+ * 读 / 打断的远程分支。
  *
  * 远程终端实现需要 `remote-run` 插件，所以它在另一个 config-file 里注册；这里只放
  * 一个平台无关的接口，由远程 provider 在 `getTools()` 时挂上来。
  */
-internal interface RemoteTerminalIoHandler {
+internal interface RemoteTerminalHandler {
     suspend fun read(
         project: Project,
         tab: String,
         tail: Int?,
         full: Boolean,
-        timeoutMs: Int,
         maxChars: Int,
     ): TerminalReadResult
-    suspend fun write(project: Project, tab: String, text: String)
+    suspend fun interrupt(project: Project, tab: String)
 }
 
-internal class TerminalIoRouter {
+internal class TerminalToolRouter {
     @Volatile
-    private var remoteHandler: RemoteTerminalIoHandler? = null
+    private var remoteHandler: RemoteTerminalHandler? = null
 
-    fun registerRemote(handler: RemoteTerminalIoHandler) {
+    fun registerRemote(handler: RemoteTerminalHandler) {
         remoteHandler = handler
     }
 
-    fun remote(): RemoteTerminalIoHandler? = remoteHandler
+    fun remote(): RemoteTerminalHandler? = remoteHandler
 }
 
 internal abstract class BaseTerminalTool : McpTool {
@@ -98,28 +98,19 @@ private fun terminalErrorJson(code: String, current: String?, fix: List<String>)
     }
 }
 
-internal fun validateTimeout(timeoutMs: Int): String? = when {
-    timeoutMs < 0 -> "timeoutMs 不能小于 0。0 = 异步；> 0 = 最多等待的毫秒数。"
-    timeoutMs > 12_000 -> "timeoutMs 不能大于 12000（MCP 会话约 15 秒，留余量）。"
-    else -> null
-}
+/**
+ * 单次工具调用最多等这么久，然后返回 `running: true` 让调用方用 `terminal_read` 收尾。
+ *
+ * 固定值、**不开放给调用方**：它只是"这次调用最多阻塞多久"，不是调用方能调的性能旋钮；
+ * 暴露出去只会让人以为结果可以通过参数把控，而真正需要的是"返回后去读那个 tab"。
+ */
+internal const val TERMINAL_CALL_TIMEOUT_MS = 300_000
 
 internal fun validateMaxChars(maxChars: Int): String? = when {
     maxChars < 1 -> "maxChars 必须 >= 1。"
     maxChars > TERMINAL_HARD_MAX_CHARS ->
         "maxChars 不能大于 $TERMINAL_HARD_MAX_CHARS。"
     else -> null
-}
-
-/**
- * 终端工具专用的 timeoutMs 解析：**0 是合法值**（异步），不能沿用
- * `optionalInt` 的「<=0 回落默认」语义。
- */
-internal fun JsonObject.terminalTimeout(default: Int): Int {
-    val element = this["timeoutMs"] ?: return default
-    if (element is JsonNull) return default
-    val primitive = element as? JsonPrimitive ?: return default
-    return primitive.content.toIntOrNull() ?: default
 }
 
 private fun parseEnv(arguments: JsonObject): Map<String, String> {
@@ -146,23 +137,25 @@ private class ProjectSdkTerminalTool : BaseTerminalTool() {
 
         val command = arguments.requiredString("command")
             ?: return invalidArgument("command 不能为空。")
-        val timeoutMs = arguments.terminalTimeout(10_000)
-        validateTimeout(timeoutMs)?.let { return invalidArgument(it) }
         val maxChars = arguments.optionalInt("maxChars", TERMINAL_DEFAULT_MAX_CHARS)
         validateMaxChars(maxChars)?.let { return invalidArgument(it) }
 
         val input = arguments.optionalString("input")
         val workingDirectory = arguments.optionalString("workingDirectory")
         val env = parseEnv(arguments)
+        val tab = arguments.optionalString("tab")
+        val newTab = arguments.optionalBoolean("newTab", false)
 
         val result = runInLocalTerminal(
             project = project,
             command = command,
             input = input,
-            timeoutMs = timeoutMs,
+            timeoutMs = TERMINAL_CALL_TIMEOUT_MS,
             workingDirectory = workingDirectory,
             env = env,
             maxChars = maxChars,
+            tab = tab,
+            newTab = newTab,
         )
         return McpToolCallResult.text(
             formatRunSummary(result),
@@ -182,16 +175,16 @@ internal fun formatRunSummary(result: TerminalRunResult): String = buildString {
 }
 
 // ---------------------------------------------------------------------------
-// terminal_io
+// terminal_read
 // ---------------------------------------------------------------------------
 
-private class TerminalIoTool : BaseTerminalTool() {
+private class TerminalReadTool : BaseTerminalTool() {
 
-    override val descriptor: McpToolDescriptor = terminalIoDescriptor
+    override val descriptor: McpToolDescriptor = terminalReadDescriptor
 
     override suspend fun body(arguments: JsonObject): McpToolCallResult {
         val project = currentProject() ?: return invalidArgument(
-            "$TERMINAL_IO_TOOL_NAME: no project is bound to this MCP session.",
+            "$TERMINAL_READ_TOOL_NAME: no project is bound to this MCP session.",
         )
 
         val target = arguments.requiredString("target")?.lowercase()
@@ -202,47 +195,65 @@ private class TerminalIoTool : BaseTerminalTool() {
 
         val tab = arguments.requiredString("tab")
             ?: return invalidArgument("tab 不能为空（使用 project_sdk_terminal 返回的 tab id）。")
-        val action = arguments.requiredString("action")?.lowercase()
-            ?: return invalidArgument("action 不能为空（read / write）。")
-
-        return when (action) {
-            "write" -> {
-                val text = arguments.optionalString("text")
-                    ?: return invalidArgument("action = write 时 text 必填。")
-                if (target == "local") {
-                    writeLocalTerminal(project, tab, text)
-                } else {
-                    val handler = service<TerminalIoRouter>().remote()
-                        ?: return invalidArgument("远程终端支持不可用（remote-run 插件未启用）。")
-                    handler.write(project, tab, text)
-                }
-                val result = TerminalReadResult(tab, null, null, null, false)
-                McpToolCallResult.text("Wrote ${text.length} character(s) to $tab.", result.toJson())
-            }
-
-            "read" -> {
-                val tail = (arguments["tail"] as? JsonPrimitive)?.content?.toIntOrNull()
-                if (tail != null && tail < 1) {
-                    return invalidArgument("tail 必须 >= 1。")
-                }
-                val full = arguments.optionalBoolean("full", false)
-                val timeoutMs = arguments.terminalTimeout(0)
-                validateTimeout(timeoutMs)?.let { return invalidArgument(it) }
-                val maxChars = arguments.optionalInt("maxChars", TERMINAL_DEFAULT_MAX_CHARS)
-                validateMaxChars(maxChars)?.let { return invalidArgument(it) }
-
-                val result = if (target == "local") {
-                    readLocalTerminal(project, tab, tail, full, timeoutMs, maxChars)
-                } else {
-                    val handler = service<TerminalIoRouter>().remote()
-                        ?: return invalidArgument("远程终端支持不可用（remote-run 插件未启用）。")
-                    handler.read(project, tab, tail, full, timeoutMs, maxChars)
-                }
-                McpToolCallResult.text(formatReadSummary(result), result.toJson())
-            }
-
-            else -> invalidArgument("action 只能是 \"read\" 或 \"write\"。")
+        val tail = (arguments["tail"] as? JsonPrimitive)?.content?.toIntOrNull()
+        if (tail != null && tail < 1) {
+            return invalidArgument("tail 必须 >= 1。")
         }
+        val full = arguments.optionalBoolean("full", false)
+        val maxChars = arguments.optionalInt("maxChars", TERMINAL_DEFAULT_MAX_CHARS)
+        validateMaxChars(maxChars)?.let { return invalidArgument(it) }
+
+        val result = if (target == "local") {
+            readLocalTerminal(project, tab, tail, full, maxChars)
+        } else {
+            val handler = service<TerminalToolRouter>().remote()
+                ?: return invalidArgument("远程终端支持不可用（remote-run 插件未启用）。")
+            handler.read(project, tab, tail, full, maxChars)
+        }
+        return McpToolCallResult.text(formatReadSummary(result), result.toJson())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// terminal_interrupt
+// ---------------------------------------------------------------------------
+
+private class TerminalInterruptTool : BaseTerminalTool() {
+
+    override val descriptor: McpToolDescriptor = terminalInterruptDescriptor
+
+    override suspend fun body(arguments: JsonObject): McpToolCallResult {
+        val project = currentProject() ?: return invalidArgument(
+            "$TERMINAL_INTERRUPT_TOOL_NAME: no project is bound to this MCP session.",
+        )
+
+        val target = arguments.requiredString("target")?.lowercase()
+            ?: return invalidArgument("target 不能为空（local / remote）。")
+        if (target != "local" && target != "remote") {
+            return invalidArgument("target 只能是 \"local\" 或 \"remote\"。")
+        }
+        val tab = arguments.requiredString("tab")
+            ?: return invalidArgument("tab 不能为空（使用 project_sdk_terminal 返回的 tab id）。")
+
+        val router = service<TerminalToolRouter>()
+        val remote = if (target == "remote") {
+            router.remote() ?: return invalidArgument("远程终端支持不可用（remote-run 插件未启用）。")
+        } else {
+            null
+        }
+
+        if (remote != null) remote.interrupt(project, tab) else interruptLocalTerminal(project, tab)
+
+        // 打断之后调用方最想知道的正是"停没停"，所以顺手读一次轻量快照。
+        val snapshot = if (remote != null) {
+            remote.read(project, tab, tail = null, full = false, maxChars = 2_000)
+        } else {
+            readLocalTerminal(project, tab, tail = null, full = false, maxChars = 2_000)
+        }
+        return McpToolCallResult.text(
+            "Sent Ctrl-C to $tab.\n" + formatReadSummary(snapshot),
+            snapshot.toJson(),
+        )
     }
 }
 
@@ -255,19 +266,14 @@ private class ListTerminalsTool : BaseTerminalTool() {
             "$LIST_TERMINALS_TOOL_NAME: no project is bound to this MCP session.",
         )
 
-        val includeUnmanaged = arguments.optionalBoolean("includeUnmanaged", true)
         val kind = arguments.optionalString("kind")?.lowercase() ?: "all"
-        if (kind !in setOf("all", TerminalKind.ProjectSdk.wire, TerminalKind.Remote.wire, TerminalKind.User.wire)) {
-            return invalidArgument("kind 只能是 all / mcp_project_sdk / mcp_remote / user。")
+        if (kind !in setOf("all", TerminalKind.ProjectSdk.wire, TerminalKind.Remote.wire)) {
+            return invalidArgument("kind 只能是 all / mcp_project_sdk / mcp_remote。")
         }
 
-        val tabs = listTerminalTabs(project, includeUnmanaged)
+        val groups = listTerminalTabs(project)
             .filter { kind == "all" || it.kind.wire == kind }
-            .sortedWith(
-                compareByDescending<TerminalTabInfo> { if (it.tab != null) 1 else 0 }
-                    .thenByDescending { it.lastUsedAt ?: it.createdAt ?: 0L },
-            )
-        return McpToolCallResult.text(formatTerminalList(tabs), terminalTabsToJson(tabs))
+        return McpToolCallResult.text(formatTerminalList(groups), terminalGroupsToJson(groups))
     }
 }
 

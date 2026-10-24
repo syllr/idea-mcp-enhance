@@ -229,9 +229,9 @@ class DeploymentSchemaTest {
     // ---------- upload_to_deployment 契约 ----------
 
     @Test
-    fun `upload 的入参是 deploymentName、mode、waitMs`() {
+    fun `upload 的入参是 deploymentName、mode`() {
         assertEquals(
-            setOf("deploymentName", "mode", "waitMs", "projectPath"),
+            setOf("deploymentName", "mode", "projectPath"),
             uploadToDeploymentDescriptor.inputSchema.propertiesSchema.keys,
         )
         assertEquals(setOf("deploymentName"), uploadToDeploymentDescriptor.inputSchema.requiredProperties)
@@ -334,9 +334,9 @@ class DeploymentSchemaTest {
     }
 
     @Test
-    fun `download 的入参是 deploymentName、waitMs`() {
+    fun `download 的入参是 deploymentName`() {
         assertEquals(
-            setOf("deploymentName", "waitMs", "projectPath"),
+            setOf("deploymentName", "projectPath"),
             downloadFromDeploymentDescriptor.inputSchema.propertiesSchema.keys,
         )
         assertEquals(setOf("deploymentName"), downloadFromDeploymentDescriptor.inputSchema.requiredProperties)

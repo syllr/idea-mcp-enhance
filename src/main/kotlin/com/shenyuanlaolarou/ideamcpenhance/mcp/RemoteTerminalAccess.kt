@@ -49,24 +49,79 @@ internal suspend fun runInRemoteTerminal(
     loginShell: Boolean,
     strictHostKey: Boolean,
     maxChars: Int = TERMINAL_DEFAULT_MAX_CHARS,
+    tab: String? = null,
+    newTab: Boolean = false,
 ): TerminalRunResult {
-    val prepared = prepareRemote(project, serverName, strictHostKey)
     val registry = project.service<TerminalSessionRegistry>()
-    val aliveNames = aliveTerminalTabNames(project)
-    val tabName = registry.nextTabName("MCP-R", aliveNames::contains)
-    val widget = openRemoteTerminal(project, prepared, tabName)
 
-    val state = TerminalSessionRegistry.State(
-        uiHandle = widget,
-        lastText = normalizeTerminalSnapshot(textOf(widget)),
-        kind = TerminalKind.Remote,
-        workingDirectory = workingDirectory,
-        serverName = serverName,
-        shell = prepared.shell,
-    )
-    registry.put(tabName, state)
+    // 复用优先：点名了 tab 就用它；否则取这台服务器上的**默认** tab。
+    // 和本地一致 —— 默认是"自动创建的那条"，不是"最近用过的"，落点才可预测。
+    val autoCreate = tab == null && !newTab
+    val reuseTarget = tab
+        ?: if (!autoCreate) null else registry.defaultTab(TerminalKind.Remote, serverName)
 
-    val sentText = buildRemoteCommand(command, workingDirectory, prepared.shell, loginShell)
+    val tabName: String
+    val widget: TerminalWidget
+    val state: TerminalSessionRegistry.State
+    val reuseName = reuseTarget
+    val existing = reuseName?.let { registry.get(it) }
+    // 自动挑中的 tab 可能已经被关掉：当作没有，重新连一个；
+    // 点名的那条关掉了则明确报错，不能偷偷换一条（甚至换一台机器）。
+    val reusable = if (existing != null && reuseName != null) {
+        runCatching { requireRemoteWidget(project, reuseName, existing) }.getOrNull()
+    } else {
+        null
+    }
+    if (existing != null && reusable != null) {
+        if (existing.serverName != null && existing.serverName != serverName) {
+            throw TerminalAccessException(
+                code = "tab_server_mismatch",
+                message = "tab \"$reuseTarget\" 属于服务器 \"${existing.serverName}\"，不能用来跑 \"$serverName\" 的命令。",
+            )
+        }
+        widget = reusable
+        state = existing
+        tabName = reuseTarget
+    } else {
+        if (tab != null) {
+            throw TerminalAccessException(
+                code = "terminal_tab_not_found",
+                message = "远程终端 tab \"$tab\" 不存在或已被关闭。请传 newTab=true 新开一个，或用 list_terminals 查现有 tab。",
+            )
+        }
+        val prepared = prepareRemote(project, serverName, strictHostKey)
+        val aliveNames = aliveTerminalTabNames(project)
+        tabName = registry.nextTabName(remoteTabPrefix(serverName), aliveNames::contains)
+        widget = openRemoteTerminal(project, prepared, tabName)
+        state = TerminalSessionRegistry.State(
+            uiHandle = widget,
+            lastText = normalizeTerminalSnapshot(textOf(widget)),
+            kind = TerminalKind.Remote,
+            workingDirectory = workingDirectory,
+            serverName = serverName,
+            shell = prepared.shell,
+        )
+        registry.put(tabName, state)
+        if (autoCreate) registry.registerDefault(tabName, TerminalKind.Remote, serverName)
+    }
+
+    // 复用的 tab 可能还在跑上一条命令：一直退避等到它回到提示符（和本地同一套
+    // 序列，不设上限），而不是把命令直接塞进正在跑的 shell。
+    if (reusable != null && !awaitRemoteIdle(widget, state)) {
+        throw TerminalAccessException(
+            code = "terminal_tab_busy",
+            message = "远程终端 \"$tabName\" 在等待期间被关闭，本次命令没有发送。请重新 execute_in_remote_host 建一个 tab。",
+        )
+    }
+
+    // 复用的 tab 本身就是登录 shell：不再套 `zsh -lic`、也不用 `exec`，
+    // 直接在它里面敲命令 —— 这样 cd / export / 后台进程才留得到下一条命令。
+    val sentText = if (reusable != null) {
+        buildRemoteCommandInTab(command, workingDirectory)
+    } else {
+        buildRemoteCommand(command, workingDirectory, state.shell ?: "sh", loginShell)
+    }
+    state.busy = true
     val before = normalizeTerminalSnapshot(textOf(widget))
     state.markers.add(TerminalCommandMarker(command, sentText, before))
     val commandStartedAt = System.currentTimeMillis()
@@ -79,28 +134,21 @@ internal suspend fun runInRemoteTerminal(
         withContext(Dispatchers.EDT) { widget.ttyConnector?.write(input) }
     }
 
-    val (currentRaw, timedOut) = if (timeoutMs <= 0) {
-        delay(300)
-        textOf(widget) to false
-    } else {
-        waitForRemoteCommand(widget, sentText, before, timeoutMs)
-    }
+    val (currentRaw, timedOut) = waitForRemoteCommand(widget, sentText, before, timeoutMs)
     val current = normalizeTerminalSnapshot(currentRaw)
 
     val (delta, cut) = textDelta(before, current)
     val (text, cleanedCut) = stripCommandEchoAndPrompt(delta, sentText, maxChars)
-    // 远程没有 command-finished 信号：同步等待返回提示符即为完成，超时视为仍在运行；
-    // 异步模式只有在末尾已经是提示符时才能确定已完成，否则保持 null。
-    val running = when {
-        timeoutMs > 0 -> timedOut
-        current.lines().lastOrNull { it.isNotBlank() }?.let(::looksLikePrompt) == true -> false
-        else -> null
-    }
+    // 远程没有 command-finished 信号：等到提示符就算完成，超时则视为仍在运行。
+    // timeoutMs 最低 60s，所以这里永远是"同步等到超时"这一条路径。
+    val running = timedOut
     state.lastText = current
     state.lastExitCode = null
     state.lastTimedOut = timedOut
-    state.lastRunning = running
+    // 丢给调用方的是 "null = 判断不了"；这里对复用保守一点：判断不了就当它还占着。
+    state.lastRunning = running ?: true
     state.lastUsedAt = System.currentTimeMillis()
+    state.busy = false
     return TerminalRunResult(
         tab = tabName,
         text = text,
@@ -117,7 +165,6 @@ internal suspend fun readRemoteTerminal(
     tab: String,
     tail: Int?,
     full: Boolean,
-    timeoutMs: Int,
     maxChars: Int = TERMINAL_DEFAULT_MAX_CHARS,
 ): TerminalReadResult {
     val state = project.service<TerminalSessionRegistry>().get(tab)
@@ -128,10 +175,7 @@ internal suspend fun readRemoteTerminal(
     val widget = requireRemoteWidget(project, tab, state)
     state.lastUsedAt = System.currentTimeMillis()
 
-    var currentRaw = textOf(widget)
-    if (timeoutMs > 0) {
-        currentRaw = waitForRemoteStable(widget, timeoutMs).first
-    }
+    val currentRaw = textOf(widget)
     val current = normalizeTerminalSnapshot(currentRaw)
     // 提示符在末尾说明命令已结束；否则保持 null，不能仅凭输出断定还在运行。
     val running = if (current.lines().lastOrNull { it.isNotBlank() }?.let(::looksLikePrompt) == true) {
@@ -156,7 +200,12 @@ internal suspend fun readRemoteTerminal(
     return TerminalReadResult(tab, text, null, running, cut || truncated)
 }
 
-internal suspend fun writeRemoteTerminal(project: Project, tab: String, text: String) {
+/**
+ * 往远程终端发一次 Ctrl-C。
+ *
+ * 与本地一致：这是命令还跑着时唯一能生效的写入，且只发一个字节，不接文本。
+ */
+internal suspend fun interruptRemoteTerminal(project: Project, tab: String) {
     val state = project.service<TerminalSessionRegistry>().get(tab)
         ?: throw TerminalAccessException(
             code = "terminal_tab_not_found",
@@ -170,7 +219,7 @@ internal suspend fun writeRemoteTerminal(project: Project, tab: String, text: St
             message = "远程终端 \"$tab\" 还没有建立 TTY 连接，无法写入。",
         )
     try {
-        withContext(Dispatchers.EDT) { connector.write(text) }
+        withContext(Dispatchers.EDT) { connector.write(TERMINAL_INTERRUPT_CHAR) }
     } catch (e: Throwable) {
         throw TerminalAccessException(
             code = "remote_terminal_closed",
@@ -441,6 +490,31 @@ private suspend fun openRemoteTerminal(
 // 工具函数
 // ---------------------------------------------------------------------------
 
+/**
+ * 退避等远程 tab 回到提示符，**不设上限**。
+ *
+ * 远程没有 command-finished 信号，只能用「最后一行像提示符」判断；本插件自己的
+ * 命令还在发送中（[TerminalSessionRegistry.State.busy]）时一定算忙。
+ * 序列与本地一致：250ms、500ms，之后每次 1000ms；只有读不到终端时返回 false。
+ *
+ * 与 [awaitLocalIdle] 相同：无限等待依赖客户端挂着 `GET /stream` 的 SSE 流；
+ * 不挂流的客户端会在 15 秒后被 IDE 清掉会话（pending transport 超时）。
+ */
+private suspend fun awaitRemoteIdle(
+    widget: TerminalWidget,
+    state: TerminalSessionRegistry.State,
+): Boolean {
+    var attempt = 0
+    while (true) {
+        if (!state.busy) {
+            val text = runCatching { textOf(widget) }.getOrElse { return false }
+            val lastLine = text.lines().lastOrNull { it.isNotBlank() }
+            if (lastLine != null && looksLikePrompt(lastLine)) return true
+        }
+        delay(retryBackoffMs(attempt++))
+    }
+}
+
 private suspend fun textOf(widget: TerminalWidget): String =
     withContext(Dispatchers.EDT) { widget.getText().toString() }
 
@@ -490,23 +564,6 @@ private suspend fun waitForRemoteCommand(
             return last to false
         }
         delay(200)
-    }
-    return textOf(widget) to true
-}
-
-private suspend fun waitForRemoteStable(widget: TerminalWidget, timeoutMs: Int): Pair<String, Boolean> {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    var last = textOf(widget)
-    var stableSince = System.currentTimeMillis()
-    while (System.currentTimeMillis() < deadline) {
-        delay(150)
-        val now = textOf(widget)
-        if (now != last) {
-            last = now
-            stableSince = System.currentTimeMillis()
-        } else if (System.currentTimeMillis() - stableSince >= 800) {
-            return now to false
-        }
     }
     return textOf(widget) to true
 }

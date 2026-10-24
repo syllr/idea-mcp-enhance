@@ -186,7 +186,7 @@ internal fun startInFlight(project: Project, settings: RunnerAndConfigurationSet
 /**
  * 等"在飞的启动"产出可停的进程。返回 `true` = 等到了（可以照常停），`false` = 超时（仍没进程）。
  *
- * 为什么需要它：`rerun` 的异步模式（`waitForStart = false`）提交完就返回，此时 Run 内容可能还没建、
+ * 为什么需要它：`rerun` 在等待窗口内没等到进程创建时会按"结果未知"返回，此时 Run 内容可能还没建、
  * 进程还没挂上。这时 `stop` 直接报 "not running; nothing to stop" 是**假话**——进程随后就会起来，
  * 调用方却以为已经停掉了（实测过：stop 返回成功 3 秒后进程在跑）。等一小段再停才是正确语义。
  */
@@ -196,9 +196,10 @@ internal suspend fun awaitPendingStart(
     timeoutMs: Long,
 ): Boolean {
     val deadline = deadlineNanos(timeoutMs)
+    var attempt = 0
     while (System.nanoTime() < deadline) {
         if (activeDescriptorsFor(project, settings.name).isNotEmpty()) return true
-        delay(PENDING_START_POLL_INTERVAL_MS)
+        delay(retryBackoffMs(attempt++))
     }
     return activeDescriptorsFor(project, settings.name).isNotEmpty()
 }
@@ -220,7 +221,6 @@ internal const val SHELL_CONFIGURATION_TYPE_ID = "ShConfigurationType"
 internal const val CONFIG_REGISTER_TIMEOUT_MS = 3_000L
 
 /** 上面的轮询间隔。 */
-private const val CONFIG_REGISTER_POLL_MS = 50L
 
 /**
  * 等 IDE 的文件监听把刚写的 `.run.xml` 注册成可用配置（`RunManager.findConfigurationByName` 能查到）。
@@ -234,9 +234,10 @@ internal suspend fun awaitConfigurationRegistered(
     timeoutMs: Long = CONFIG_REGISTER_TIMEOUT_MS,
 ): RunnerAndConfigurationSettings? {
     val deadline = deadlineNanos(timeoutMs)
+    var attempt = 0
     do {
         RunManager.getInstance(project).findConfigurationByName(name)?.let { return it }
-        delay(CONFIG_REGISTER_POLL_MS)
+        delay(retryBackoffMs(attempt++))
     } while (System.nanoTime() < deadline)
     return RunManager.getInstance(project).findConfigurationByName(name)
 }
@@ -252,9 +253,10 @@ internal suspend fun awaitConfigurationGone(
     timeoutMs: Long = CONFIG_REGISTER_TIMEOUT_MS,
 ): Boolean {
     val deadline = deadlineNanos(timeoutMs)
+    var attempt = 0
     do {
         if (RunManager.getInstance(project).findConfigurationByName(name) == null) return true
-        delay(CONFIG_REGISTER_POLL_MS)
+        delay(retryBackoffMs(attempt++))
     } while (System.nanoTime() < deadline)
     return RunManager.getInstance(project).findConfigurationByName(name) == null
 }
@@ -376,7 +378,7 @@ internal fun stopHandler(handler: ProcessHandler) {
  * @param force 超时后是否强杀
  * @return 三元组：实际发起停止的实例数 / 被强杀的实例数 / 等待结束时各实例的最新状态
  */
-internal fun stopDescriptors(
+internal suspend fun stopDescriptors(
     descriptors: List<RunContentDescriptor>,
     waitTimeoutMs: Int,
     force: Boolean,
@@ -385,12 +387,12 @@ internal fun stopDescriptors(
     val requested = handlers.count { !it.isProcessTerminated }
     handlers.forEach(::stopHandler)
 
-    // 留 1ms 下限：waitFor(0) 在部分 handler 上会被当成"无限等待"
-    val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitTimeoutMs.toLong().coerceAtLeast(1L))
-    for (handler in handlers) {
-        val remaining = deadlineNanos - System.nanoTime()
-        if (remaining <= 0) break
-        handler.waitFor(TimeUnit.NANOSECONDS.toMillis(remaining))
+    // 轮询而不是 `waitFor`：后者会把线程占满整个等待窗口（现在固定 300 秒），
+    // 轮询用统一的退避序列，既省次数也能响应取消。
+    val deadline = deadlineNanos(waitTimeoutMs.toLong().coerceAtLeast(1L))
+    var attempt = 0
+    while (handlers.any { !it.isProcessTerminated } && System.nanoTime() < deadline) {
+        delay(retryBackoffMs(attempt++))
     }
 
     val stuck = handlers.filter { !it.isProcessTerminated }
@@ -402,8 +404,14 @@ internal fun stopDescriptors(
                 killed++
             }
         }
-        // killProcess 只是投递信号，真正退出要等一会儿
-        if (killed > 0) stuck.forEach { it.waitFor(FORCE_KILL_WAIT_MS) }
+        // killProcess 只是投递信号，真正退出还要一会儿 —— 同样退避等，别空转
+        if (killed > 0) {
+            val killDeadline = deadlineNanos(FORCE_KILL_WAIT_MS)
+            var killAttempt = 0
+            while (stuck.any { !it.isProcessTerminated } && System.nanoTime() < killDeadline) {
+                delay(retryBackoffMs(killAttempt++))
+            }
+        }
         killed
     } else {
         0
@@ -460,10 +468,8 @@ internal fun buildRunEnvironment(project: Project, settings: RunnerAndConfigurat
  * `com.intellij.execution`（公开 API），不是被本项目禁止的 `com.intellij.execution.impl.*` 包。
  *
  * @param settings 目标配置。既用来取名字（日志文件名 / sessionId），也用来在启动后取"收敛快照"
- * @param startTimeoutMs 从"发出启动请求"到"等到进程被创建"的上限；超时返回 [StartOutcome.failure]
- * @param waitForStart `false` = 只提交启动请求就返回（不等进程创建）。
- *   用于"这个配置的 before-launch 要构建很久"的场景：那种情况下任何等待都会撞上 MCP Server
- *   的会话耐心，等不到结果；提交完让调用方自己轮询 `list_running_configurations` 才是可行解
+ * @param startTimeoutMs 从"发出启动请求"到"等到进程被创建"的上限。超时不是失败：返回
+ *   [StartOutcome.submittedOnly]（`started = null`，结果未知），由调用方轮询 `list_running_configurations`
  * @param outputGraceMs 进程起来后再采集这么久的输出才返回。server 类配置永不退出，只能给它一个固定窗口；
  *   这段时间就是"启动日志"（`output` 内联预览）能拿到多少的代价。日志文件 [StartOutcome.fullOutputPath]
  *   不受这个窗口限制，会在进程整个生命周期里持续增长
@@ -473,7 +479,6 @@ internal suspend fun startRunAndAwait(
     environment: ExecutionEnvironment,
     settings: RunnerAndConfigurationSettings,
     startTimeoutMs: Int,
-    waitForStart: Boolean = true,
     outputGraceMs: Long = DEFAULT_OUTPUT_GRACE_MS,
 ): StartOutcome {
     val sessionName = settings.name
@@ -538,16 +543,17 @@ internal suspend fun startRunAndAwait(
     // AI 拿到空 404、也就没法把"请用户去 IDE 处理"转告出去——而那正是这类卡点唯一的出路。
     val budgetMs = startTimeoutMs.toLong().coerceAtLeast(1L)
 
-    // 只提交、不等：调用方拿 `started = null`（不知道），之后用 `list_running_configurations` 查。
-    // 收集器仍然挂在回调上，所以进程真起来之后日志文件照常增长（调用方可以稍后去读）。
-    if (!waitForStart) {
-        val accepted = withTimeoutOrNull(budgetMs) {
-            withContext(Dispatchers.EDT) {
-                ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
-            }
-            true
+    var submitted = false
+    val settledResult = withTimeoutOrNull(budgetMs) {
+        withContext(Dispatchers.EDT) {
+            ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
         }
-        if (accepted == null) {
+        submitted = true
+        settled.await()
+    } ?: run {
+        // 卡在"提交"这一步 ⇒ 平台多半在等用户（模态对话框），必须明确报出去；
+        // 已经提交、只是进程还没起来 ⇒ 大概率 before-launch 还在跑，结果未知 —— 交给调用方轮询。
+        if (!submitted) {
             return failedStart(
                 project = project,
                 settings = settings,
@@ -568,27 +574,6 @@ internal suspend fun startRunAndAwait(
             submittedOnly = true,
         )
     }
-
-    var submitted = false
-    val settledResult = withTimeoutOrNull(budgetMs) {
-        withContext(Dispatchers.EDT) {
-            ProgramRunnerUtil.executeConfigurationAsync(environment, false, true, callback)
-        }
-        submitted = true
-        settled.await()
-    } ?: return failedStart(
-        project,
-        settings,
-        outputPath,
-        startedAtNanos,
-        // 超时点在"提交"还是"等进程"上，处置完全不同：前者多半是在等用户点对话框，
-        // 后者是 before-launch 还在跑（构建 / 另一个配置）。
-        if (submitted) {
-            startTimeoutReason(settings.name, startTimeoutMs, beforeLaunchStepCount(settings))
-        } else {
-            userMustActReason(settings.name)
-        },
-    )
 
     val descriptor = settledResult.getOrElse { error ->
         return failedStart(
@@ -638,8 +623,8 @@ internal suspend fun startRunAndAwait(
  *   注意这里刻意**不含**后续采集启动日志的固定窗口——否则摘要会写成
  *   "启动用了 2 秒"，而实际是等日志等了 2 秒
  * @param state 启动收敛之后该配置的真实状态。调用方应直接用它，不要再自己拍一次快照（会读到中间态）
- * @param submittedOnly `true` = 只提交了启动请求、没有等（`waitForStart = false`）。
- *   此时 [executionId] / [pid] / [sessionId] 全为 null，[state] 只是提交那一刻的快照
+ * @param submittedOnly `true` = 启动请求已提交，但在等待窗口内没等到进程创建（大概率是 before-launch
+ *   还在跑）。此时 [executionId] / [pid] / [sessionId] 全为 null，[state] 只是超时那一刻的快照
  */
 internal data class StartOutcome(
     val executionId: Long?,
@@ -698,9 +683,10 @@ private fun deadlineNanos(timeoutMs: Long): Long =
 /** 等进程被真正创建（pid 可读）或提前终止。 */
 private suspend fun awaitProcessUp(handler: ProcessHandler, timeoutMs: Int) {
     val deadline = deadlineNanos(timeoutMs.toLong())
+    var attempt = 0
     while (System.nanoTime() < deadline) {
         if (handler.isProcessTerminated || processPidOrNull(handler) != null) return
-        delay(START_POLL_INTERVAL_MS)
+        delay(retryBackoffMs(attempt++))
     }
 }
 
@@ -713,9 +699,10 @@ private suspend fun awaitProcessUp(handler: ProcessHandler, timeoutMs: Int) {
 private suspend fun awaitOutputWindow(handler: ProcessHandler, graceMs: Long) {
     if (graceMs <= 0) return
     val deadline = deadlineNanos(graceMs)
+    var attempt = 0
     while (System.nanoTime() < deadline) {
         if (handler.isProcessTerminated) return
-        delay(START_POLL_INTERVAL_MS)
+        delay(retryBackoffMs(attempt++))
     }
 }
 
@@ -738,9 +725,10 @@ private suspend fun awaitLiveState(
 ): RunConfigurationState {
     val deadline = deadlineNanos(timeoutMs)
     var state = snapshotOf(project, settings)
+    var attempt = 0
     while (System.nanoTime() < deadline) {
         if (state.instances.any { it.executionId == executionId && it.running }) return state
-        delay(START_POLL_INTERVAL_MS)
+        delay(retryBackoffMs(attempt++))
         state = snapshotOf(project, settings)
     }
     return state
@@ -807,16 +795,14 @@ private fun createRunOutputFile(sessionName: String): Path? = runCatching {
 }.getOrNull()
 
 /** 轮询间隔：等进程起来、等输出、等 Run 内容注册都用它。 */
-private const val START_POLL_INTERVAL_MS = 50L
 
 /** 等"在飞的启动"挂上进程时的轮询间隔。 */
-private const val PENDING_START_POLL_INTERVAL_MS = 50L
 
 /**
  * `stop` 遇到"启动在飞"时，最多等多久让它挂上进程。
  *
  * 有界是必须的：等不到就如实说"启动仍在飞"，而不是把调用悬着。
- * 加上 `stop` 自己的 `waitTimeoutMs`（默认 5000），最坏总时长约 7 秒，仍在服务器会话耐心之内。
+ * 加上 `stop` 自己的固定等待预算（300 秒），最坏总时长仍在 300 秒量级。
  */
 internal const val PENDING_START_ATTACH_TIMEOUT_MS = 2_000L
 

@@ -308,9 +308,10 @@ class RunLogAndNamingTest {
     }
 
     @Test
-    fun `描述里说清了不要自己写文件 而且不提文件路径`() {
+    fun `描述里点明唯一写入口 而且不提文件路径`() {
         val create = definitionTools().first { it.descriptor.name == CREATE_DEFINITION_TOOL_NAME }.descriptor
-        assertTrue(create.description.contains("Do not create or edit that file yourself"))
+        // 正向表述：这个工具就是唯一写入口（不是"你不要自己写"那种反例）
+        assertTrue(create.description.contains("is the only writer of"))
         // 描述里**不出现**文件路径 —— 提了模型就会去手写文件。
         assertFalse(create.description.contains(".run/"))
         assertFalse(create.description.contains(".run.xml"))

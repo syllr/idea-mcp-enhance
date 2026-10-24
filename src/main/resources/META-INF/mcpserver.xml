@@ -33,9 +33,9 @@
                 serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalSessionRegistry"/>
         <projectService
                 serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.ProjectTerminalEnvRegistry"/>
-        <!-- terminal_io 的远程实现由 remote-run 的 provider 注册到这里的 app service。 -->
+        <!-- 读 / 打断的远程实现由 remote-run 的 provider 注册到这里的 app service。 -->
         <applicationService
-                serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalIoRouter"/>
+                serviceImplementation="com.shenyuanlaolarou.ideamcpenhance.mcp.TerminalToolRouter"/>
 
         <!-- 屏蔽内置 execute_terminal_command：它和 project_sdk_terminal 重叠且不加载登录 shell 环境。 -->
         <mcpServer.mcpToolFilterProvider

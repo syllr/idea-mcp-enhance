@@ -291,7 +291,7 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
 
     Idempotent: not running → success with `matchedInstances: 0`. If a start is **in flight**, the
     tool waits briefly; if the process still does not appear it returns success plus a warning —
-    do not treat `matchedInstances: 0` as definitely down, re-check with
+    `matchedInstances: 0` may then mean a start is still in flight, so confirm with
     `list_running_configurations`.
 
     Names match exactly first, then case-insensitively; errors list the existing names.
@@ -303,12 +303,6 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
             "configurationName" to property(
                 "string",
                 "Name of the run configuration whose instances should be stopped.",
-            ),
-            "waitTimeoutMs" to property(
-                "integer",
-                "How long to wait for the processes to exit, in milliseconds. Defaults to 5000. Values <= 0 fall " +
-                    "back to the default. A value beyond the MCP server's patience (roughly 15 seconds) never " +
-                    "produces an answer: the session is dropped before it is over.",
             ),
             "force" to property(
                 "boolean",
@@ -365,12 +359,9 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     It waits until the new process exists. It fails fast if the configuration is stopping or
     starting, old instances cannot be stopped, or the IDE is already starting it.
 
-    Before-launch steps delay the Run content. Total budget is `stopTimeoutMs` + `startTimeoutMs`
-    + ~2s; MCP patience is roughly 15 seconds, so a slow stop plus start can drop the session.
-    For those cases use the asynchronous mode (`waitForStart=false`): old instances stop within
-    `stopTimeoutMs`, the start is submitted, and `started=null`; poll
-    `list_running_configurations` for the real state. Do not shrink `stopTimeoutMs` to fit: that
-    only gives up graceful shutdown sooner.
+    Before-launch steps delay the Run content: the IDE creates it only after they finish. The call
+    waits for that; if the wait runs out, `started` is null and the outcome is unknown — poll
+    `list_running_configurations` for the real state.
 
     Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),
@@ -381,27 +372,6 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             "configurationName" to property(
                 "string",
                 "Name of the run configuration to rerun.",
-            ),
-            "stopTimeoutMs" to property(
-                "integer",
-                "How long to wait for the old instances to exit before starting again, in milliseconds. Defaults to 5000.",
-            ),
-            "startTimeoutMs" to property(
-                "integer",
-                "How long to wait for the new process to be created, in milliseconds. Defaults to 10000 — the same " +
-                    "default as the built-in `execute_run_configuration`'s `timeout`. Raise it when this configuration " +
-                    "has before-launch steps that take a while (a build, or another run configuration): the IDE creates " +
-                    "the Run content only after they finish. Mind the whole call's budget, though — see the tool " +
-                    "description for what a slow stop plus a slow start does to it.",
-            ),
-            "waitForStart" to property(
-                "boolean",
-                "Defaults to true: submit the start and wait until the new process is created, then report " +
-                    "`started` / `output`. Set it to false when the whole call would outlast the MCP server's " +
-                    "patience (long before-launch steps, or a slow stop — see the tool description): the start is " +
-                    "submitted and the tool returns right after that, with `started = null` (unknown), so poll " +
-                    "`list_running_configurations` for the real state. Mirrors the built-in " +
-                    "`execute_run_configuration`'s `waitForExit` switch.",
             ),
             "projectPath" to projectPathProperty(),
         ),
@@ -414,15 +384,15 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             "started" to nullableProperty(
                 "boolean",
                 "Whether a new process really came up. Read this, not `mode`. `true`/`false` when the start was " +
-                    "awaited; `null` when `waitForStart = false` was used — then the outcome is unknown and " +
+                    "awaited; `null` when the wait window ran out — then the outcome is unknown and " +
                     "`list_running_configurations` has the real state.",
             ),
             "startFailure" to nullableProperty("string", "Why the new process did not come up; null when `started` is true."),
             "stoppedInstances" to property("integer", "Number of old instances a stop request was sent to."),
             "runningAfter" to nullableProperty(
                 "integer",
-                "Live instance count after the new process was up and registered; null when `waitForStart = false` " +
-                    "(not awaited), not 0.",
+                "Live instance count after the new process was up and registered; null when the wait window ran " +
+                    "out (outcome unknown), not 0.",
             ),
             "sessionId" to nullableProperty(
                 "string",
@@ -453,25 +423,21 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     annotations(readOnly = false, destructive = true, idempotent = false),
 )
 
-/** 默认等待窗口。给 MCP 的调用设一个上限，避免 agent 卡在一个永不退出的进程上。 */
-internal const val DEFAULT_WAIT_TIMEOUT_MS = 5_000
+/**
+ * 停止 / 重启时等进程退出的默认预算。
+ *
+ * 与其他工具统一为 **300 秒**：5 秒对真实的优雅退出（JVM 关停钩子、连接池收尾）太短，
+ * 会把正常退出误报成"还在跑"。等不起的调用方改用异步提交 + 自己轮询。
+ */
+internal const val DEFAULT_WAIT_TIMEOUT_MS = 300_000
 
 /**
- * 默认启动等待上限。
+ * 等新进程被创建的上限。
  *
- * **取 10000，与原生一致**：内置 `execute_run_configuration` 的 `timeout` 默认就是 `10000`
- * （`ExecutionToolset` 字节码里的 `sipush 10000`）。调用方可以覆盖它——比如某个配置的 before-launch
- * 要先编译几十秒——但**整次调用的时长要留在服务器的耐心之内**：
- *
- * 实测一个请求悬着超过约 15 秒，MCP Server 会先移除会话（`Pending StreamableHttp transport timed out`
- * → `Removing session`），于是工具算完也送不回结果，客户端拿到 **HTTP 404 空响应**。
- * 实测量到的边界：8 秒的调用能正常送达、20 秒的不能；**连官方工具也一样** ——
- * `execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后拿到空 404。
- *
- * 所以这个值不是"越大越好"：它只决定"我们等多久就放弃并如实报告"，放弃得早一点反而能拿到
- * 一个可读的结构化错误，而不是让整个回答丢失。
+ * 同样是 **300 秒**：before-launch（构建 / 另一个配置）经常远超过 10 秒，旧的 10 秒默认会把
+ * 正常的编译等待误报成"启动失败"。整次调用的时长会被调用方一直等着 —— 等不起就用异步模式。
  */
-internal const val DEFAULT_START_TIMEOUT_MS = 10_000
+internal const val DEFAULT_START_TIMEOUT_MS = 300_000
 
 internal fun defaultWaitTimeoutMs(): Int = DEFAULT_WAIT_TIMEOUT_MS
 

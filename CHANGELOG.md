@@ -2,7 +2,24 @@
 
 # IDE MCP Enhance Changelog
 
-## [Unreleased]
+## [0.1.4] - 2026-10-24
+
+### Added
+
+- **每种来源一条默认 tab**：`project_sdk_terminal` / `execute_in_remote_host` 不传 `tab` 时落在该来源（本地一条、每台服务器各一条）的**默认 tab** 上 —— 第一次调用自动创建；`newTab: true` 建出来的临时 shell 不会抢走默认身份，默认 tab 被关掉后下次调用重建。`list_terminals` 按来源分组，并在每组用 `default` 报出该来源的那一条，所以"命令会落到哪"是确定的，不再随使用历史漂移。
+- **tab 忙闲与来源校验**：未跑完 / 超时未结束的 tab 不参与复用；`tab` 与 `serverName` 不匹配时返回 `tab_server_mismatch` 而不是跑错机器。
+
+### Changed
+
+- **超时全部收口成工具自身的行为，不再开放参数**：`project_sdk_terminal` / `execute_in_remote_host` 的 `timeoutMs`（固定 300 秒，超时返回 `running: true` + 同一个 tab）、`upload_to_deployment` / `download_from_deployment` 的 `waitMs`、`stop_run_configuration` 的 `waitTimeoutMs`、`rerun_run_configuration` 的 `stopTimeoutMs` / `startTimeoutMs` 全部删除。所有等待预算统一为 300 秒；等不起的场合改用 `waitForStart = false` 或 `handle` 轮询——超时是工具行为，不是调用方能把控结果的旋钮。
+- **tab 忙闲改成退避等待**：发现 tab 还在执行上一条命令时不再立刻报 `terminal_tab_busy`，而是按 250ms → 500ms → 之后每次 1000ms 的间隔等到 shell 回到提示符（不设上限）；只有 tab 在等待期间被关掉才放弃。
+- `terminal_io` 拆成两个职责单一的工具：`terminal_read` 只读（立即返回快照、不接受 timeout，用于命令超过 300s 超时后查上次命令的结果），`terminal_interrupt` 只发一次 Ctrl-C（打断卡住的命令，不接受任何文本，因此无法变成隐藏的执行通道）。`write` 已删除——往已跑完的 shell 补命令由 `input` + 复用覆盖。
+- 远程 tab 命名从 `MCP-R-<n>` 改为 `mcp-<服务器名>-<n>`（如 `mcp-mbpmiddleware-1`），序号按服务器各自从 1 起。
+- 复用远程 tab 时不再套 `zsh -lic` / `exec`：命令直接跑在会话自己的登录 shell 里，`cd` 与后台进程才留得到下一条。
+
+### Fixed
+
+- `buildRemoteCommand` 不再用 `; exec <command>`：`loginShell=false` 时它会替换掉 tab 的交互 shell，命令一结束 tab 就没了。
 
 ## [0.1.3] - 2026-10-23
 
@@ -164,7 +181,8 @@
 - `rerun_run_configuration` 用配置**名字**定位，不支持 `file:line` 代码位置。
 - **内置 `get_run_configurations` 的 `filePath` 模式未实现**：给定一个文件、列出该文件里可执行的入口点（IDE 行号槽上出现 Run 图标的位置），那需要整套 PSI / `RunConfigurationProducer` / `ConfigurationFromContext` 能力。本插件刻意不碰 PSI（prompt 那半也不碰），因此这块仍由内置工具承担，两个工具组合使用即可。
 
-[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.1...HEAD
+[0.1.4]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.3...0.1.4
+[Unreleased]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.4...HEAD
 [0.1.1]: https://github.com/syllr/idea-mcp-enhance/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.3...0.1.0
 [0.0.3]: https://github.com/syllr/idea-mcp-enhance/compare/0.0.2...0.0.3

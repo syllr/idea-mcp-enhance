@@ -192,7 +192,8 @@ private class StopRunConfigurationTool : BaseRunTool() {
             )
         }
 
-        val waitTimeoutMs = arguments.optionalInt("waitTimeoutMs", defaultWaitTimeoutMs())
+        // 等待预算是工具自身的固定行为，不开放给调用方。
+        val waitTimeoutMs = defaultWaitTimeoutMs()
         val force = arguments.optionalBoolean("force", true)
         val outcome = stopDescriptors(descriptors, waitTimeoutMs, force)
 
@@ -254,9 +255,8 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         return rerunNow(
             project = project,
             settings = settings,
-            stopTimeoutMs = arguments.optionalInt("stopTimeoutMs", defaultWaitTimeoutMs()),
-            startTimeoutMs = arguments.optionalInt("startTimeoutMs", defaultStartTimeoutMs()),
-            waitForStart = arguments.optionalBoolean("waitForStart", true),
+            stopTimeoutMs = defaultWaitTimeoutMs(),
+            startTimeoutMs = defaultStartTimeoutMs(),
         )
     }
 
@@ -266,7 +266,6 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         settings: RunnerAndConfigurationSettings,
         stopTimeoutMs: Int,
         startTimeoutMs: Int,
-        waitForStart: Boolean,
     ): McpToolCallResult {
 
         val startedAtNanos = System.nanoTime()
@@ -344,9 +343,8 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         // 第 2 步：起新的（执行环境在第 0 步已经构建好并验过）。
         // 关键：默认同步等到新进程真的被创建、并且状态收敛成"确实在跑"才返回，
         // 否则紧接着做快照必然读到 0 个在跑，调用方会误判成"启动失败"。
-        // `waitForStart = false` 时只提交、不等：那种配置的 before-launch 比服务器的会话耐心还长，
-        // 等下去只会把结果丢成空 404；提交完让调用方自己轮询 `list_running_configurations` 才是可行解。
-        val start = startRunAndAwait(project, environment, settings, startTimeoutMs, waitForStart = waitForStart)
+        // 同步等到新进程真的被创建；窗口内没等到就返回"结果未知"，由调用方轮询。
+        val start = startRunAndAwait(project, environment, settings, startTimeoutMs)
         transition += RunTransitionStep(
             phase = when {
                 !start.awaited -> TransitionPhase.START_SUBMITTED
@@ -355,7 +353,7 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             },
             detail = when {
                 !start.awaited ->
-                    "start request submitted, not awaited (waitForStart = false); " +
+                    "start request submitted but the process did not appear within the wait window; " +
                         "the IDE creates the Run content only after the before-launch steps finish"
                 start.started -> "execution ${start.executionId}" + (start.pid?.let { ", pid $it" }.orEmpty())
                 else -> start.failure ?: "unknown failure"
@@ -415,13 +413,14 @@ private class RerunRunConfigurationTool : BaseRunTool() {
 }
 
 /**
- * `waitForStart = false` 时的固定警告：把"不知道"说清楚。
+ * 等窗口用完、结果未知时的固定警告：把"不知道"说清楚。
  *
  * 必须出现在 `warnings[]` 里，因为 `started = null` 是个新状态，调用方（尤其是 agent）
  * 很容易把它当成失败去重试——那会撞上平台的启动门，或者干脆起出第二个实例。
  */
 private const val NOT_AWAITED_WARNING =
-    "The start was submitted but not awaited (waitForStart = false): the outcome is unknown until the " +
+    "The start was submitted but the process did not appear within the wait window: the outcome is " +
+        "unknown until " +
         "before-launch steps finish. Poll `list_running_configurations` to see when the process is up."
 
 /** 把"停了几个、退出码是多少、有没有强杀"压成一句可读的 detail。 */

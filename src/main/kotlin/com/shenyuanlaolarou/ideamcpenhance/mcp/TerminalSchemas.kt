@@ -74,7 +74,7 @@ private val COMMANDS_SCHEMA: JsonObject = buildJsonObject {
 }
 
 private val TERMINAL_RUN_PROPERTIES: JsonObject = properties(
-    "tab" to property("string", "Terminal tab id. Pass it to `terminal_io` for later reads/writes."),
+    "tab" to property("string", "Terminal tab id. Pass it to `terminal_read` / `terminal_interrupt` later."),
     "text" to property("string", "Output captured since the command started, cleaned and truncated."),
     "exitCode" to nullableProperty(
         "integer",
@@ -82,7 +82,8 @@ private val TERMINAL_RUN_PROPERTIES: JsonObject = properties(
     ),
     "timedOut" to property(
         "boolean",
-        "true when `timeoutMs` elapsed before the command finished; `text` is then partial.",
+        "true when this call stopped waiting before the command finished; `text` is then partial — " +
+            "read the tab with `terminal_read` for the rest.",
     ),
     "running" to nullableProperty(
         "boolean",
@@ -129,20 +130,18 @@ internal val projectSdkTerminalDescriptor = McpToolDescriptor(
 
     Use it for project-bound commands that need the IDE's project environment: Maven, Gradle,
     Node / package managers, project scripts, dev servers, code generators and migrations.
-    Do not use it for global commands such as `git`, `ls`, `cat`, `curl`, `docker` or `ps`;
-    use the shell tool instead.
+    Global commands (`git`, `ls`, `cat`, `curl`, `docker`, `ps`) belong to the shell tool.
 
-    Every call creates a new terminal tab. If you need to continue an existing tab, call
-    `list_terminals` and then `terminal_io`; do not create another tab just to run a follow-up
-    command in the same shell.
+    The command runs in this project's default tab, and that tab is reused for the next command
+    too: `cd`, exported variables and background jobs stay in place, so one `cd ... &&` is enough
+    for the whole session. The first call creates that default tab; `list_terminals`
+    reports it as the group's `default`. Pass `tab` to target a specific one; `newTab: true` opens an
+    extra shell without taking over the default. `env` forces a new tab because it can only take
+    effect when the shell starts; `workingDirectory` is applied as a `cd` inside the reused tab.
 
-    `timeoutMs` (default 10000): `0` sends the command and returns immediately; `> 0` waits up
-    to N ms for completion (max 12000). `input` is written once immediately after the command;
-    include the newline yourself.
-
-    The tab is a real interactive terminal: users can see the command and answer prompts. The
-    tool fails with instructions when the Terminal tool window is missing, the engine is not
-    "Reworked 2025", or shell integration is disabled.
+    If the command runs long, this call stops waiting and returns `running: true`; the command
+    keeps running in that tab — call `terminal_read` to see the rest.
+    `input` is written once immediately after the command; include the newline yourself.
     """.trimIndent(),
     TERMINAL_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.project_sdk_terminal",
@@ -153,13 +152,19 @@ internal val projectSdkTerminalDescriptor = McpToolDescriptor(
                 "string",
                 "Text written once right after the command, e.g. \"y\\n\". Include the newline yourself.",
             ),
-            "timeoutMs" to property(
-                "integer",
-                "0 = return immediately; > 0 = wait up to N ms for the command to finish (max 12000). Default 10000.",
-            ),
             "maxChars" to property("integer", MAX_CHARS_DESCRIPTION),
             "workingDirectory" to property("string", "Working directory; defaults to the project base path."),
             "env" to ENV_SCHEMA,
+            "tab" to property(
+                "string",
+                "Reuse this tab instead of picking one. Omit to reuse the most recently used idle tab of this " +
+                    "project.",
+            ),
+            "newTab" to property(
+                "boolean",
+                "Default false. true = always open a fresh tab (independent task, or the previous command is " +
+                    "still running).",
+            ),
             "projectPath" to projectPathProperty(),
         ),
         required = setOf("command"),
@@ -180,18 +185,27 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
     """
     Run a command in a real SSH terminal tab on a remote host.
 
-    The host and credentials come from a Server in Deployment settings. `serverName` is the
-    server display name, not its hostname: call `list_server_deployments` first and pass
-    `servers[].name`; never invent a host. Every call creates a new remote tab. To continue an
-    existing tab, call `list_terminals` and use `terminal_io` with `target: "remote"`.
+    WHEN: the work happens on a remote machine — a deployment / test / development host, or any
+    machine the user names. This tool IS the way there: host, credentials, jump host and port
+    forwarding all come from the IDE's Deployment server.
+
+    WHICH HOST: `serverName` is the server display name (not its hostname) and must be one of
+    `servers[].name` from `list_server_deployments`. Every server it reports can run commands,
+    even one with zero deployments.
+
+    REUSE THE TAB: the command runs in that server's default tab, and that tab is reused for the
+    next command too — working directory, exported variables and background jobs stay in place, so
+    drop the `cd ... &&` prefix. The first call creates that default tab; `list_terminals` reports
+    it as the group's `default`. Pass `tab` to target a specific one, or `newTab: true` for an extra
+    shell that does not take over the default. A reused tab keeps its own cwd: pass
+    `workingDirectory` only to move it.
 
     `loginShell` (default true) loads PATH and tool managers. `input` is written once after the
-    command; include the newline. `timeoutMs` (default 10000): `0` returns immediately; `> 0`
-    waits for stable output (max 12000). Remote shells have no command-finished signal:
-    `exitCode` is always null and `running` is best-effort.
+    command; include the newline. If the command runs long, this call stops waiting and returns
+    `running: true`; use `terminal_read` to see the rest. Remote shells have no command-finished
+    signal: `exitCode` is always null and `running` is best-effort.
 
-    Host keys: `strictHostKey=false` (default) accepts and records a new key; `true` requires a
-    known key. No dialog is shown. Credential and host-key failures return instructions.
+    `strictHostKey=false` (default) accepts and records a new host key; `true` requires a known one.
     """.trimIndent(),
     TERMINAL_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.execute_in_remote_host",
@@ -207,10 +221,6 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
                 "string",
                 "Text written once right after the command, e.g. \"y\\n\". Include the newline yourself.",
             ),
-            "timeoutMs" to property(
-                "integer",
-                "0 = return immediately; > 0 = wait up to N ms for stable output (max 12000). Default 10000.",
-            ),
             "maxChars" to property("integer", MAX_CHARS_DESCRIPTION),
             "workingDirectory" to property("string", "Remote working directory; defaults to the login directory."),
             "loginShell" to property(
@@ -221,6 +231,16 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
                 "boolean",
                 "Default false. true = reject a host key that is not already in known_hosts; false = accept a new key and record it (accept-new).",
             ),
+            "tab" to property(
+                "string",
+                "Reuse this tab instead of picking one. Omit to reuse the most recently used idle tab of the same " +
+                    "server.",
+            ),
+            "newTab" to property(
+                "boolean",
+                "Default false. true = always open a fresh tab (independent task, or the previous command is " +
+                    "still running).",
+            ),
             "projectPath" to projectPathProperty(),
         ),
         required = setOf("serverName", "command"),
@@ -230,50 +250,76 @@ internal val executeInRemoteHostDescriptor = McpToolDescriptor(
 )
 
 // ---------------------------------------------------------------------------
-// 3. terminal_io
+// 3. terminal_read
 // ---------------------------------------------------------------------------
 
-internal const val TERMINAL_IO_TOOL_NAME = "terminal_io"
+internal const val TERMINAL_READ_TOOL_NAME = "terminal_read"
 
-internal val terminalIoDescriptor = McpToolDescriptor(
-    TERMINAL_IO_TOOL_NAME,
-    "Terminal IO",
+internal val terminalReadDescriptor = McpToolDescriptor(
+    TERMINAL_READ_TOOL_NAME,
+    "Terminal Read",
     """
-    Read from or write to a terminal tab created by `project_sdk_terminal` or
-    `execute_in_remote_host`.
+    Read an existing terminal tab — an instant snapshot, it never waits.
 
-    Use `list_terminals` to discover tab ids. Only ids returned by those tools with
-    `addressable: true` are accepted; tabs opened manually by the user are not controllable.
-    `target` must match how the tab was created (`local` or `remote`).
+    Its main job: `project_sdk_terminal` / `execute_in_remote_host` returned `running: true`
+    because the command was still going. Call it again every few seconds until `running` is false.
 
-    `action: "read"`: `tail: N` returns the last N command segments (oldest first); without
-    `tail` it returns new text since the previous read; `full: true` returns the whole buffer;
-    `timeoutMs > 0` waits for stable output before reading.
+    `target` must match how the tab was created: "local" for `project_sdk_terminal` tabs,
+    "remote" for `execute_in_remote_host` tabs. Get tab ids from `list_terminals`; only tabs with
+    `addressable: true` can be read.
 
-    `action: "write"`: `text` is sent exactly as typed; include the newline yourself. Writing
-    is input to the current command, not a new command segment.
-
-    Remote terminals are best-effort: `exitCode` is null, and `running` may be null when
-    completion cannot be detected.
+    `tail: N` returns the last N command segments (oldest first, with their exit codes);
+    without `tail` it returns the text added since the previous read; `full: true` returns the
+    whole buffer. Remote terminals are best-effort: `exitCode` is null, and `running` may be
+    null when completion cannot be detected.
     """.trimIndent(),
     TERMINAL_CATEGORY,
-    "com.shenyuanlaolarou.ideamcpenhance.mcp.terminal_io",
+    "com.shenyuanlaolarou.ideamcpenhance.mcp.terminal_read",
     schema(
         properties = properties(
             "target" to property("string", "local for project_sdk_terminal tabs, remote for execute_in_remote_host tabs."),
             "tab" to property("string", "MCP tab id returned by `project_sdk_terminal` / `execute_in_remote_host`; user tabs have no id."),
-            "action" to property("string", "read or write."),
-            "text" to property("string", "Text to write; required when action = write."),
             "tail" to property("integer", "Return the last N command segments instead of the incremental text."),
-            "full" to property("boolean", "Return the whole terminal buffer (read only)."),
-            "timeoutMs" to property("integer", "For read: wait up to N ms for stable output (max 12000). Default 0."),
+            "full" to property("boolean", "Return the whole terminal buffer."),
             "maxChars" to property("integer", MAX_CHARS_DESCRIPTION),
             "projectPath" to projectPathProperty(),
         ),
-        required = setOf("target", "tab", "action"),
+        required = setOf("target", "tab"),
     ),
     schema(properties = TERMINAL_READ_PROPERTIES, required = setOf("tab", "running", "truncated")),
-    annotations(readOnly = false, destructive = false, idempotent = false, openWorld = true),
+    annotations(readOnly = true, destructive = false, idempotent = true, openWorld = false),
+)
+
+// ---------------------------------------------------------------------------
+// 4. terminal_interrupt
+// ---------------------------------------------------------------------------
+
+internal const val TERMINAL_INTERRUPT_TOOL_NAME = "terminal_interrupt"
+
+internal val terminalInterruptDescriptor = McpToolDescriptor(
+    TERMINAL_INTERRUPT_TOOL_NAME,
+    "Terminal Interrupt",
+    """
+    Send Ctrl-C to an existing terminal tab — the only way to stop a command that is still running.
+
+    Use it when a command hangs: no prompt comes back, or it runs far longer than it should.
+    The execute tools cannot help — they wait for an idle shell, so a hung command blocks them.
+
+    It sends exactly one Ctrl-C and accepts no text, so it can only interrupt, never run anything.
+    Read the tab afterwards with `terminal_read`.
+    """.trimIndent(),
+    TERMINAL_CATEGORY,
+    "com.shenyuanlaolarou.ideamcpenhance.mcp.terminal_interrupt",
+    schema(
+        properties = properties(
+            "target" to property("string", "local for project_sdk_terminal tabs, remote for execute_in_remote_host tabs."),
+            "tab" to property("string", "MCP tab id returned by `project_sdk_terminal` / `execute_in_remote_host`; user tabs have no id."),
+            "projectPath" to projectPathProperty(),
+        ),
+        required = setOf("target", "tab"),
+    ),
+    schema(properties = TERMINAL_READ_PROPERTIES, required = setOf("tab", "running", "truncated")),
+    annotations(readOnly = false, destructive = true, idempotent = true, openWorld = false),
 )
 
 // ---------------------------------------------------------------------------
@@ -289,11 +335,10 @@ private val TERMINAL_TAB_PROPERTIES: JsonObject = buildJsonObject {
         properties(
             "tab" to nullableProperty(
                 "string",
-                "MCP tab id for terminal_io; null for a tab the user opened manually.",
+                "MCP tab id for terminal_read / terminal_interrupt; null for a tab the user opened manually.",
             ),
             "kind" to property("string", "mcp_project_sdk, mcp_remote, or user."),
-            "addressable" to property("boolean", "true when terminal_io can target this tab."),
-            "title" to nullableProperty("string", "Visible tab title."),
+            "addressable" to property("boolean", "true when terminal_read / terminal_interrupt can target this tab."),
             "status" to property("string", "running, idle, not_started, terminated, closed, or unknown."),
             "shell" to nullableProperty("string", "Shell basename, e.g. zsh or bash."),
             "workingDirectory" to nullableProperty("string", "Working directory requested when the tab was created."),
@@ -302,7 +347,7 @@ private val TERMINAL_TAB_PROPERTIES: JsonObject = buildJsonObject {
             "lastCommand" to nullableProperty("string", "Last command sent through this plugin."),
             "lastCommandAt" to nullableProperty("integer", "Epoch milliseconds of the last command."),
             "lastExitCode" to nullableProperty("integer", "Exit code of the last command; null for remote tabs."),
-            "lastTimedOut" to nullableProperty("boolean", "Whether the last command hit its timeout."),
+            "lastTimedOut" to nullableProperty("boolean", "Whether the last command was still running when its call stopped waiting."),
             "createdAt" to nullableProperty("integer", "Epoch milliseconds when this tab was created."),
             "lastUsedAt" to nullableProperty("integer", "Epoch milliseconds of the last MCP run/read/write."),
         ),
@@ -311,10 +356,35 @@ private val TERMINAL_TAB_PROPERTIES: JsonObject = buildJsonObject {
         "required",
         buildJsonArray {
             listOf(
-                "tab", "kind", "addressable", "title", "status", "shell",
+                "tab", "kind", "addressable", "status", "shell",
                 "workingDirectory", "currentDirectory", "serverName", "lastCommand",
                 "lastCommandAt", "lastExitCode", "lastTimedOut", "createdAt", "lastUsedAt",
             ).forEach { add(JsonPrimitive(it)) }
+        },
+    )
+}
+
+private val TERMINAL_SOURCE_PROPERTIES: JsonObject = buildJsonObject {
+    put("type", JsonPrimitive("object"))
+    put(
+        "properties",
+        properties(
+            "source" to property("string", "mcp_project_sdk or mcp_remote."),
+            "server" to nullableProperty(
+                "string",
+                "Server display name. Present only when source is mcp_remote.",
+            ),
+            "default" to nullableProperty(
+                "string",
+                "The tab a command lands on when `tab` is omitted. Null = this source has not been used yet.",
+            ),
+            "tabs" to arrayOf(TERMINAL_TAB_PROPERTIES, "Tabs belonging to this source."),
+        ),
+    )
+    put(
+        "required",
+        buildJsonArray {
+            listOf("source", "default", "tabs").forEach { add(JsonPrimitive(it)) }
         },
     )
 }
@@ -323,48 +393,44 @@ internal val listTerminalsDescriptor = McpToolDescriptor(
     LIST_TERMINALS_TOOL_NAME,
     "List Terminals",
     """
-    List terminal tabs in this project so you can choose one for `terminal_io`.
+    List terminal tabs in this project, grouped by source so the default tab of each is explicit.
 
-    Kinds:
-    - `mcp_project_sdk`: created by `project_sdk_terminal`.
-    - `mcp_remote`: created by `execute_in_remote_host`; includes `serverName`.
-    - `user`: opened manually, or by a terminal-executed run configuration; `tab` is null.
+    Sources:
+    - `mcp_project_sdk`: created by `project_sdk_terminal`; one group, one default.
+    - `mcp_remote`: created by `execute_in_remote_host`; one group per server (`server` names it),
+      each with its own default.
 
-    Only entries with a non-null `tab` and `addressable: true` can be passed to `terminal_io`.
-    User tabs are view-only. Never use a title as an id: ids are registry keys for this IDE
-    session and survive only while the tab is alive.
+    Each group reports `default` — the tab a command lands on when `tab` is omitted. A group with
+    no default has not been used yet: the next execute call creates one.
 
-    Select by `kind`, `serverName`, `workingDirectory` and `lastCommand`; prefer the newest
-    `lastUsedAt`. If none matches, create a new tab.
+    Only entries with a non-null `tab` and `addressable: true` can be passed to `terminal_read` / `terminal_interrupt`.
+    The `tab` value is the id: a registry key for this IDE session that survives only while the tab is alive.
 
     Run configurations have a separate lifecycle: use `list_running_configurations` /
-    `inspect_run_configuration`. `EXECUTE_IN_TERMINAL=true` may appear here as a `user` tab,
-    but must be controlled through the Run tools; `false` does not appear here.
+    `inspect_run_configuration`; a configuration executed in the terminal does not appear here.
 
-    `includeUnmanaged: false` returns only addressable MCP tabs. `kind` filters `all`,
-    `mcp_project_sdk`, `mcp_remote` or `user`.
+    Only MCP tabs are listed: tabs the user opened cannot be targeted, so they never appear.
+    `kind` filters `all`, `mcp_project_sdk` or `mcp_remote`.
     """.trimIndent(),
     TERMINAL_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_terminals",
     schema(
         properties = properties(
-            "includeUnmanaged" to property(
-                "boolean",
-                "Default true. Include non-MCP tabs: user-opened tabs and terminal-executed run configurations.",
-            ),
             "kind" to property(
                 "string",
-                "Filter by kind: all (default), mcp_project_sdk, mcp_remote, or user.",
+                "Filter by kind: all (default), mcp_project_sdk, or mcp_remote.",
             ),
             "projectPath" to projectPathProperty(),
         ),
     ),
     schema(
         properties = properties(
-            "terminals" to arrayOf(TERMINAL_TAB_PROPERTIES, "Terminal tabs, MCP-created entries first."),
-            "total" to property("integer", "Number of returned tabs."),
+            "sources" to arrayOf(
+                TERMINAL_SOURCE_PROPERTIES,
+                "One entry per source: local, each remote server, and user tabs.",
+            ),
         ),
-        required = setOf("terminals", "total"),
+        required = setOf("sources"),
     ),
     annotations(readOnly = true, destructive = false, idempotent = true, openWorld = false),
 )

@@ -236,14 +236,13 @@ diagnostics:
 | 参数                | 类型    | 必填 | 默认   | 说明                                        |
 |---------------------|---------|------|--------|---------------------------------------------|
 | `configurationName` | string  | 是   | —      | 要停的配置名                                |
-| `waitTimeoutMs`     | integer | 否   | `5000` | 等待进程真正退出的上限；≤0 视为非法，取默认 |
-| `force`             | boolean | 否   | `true` | 超时后是否强杀                              |
+| `force`             | boolean | 否   | `true` | 固定等待窗口过后是否强杀                    |
 
 行为：
 
 - MUST 停掉该配置名下 **所有**未被终止的实例（不是只停最新的一个）
 - MUST 通过 IDE 自己的 `ProcessHandler` 停止，MUST NOT 用外部 `pkill` / 按端口杀
-- MUST 在 `waitTimeoutMs` 内等待实例真正退出
+- MUST 在固定等待窗口（300 秒）内等待实例真正退出；该窗口是工具行为，不开放参数
 - `force = true` 且超时后 MUST 对仍在终止中的 `KillableProcess` 调用 `killProcess()`
 - `configurationName` 缺失 → `isError = true`，`structuredContent.argument = "configurationName"`
 - 该配置没在跑 → `isError = false`（这是正常状态，不是错误），`matchedInstances = 0`
@@ -280,16 +279,14 @@ diagnostics:
 
 | 参数                | 类型    | 必填 | 默认    |
 |---------------------|---------|------|---------|
-| `configurationName` | string  | 是   | —       |
-| `stopTimeoutMs`     | integer | 否   | `5000`  |
-| `startTimeoutMs`    | integer | 否   | `10000` |
-| `waitForStart`      | boolean | 否   | `true`  |
+| `configurationName` | string  | 是   | —      |
+| `waitForStart`      | boolean | 否   | `true` |
 
 行为 —— MUST 与 IDE 的 Rerun 按钮有同样的可观察效果：
 
 | 起始状态           | MUST 做什么                                        | `mode`      |
 |--------------------|----------------------------------------------------|-------------|
-| 至少一个实例在跑   | 先停掉全部活着的实例（等 `stopTimeoutMs`），再启动 | `RESTARTED` |
+| 至少一个实例在跑   | 先停掉全部活着的实例（等固定 300 秒窗口），再启动    | `RESTARTED` |
 | 没有实例在跑       | 直接启动                                           | `STARTED`   |
 | IDE 造不出执行环境 | 什么都不做，`warnings[]` 说明原因                  | `NO_OP`     |
 
@@ -319,7 +316,7 @@ diagnostics:
   刚打开大项目时很常见）与 `RuntimeConfigurationError`（配置本身有致命问题）都要转成立刻、可读的结构化错误。
   `checkSettings` 不覆盖 before-launch（`checkSettingsBeforeRun()` 默认空实现），这 **不是缺陷**：before-launch 配错了
   是使用姿势问题，执行时就会暴露。另外 **MUST NOT 为"提交到 EDT"这一步新增超时**：它与"等进程创建"共用同一个
-  `startTimeoutMs` 预算（默认 10000）。但 MUST 保留这个上限——完全不留的话工具永远返回不了任何东西，
+  固定 300 秒的启动等待预算。但 MUST 保留这个上限——完全不留的话工具永远返回不了任何东西，
   AI 拿到空 404， **也就没法把"请用户去 IDE 处理"转告出去**，而那正是这类卡点唯一的出路。
   超时文案 MUST 区分"卡在哪一步"：卡在提交 ⇒ 多半是平台在弹模态对话框等用户交互，
   MUST 要求 AI 转告用户去 IDE 里处理（并提醒排队中的提交可能稍后才真的发生）；卡在等进程 ⇒ 走 before-launch 那套文案
@@ -363,20 +360,22 @@ diagnostics:
   ③ 平台启动门。三者读的都是平台状态，MUST NOT 合并、也 MUST NOT 用其中一层声称覆盖了全部并发来源
 - **旧实例没停干净时 MUST NOT 启动新进程**：那正是"同一配置留两个实例"的病根。此时 MUST 照常返回结构化结果：
   `started = false`、`startFailure` 写明原因、`transition[]` 以 `START_FAILED` 收尾
-- **`startTimeoutMs` 的默认值 MUST 取 10000，与原生一致 (HARD CONTRACT)**：内置
-  `execute_run_configuration` 的 `timeout` 默认就是 `10000`（`ExecutionToolset` 字节码里的 `sipush 10000`）。
-  调用方 MAY 覆盖它（例如某个配置的 before-launch 要先编译几十秒）
-- **单次调用的时长 MUST 留在服务器的耐心之内 (HARD CONTRACT)**：实测一个请求悬着超过约 **15 秒**，
-  MCP Server 会先移除会话（`Pending StreamableHttp transport timed out` → `Removing session`），
+- **停止 / 启动的等待预算 MUST 固定为 300 秒，不开放参数 (HARD CONTRACT)**：与终端、部署那几组工具
+  统一成同一套语义。5 秒对真实的优雅退出太短，10 秒对 before-launch 的构建也太短，两者都会把正常
+  情况误报成失败。等不起的调用方走异步模式（`waitForStart = false`）自己轮询
+- **单次调用的时长 MUST 留在服务器的耐心之内 (HARD CONTRACT)**。前提是客户端**没有**挂
+  `GET /stream` 的 SSE 流：这种客户端下，请求悬着超过约 **15 秒**，MCP Server 会把 pending
+  transport 当超时清掉（`Pending StreamableHttp transport timed out` → `Removing session`），
   于是工具算完也送不回结果，客户端拿到的是 **HTTP 404 空响应**。实测边界：8 秒能正常送达、20 秒不能； **官方工具也一样**（
   `execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后空 404）。
-  注意 `rerun` 的总时长是三段相加（`stopTimeoutMs` + `startTimeoutMs` + 输出窗口），
-  所以"慢停 + 慢启"的组合会超过这个上限；工具描述 MUST 提醒调用方这一点，
-  并 MUST 给出唯一出路—— **改用异步模式**（`waitForStart = false`）；
-  MUST NOT 建议调小 `stopTimeoutMs`（那只是更早放弃优雅退出、更早强杀，换不来可用结果）
+  挂了流的客户端（OpenCode / 标准 streamable-http 客户端）不受这个 15 秒限制——实测同一工具
+  100 秒调用正常返回；但长调用会一直占着调用方，所以异步模式（`waitForStart = false`）依然是首选。
+  注意 `rerun` 的总时长是"停旧 + 等启动 + 输出窗口"三段相加，最坏会到 10 分钟量级；工具描述
+  MUST 提醒调用方这一点，并 MUST 给出唯一出路—— **改用异步模式**（`waitForStart = false`）
 - **启动超时的文案 MUST 点明原因**：先用 `RunConfiguration.getBeforeRunTasks()` 查这个配置配了几个
   before-launch 步骤；有就 MUST 说明"它们跑完之前平台不会产出 Run 内容，所以'还没启动'是正常现象"，
-  并给出"调大 `startTimeoutMs`"的建议；没有就 MUST 说明另一种可能（启动被忽略 / 启动更慢）。
+  并给出"改用异步模式（`waitForStart = false`）+ 自己轮询"的建议；没有就 MUST 说明另一种可能
+  （启动被忽略 / 启动更慢）。
   文案 MUST 带上 **实际生效的毫秒数**（MUST NOT 写死）
 - 输出 JSON：
 

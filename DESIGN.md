@@ -204,12 +204,13 @@ ExecutionEnvironmentBuilder
 
 3. `DialogWrapper.findInstanceFromFocus()?.isModal` —— "现在是不是有模态对话框在等用户"。
    这是 **通用**的 EDT 卡点检测（`checkSettings` 只管"这个配置能不能跑"），命中就立刻返回
-   "这需要用户去 IDE 处理"。留着一层 `startTimeoutMs` 上限作为最后的网：完全不留的话工具永远
+   "这需要用户去 IDE 处理"。留着一层固定的启动等待预算（300 秒）作为最后的网：完全不留的话工具永远
    返回不了任何东西，AI 拿到空 404，就没法把"请用户去 IDE 处理"转告出去——而那正是这类卡点唯一的出路。
 
 **`waitForStart = false`（异步提交）**：只走第 1、2 道门 + `executeConfigurationAsync`，不等回调就返回。
-它存在的唯一理由是 before-launch 比 MCP Server 的会话耐心（实测约 15 秒）还长——那种情况同步等下去，
-结果必然丢成空 404。此时 `started` / `runningAfter` 必须是 `null`（"不知道"），
+它存在的理由是 before-launch 可能比调用方的耐心还长——同步等下去会把结果拖成一次空 404（对**不挂
+`GET /stream` 的客户端**尤其如此，15 秒就丢会话）；挂流的客户端（OpenCode）没有这个限制，但异步提交
+依然能少占调用方一个等待窗口。此时 `started` / `runningAfter` 必须是 `null`（"不知道"），
 绝不能拿提交瞬间的快照冒充结果（那正是上面那个 P1 的病根）。
 
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
@@ -245,12 +246,12 @@ pid 还没有"。因此一律输出 `"pid": null`。
 `ProcessHandler.waitFor(timeoutMs)` 会阻塞，所以给一个 **共享的截止时间**而不是每个进程各等一轮：
 
 ```
-deadline = now + waitTimeoutMs
+deadline = now + 固定的 300 秒等待窗口
 for (handler in handlers) { handler.waitFor(剩余时间) }
 超时后若 force 且仍卡在 terminating → killProcess() → 再给 1s 收尾
 ```
 
-`waitTimeoutMs` 默认 5000，并且强制 ≥1ms——`waitFor(0)` 在部分 handler 上会被当成"无限等待"，那会把 MCP 调用挂死。
+等待窗口是工具行为、不开放参数（与其他工具统一）。内部仍强制 ≥1ms——`waitFor(0)` 在部分 handler 上会被当成"无限等待"，那会把 MCP 调用挂死。
 
 ### 3.9 决策 7：可选依赖与类加载隔离
 

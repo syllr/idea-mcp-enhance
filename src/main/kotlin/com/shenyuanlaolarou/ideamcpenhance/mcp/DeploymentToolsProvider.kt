@@ -173,7 +173,8 @@ private class UploadToDeploymentTool : BaseDeploymentTool() {
                 null,
             )
         }
-        val waitMs = arguments.optionalInt("waitMs", DEFAULT_DEPLOYMENT_WAIT_MS.toInt()).toLong()
+        // 超时是工具自身的固定行为，不是调用方的旋钮。
+        val waitMs = DEFAULT_DEPLOYMENT_WAIT_MS
 
         val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
         if (target == null) {
@@ -389,7 +390,8 @@ private class DownloadFromDeploymentTool : BaseDeploymentTool() {
                 "`deploymentName` is required; use a name from `list_server_deployments.servers[].deployments[].name`.",
                 null,
             )
-        val waitMs = arguments.optionalInt("waitMs", DEFAULT_DEPLOYMENT_WAIT_MS.toInt()).toLong()
+        // 超时是工具自身的固定行为，不是调用方的旋钮。
+        val waitMs = DEFAULT_DEPLOYMENT_WAIT_MS
 
         val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
         if (target == null) {

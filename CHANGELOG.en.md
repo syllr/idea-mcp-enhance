@@ -13,7 +13,45 @@
 
 # IDE MCP Enhance Changelog
 
-## [Unreleased]
+## [0.1.4] - 2026-10-24
+
+### Added
+
+- **One default tab per source**: with no `tab`, `project_sdk_terminal` / `execute_in_remote_host` land on the
+  source's **default tab** — one for local, one per remote server. The first call creates it; a shell opened with
+  `newTab: true` does not take over that role, and if the default tab is closed the next call recreates one.
+  `list_terminals` groups by source and reports it as that group's `default`, so where a command goes is
+  predictable instead of drifting with usage history.
+- **Busy / server guards**: a tab whose previous command is still running (or timed out) is not reused, and
+  a `tab` that belongs to another server is rejected with `tab_server_mismatch`.
+
+### Changed
+
+- **Every wait budget is the tool's fixed behaviour, not a parameter**: `project_sdk_terminal` /
+  `execute_in_remote_host` lost `timeoutMs` (fixed at 300s; past it the call returns `running: true` with the same
+  tab), and `upload_to_deployment` / `download_from_deployment` lost `waitMs`,
+  `stop_run_configuration` lost `waitTimeoutMs`, `rerun_run_configuration` lost `stopTimeoutMs` /
+  `startTimeoutMs`. Every wait budget is now a fixed 300s; when that is unacceptable, use
+  `waitForStart = false` or poll the returned `handle`.
+- **Busy tabs are waited out**: instead of failing with `terminal_tab_busy` the moment the previous command is
+  still running, the tools back off 250ms → 500ms → then 1000ms each time until the shell reaches its prompt
+  (no upper bound); only a tab that disappears during the wait is treated as an error.
+- **`terminal_read` incremental output**: when a command ran between two reads, the second read replayed the whole
+  history (the execute path advanced the read cursor with a different output model's offsets). It now returns only
+  what is new.
+- `terminal_io` is split into two single-purpose tools: `terminal_read` (instant snapshot, takes no timeout —
+  use it to check the previous command after its 300s timeout) and `terminal_interrupt` (sends exactly one
+  Ctrl-C to stop a hung command; it accepts no text, so it cannot become a hidden execution channel). `write`
+  is gone — appending a command to a finished shell is covered by `input` plus tab reuse.
+- Remote tabs are now named `mcp-<serverName>-<n>` (for example `mcp-mbpmiddleware-1`) instead of
+  `MCP-R-<n>`, numbered per server.
+- Commands sent to a reused remote tab are no longer wrapped in `zsh -lic` / `exec`, so `cd` and background
+  jobs stay in the session.
+
+### Fixed
+
+- `buildRemoteCommand` no longer emits `; exec <command>`: with `loginShell=false` it replaced the tab's
+  interactive shell, so the tab died as soon as the command finished.
 
 ## [0.1.3] - 2026-10-23
 

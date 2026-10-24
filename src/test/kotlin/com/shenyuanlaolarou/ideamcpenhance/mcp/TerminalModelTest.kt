@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -303,7 +304,9 @@ class TerminalModelTest {
         assertEquals("project_sdk_terminal", descriptor.name)
         assertEquals("Terminal", descriptor.category.shortName)
         assertEquals(setOf("command"), descriptor.inputSchema.requiredProperties)
-        assertTrue(descriptor.description.contains("timeoutMs"))
+        // 超时不再是参数，也不是描述里该出现的东西
+        assertFalse(descriptor.description.contains("timeoutMs"))
+        assertFalse(descriptor.inputSchema.propertiesSchema.containsKey("timeoutMs"))
         assertTrue(descriptor.inputSchema.propertiesSchema.containsKey("maxChars"))
     }
 
@@ -315,11 +318,93 @@ class TerminalModelTest {
     }
 
     @Test
-    fun `terminal_io 的必填参数`() {
-        val descriptor = terminalIoDescriptor
-        assertEquals("terminal_io", descriptor.name)
-        assertEquals(setOf("target", "tab", "action"), descriptor.inputSchema.requiredProperties)
-        assertTrue(descriptor.inputSchema.propertiesSchema.containsKey("maxChars"))
+    fun `执行工具不再暴露 timeoutMs`() {
+        // 超时是工具的固定行为，不是调用方的旋钮：暴露出去只会让人以为结果可控。
+        for (descriptor in listOf(projectSdkTerminalDescriptor, executeInRemoteHostDescriptor)) {
+            assertFalse(descriptor.name, descriptor.inputSchema.propertiesSchema.containsKey("timeoutMs"))
+            assertFalse(descriptor.name, descriptor.description.contains("timeoutMs"))
+        }
+        assertEquals(300_000, TERMINAL_CALL_TIMEOUT_MS)
+    }
+
+    @Test
+    fun `两个执行工具都支持指定或新开 tab`() {        // 默认复用：省略 tab 就打进最近用过的空闲 tab；新 shell 是显式选择。
+        for (descriptor in listOf(projectSdkTerminalDescriptor, executeInRemoteHostDescriptor)) {
+            val properties = descriptor.inputSchema.propertiesSchema
+            assertTrue(descriptor.name, properties.containsKey("tab"))
+            assertTrue(descriptor.name, properties.containsKey("newTab"))
+            assertFalse(descriptor.name, descriptor.inputSchema.requiredProperties.contains("tab"))
+            assertFalse(descriptor.name, descriptor.inputSchema.requiredProperties.contains("newTab"))
+        }
+    }
+
+    @Test
+    fun `每种来源各有一条默认 tab`() {
+        val registry = TerminalSessionRegistry()
+        registry.put("MCP-1", TerminalSessionRegistry.State(kind = TerminalKind.ProjectSdk))
+        registry.put("mcp-mbp-1", remoteState("mbp", 100))
+        registry.put("mcp-gpu-1", remoteState("gpu", 100))
+        registry.registerDefault("MCP-1", TerminalKind.ProjectSdk)
+        registry.registerDefault("mcp-mbp-1", TerminalKind.Remote, "mbp")
+        registry.registerDefault("mcp-gpu-1", TerminalKind.Remote, "gpu")
+
+        assertEquals("MCP-1", registry.defaultTab(TerminalKind.ProjectSdk))
+        assertEquals("mcp-mbp-1", registry.defaultTab(TerminalKind.Remote, "mbp"))
+        assertEquals("mcp-gpu-1", registry.defaultTab(TerminalKind.Remote, "gpu"))
+        // 没连过的服务器没有默认 —— 调用方据此新开一条
+        assertNull(registry.defaultTab(TerminalKind.Remote, "other"))
+    }
+
+    @Test
+    fun `默认 tab 只有一条，关掉后才会重建`() {
+        val registry = TerminalSessionRegistry()
+        registry.put("MCP-1", TerminalSessionRegistry.State(kind = TerminalKind.ProjectSdk))
+        registry.registerDefault("MCP-1", TerminalKind.ProjectSdk)
+        // newTab 建的第二天条不抢默认身份
+        registry.put("MCP-2", TerminalSessionRegistry.State(kind = TerminalKind.ProjectSdk))
+        registry.registerDefault("MCP-2", TerminalKind.ProjectSdk)
+        assertEquals("MCP-1", registry.defaultTab(TerminalKind.ProjectSdk))
+
+        // 默认 tab 被关掉：没有默认了，下次调用重新建一条
+        registry.remove("MCP-1")
+        assertNull(registry.defaultTab(TerminalKind.ProjectSdk))
+
+        registry.registerDefault("MCP-2", TerminalKind.ProjectSdk)
+        assertEquals("MCP-2", registry.defaultTab(TerminalKind.ProjectSdk))
+    }
+
+    @Test
+    fun `远程 tab 名带服务器名`() {
+        assertEquals("mcp-mbpmiddleware", remoteTabPrefix("mbpmiddleware"))
+        assertEquals("mcp-gpu-01", remoteTabPrefix(" gpu 01 "))
+        assertEquals("mcp-remote", remoteTabPrefix(""))
+    }
+
+    @Test
+    fun `复用远程 tab 时不套登录 shell、不用 exec`() {
+        // 套壳会让 cd / export 留在子 shell 里，exec 会把 tab 的 shell 换掉 —— 两者都会毁掉复用。
+        assertEquals("docker ps", buildRemoteCommandInTab("docker ps", null))
+        assertEquals("cd '/data/x' && docker ps", buildRemoteCommandInTab("docker ps", "/data/x"))
+        assertFalse(buildRemoteCommandInTab("docker ps", "/data/x").contains("exec "))
+        assertFalse(buildRemoteCommandInTab("docker ps", "/data/x").contains("-lic"))
+    }
+
+    @Test
+    fun `terminal_read 只读，terminal_interrupt 只发打断`() {
+        val read = terminalReadDescriptor
+        assertEquals("terminal_read", read.name)
+        assertEquals(setOf("target", "tab"), read.inputSchema.requiredProperties)
+        assertTrue(read.inputSchema.propertiesSchema.containsKey("maxChars"))
+        // 读不应该带任何"写"的入参
+        assertFalse(read.inputSchema.propertiesSchema.containsKey("text"))
+        assertFalse(read.inputSchema.propertiesSchema.containsKey("action"))
+
+        val interrupt = terminalInterruptDescriptor
+        assertEquals("terminal_interrupt", interrupt.name)
+        assertEquals(setOf("target", "tab"), interrupt.inputSchema.requiredProperties)
+        // 打断不接受文本 —— 它不能变成隐藏的执行通道
+        assertFalse(interrupt.inputSchema.propertiesSchema.containsKey("text"))
+        assertFalse(interrupt.inputSchema.propertiesSchema.containsKey("command"))
     }
 
     @Test
@@ -327,19 +412,19 @@ class TerminalModelTest {
         val descriptor = listTerminalsDescriptor
         assertEquals("list_terminals", descriptor.name)
         assertEquals(emptySet<String>(), descriptor.inputSchema.requiredProperties)
-        assertTrue(descriptor.inputSchema.propertiesSchema.containsKey("includeUnmanaged"))
-        assertTrue(descriptor.outputSchema!!.propertiesSchema.containsKey("terminals"))
-        assertTrue(descriptor.description.contains("addressable"))
-        assertFalse(descriptor.outputSchema!!.propertiesSchema.containsKey("managedCount"))
+        // 用户手开的 tab 不再出现在结果里，参数也一并删掉
+        assertFalse(descriptor.inputSchema.propertiesSchema.containsKey("includeUnmanaged"))
+        assertTrue(descriptor.outputSchema!!.propertiesSchema.containsKey("sources"))
+        assertTrue(descriptor.description.contains("default"))
+        assertFalse(descriptor.outputSchema!!.propertiesSchema.containsKey("total"))
     }
 
     @Test
-    fun `terminalTabsToJson 用 kind 区分 MCP 与用户 tab`() {
+    fun `terminalGroupsToJson 按来源分组并给出默认`() {
         val mcp = TerminalTabInfo(
             tab = "MCP-1",
             kind = TerminalKind.ProjectSdk,
             addressable = true,
-            title = "MCP-1",
             status = "idle",
             shell = "zsh",
             workingDirectory = "/project",
@@ -352,46 +437,60 @@ class TerminalModelTest {
             createdAt = 10L,
             lastUsedAt = 20L,
         )
-        val user = mcp.copy(
-            tab = null,
-            kind = TerminalKind.User,
-            addressable = false,
-            title = "MCP-1",
+        val remote = mcp.copy(
+            tab = "mcp-mbp-1",
+            kind = TerminalKind.Remote,
+            serverName = "mbp",
         )
 
-        val json = terminalTabsToJson(listOf(mcp, user))
-        assertEquals(JsonPrimitive(2), json["total"])
-        val tabs = json["terminals"]!!.jsonArray
-        assertEquals(JsonPrimitive("MCP-1"), tabs[0].jsonObject["tab"])
-        assertEquals(JsonPrimitive("mcp_project_sdk"), tabs[0].jsonObject["kind"])
-        assertFalse(tabs[0].jsonObject.containsKey("managed"))
-        assertEquals(JsonNull, tabs[1].jsonObject["tab"])
-        assertEquals(JsonPrimitive("user"), tabs[1].jsonObject["kind"])
+        val json = terminalGroupsToJson(
+            listOf(
+                TerminalSourceGroup(TerminalKind.ProjectSdk, null, "MCP-1", listOf(mcp)),
+                // 另一台服务器也还没建过 tab：default 为 null，tabs 为空
+                TerminalSourceGroup(TerminalKind.Remote, "mbp", "mcp-mbp-1", listOf(remote)),
+            ),
+        )
+        val sources = json["sources"]!!.jsonArray
+        assertEquals(2, sources.size)
+        assertEquals(JsonPrimitive("mcp_project_sdk"), sources[0].jsonObject["source"])
+        assertEquals(JsonPrimitive("MCP-1"), sources[0].jsonObject["default"])
+        assertEquals(1, sources[0].jsonObject["tabs"]!!.jsonArray.size)
+        // 远程按服务器分组，默认也是组级的
+        assertEquals(JsonPrimitive("mcp_remote"), sources[1].jsonObject["source"])
+        assertEquals(JsonPrimitive("mbp"), sources[1].jsonObject["server"])
+        assertEquals(JsonPrimitive("mcp-mbp-1"), sources[1].jsonObject["default"])
     }
 
     @Test
-    fun `formatTerminalList 明确提示不可寻址`() {
-        val user = TerminalTabInfo(
-            tab = null,
-            kind = TerminalKind.User,
-            addressable = false,
-            title = "Local",
-            status = "running",
-            shell = null,
-            workingDirectory = null,
-            currentDirectory = null,
+    fun `formatTerminalList 按来源分组并标出默认`() {
+        val managed = TerminalTabInfo(
+            tab = "MCP-2",
+            kind = TerminalKind.ProjectSdk,
+            addressable = true,
+            status = "idle",
+            shell = "zsh",
+            workingDirectory = "/project",
+            currentDirectory = "/project",
             serverName = null,
-            lastCommand = null,
-            lastCommandAt = null,
-            lastExitCode = null,
-            lastTimedOut = null,
-            createdAt = null,
-            lastUsedAt = null,
+            lastCommand = "echo ok",
+            lastCommandAt = 1L,
+            lastExitCode = 0,
+            lastTimedOut = false,
+            createdAt = 10L,
+            lastUsedAt = 20L,
         )
 
-        val text = formatTerminalList(listOf(user))
-        assertTrue(text.contains("not addressable"))
-        assertTrue(text.contains("terminal_io"))
+        val text = formatTerminalList(
+            listOf(
+                TerminalSourceGroup(TerminalKind.ProjectSdk, null, "MCP-2", listOf(managed)),
+                // 还没建过 tab 的服务器：明确说"没有默认"，而不是空一块
+                TerminalSourceGroup(TerminalKind.Remote, "mbp", null, emptyList()),
+            ),
+        )
+        // 组标题直接说默认是哪条，而不是在每条 tab 上挂一个布尔
+        assertTrue(text.contains("MCP Project SDK — default: MCP-2"))
+        assertTrue(text.contains("  MCP-2"))
+        assertTrue(text.contains("Remote host mbp — no default yet"))
     }
 
     @Test
@@ -403,14 +502,9 @@ class TerminalModelTest {
     }
 
     @Test
-    fun `terminalTimeout 接受 0（异步）`() {
-        val args = JsonObject(mapOf("timeoutMs" to JsonPrimitive(0)))
-        assertEquals(0, args.terminalTimeout(10_000))
-    }
-
-    @Test
-    fun `terminalTimeout 缺省时回落默认值`() {
-        assertEquals(10_000, JsonObject(emptyMap()).terminalTimeout(10_000))
+    fun `terminal_read 不接受 timeout`() {
+        // 读是"立即返回"，时序由调用方自己掌握（隔几秒再读一次），不需要参数。
+        assertFalse(terminalReadDescriptor.inputSchema.propertiesSchema.containsKey("timeoutMs"))
     }
 
     @Test
@@ -455,12 +549,13 @@ class TerminalModelTest {
 
     @Test
     fun `buildRemoteCommand 处理 ~ 和带空格的路径`() {
-        assertEquals("cd \"\$HOME\"; exec pwd", buildRemoteCommand("pwd", "~", "zsh", false))
+        // 不用 `exec`：loginShell=false 时它会把 tab 的交互 shell 换掉，命令结束 tab 就没了。
+        assertEquals("cd \"\$HOME\" && pwd", buildRemoteCommand("pwd", "~", "zsh", false))
         assertEquals(
-            "cd \"\$HOME\"/'my dir'; exec pwd",
+            "cd \"\$HOME\"/'my dir' && pwd",
             buildRemoteCommand("pwd", "~/my dir", "zsh", false),
         )
-        assertEquals("cd '/tmp/a b'; exec pwd", buildRemoteCommand("pwd", "/tmp/a b", "zsh", false))
+        assertEquals("cd '/tmp/a b' && pwd", buildRemoteCommand("pwd", "/tmp/a b", "zsh", false))
         assertTrue(buildRemoteCommand("pwd", null, "zsh", true).startsWith("zsh -lic "))
         assertTrue(buildRemoteCommand("pwd", null, "bash", true).startsWith("bash -lc "))
     }
@@ -488,4 +583,19 @@ class TerminalModelTest {
         assertEquals("AFTER_CLEAR", segments[0].output)
         assertTrue(truncated)
     }
+
+    @Test
+    fun `忙等待按 250 500 然后每次 1000 退避`() {
+        // 前两次短、之后稳定 1000ms：假忙（约 200ms）第一次就过，真忙也不打满 CPU。
+        assertEquals(250L, retryBackoffMs(0))
+        assertEquals(500L, retryBackoffMs(1))
+        assertEquals(1_000L, retryBackoffMs(2))
+        assertEquals(1_000L, retryBackoffMs(99))
+    }
+
+    private fun remoteState(serverName: String, lastUsedAt: Long) = TerminalSessionRegistry.State(
+        kind = TerminalKind.Remote,
+        serverName = serverName,
+        lastUsedAt = lastUsedAt,
+    )
 }

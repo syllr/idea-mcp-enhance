@@ -47,7 +47,6 @@ internal data class TerminalTabInfo(
     val tab: String?,
     val kind: TerminalKind,
     val addressable: Boolean,
-    val title: String?,
     val status: String,
     val shell: String?,
     val workingDirectory: String?,
@@ -64,7 +63,6 @@ internal data class TerminalTabInfo(
         put("tab", tab?.let(::JsonPrimitive) ?: JsonNull)
         put("kind", JsonPrimitive(kind.wire))
         put("addressable", JsonPrimitive(addressable))
-        put("title", title?.let(::JsonPrimitive) ?: JsonNull)
         put("status", JsonPrimitive(status))
         put("shell", shell?.let(::JsonPrimitive) ?: JsonNull)
         put("workingDirectory", workingDirectory?.let(::JsonPrimitive) ?: JsonNull)
@@ -84,32 +82,108 @@ internal fun terminalTabsToJson(tabs: List<TerminalTabInfo>): JsonObject = build
     put("total", JsonPrimitive(tabs.size))
 }
 
-/** 面向 agent 的紧凑清单；完整字段在 structuredContent 里。 */
-internal fun formatTerminalList(tabs: List<TerminalTabInfo>): String {
-    if (tabs.isEmpty()) return "No terminal tabs found."
-    val lines = tabs.map { info ->
-        val name = info.tab ?: info.title ?: "(unnamed)"
-        val attrs = buildList {
-            add(info.kind.wire)
-            add(info.status)
-            if (info.addressable) add("addressable") else add("not addressable")
-            info.serverName?.let { add("server=$it") }
-            info.currentDirectory?.let { add("cwd=$it") }
-            info.lastCommand?.let { add("last=${it.lineSequence().first().take(120)}") }
+/**
+ * 一种来源（本地 / 某台远程服务器 / 用户手开）的全部 tab。
+ *
+ * `default` 是**组级**属性而不是每条 tab 上的布尔：一个来源只有一条默认 tab，
+ * 把它摊到每条记录上只会让结果里全是 `default: false` 的噪音。
+ */
+internal data class TerminalSourceGroup(
+    val kind: TerminalKind,
+    val serverName: String?,
+    /** 该来源的默认 tab；null = 这种来源还没用过。 */
+    val defaultTab: String?,
+    val tabs: List<TerminalTabInfo>,
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        // 用来源的真实类型，而不是位置描述：`mcp_project_sdk` / `mcp_remote` 和 kind 过滤参数是同一套词。
+        put("source", JsonPrimitive(kind.wire))
+        // server 只对远程有意义；本地组不给这个键，免得出现"恒为 null"的字段。
+        if (kind == TerminalKind.Remote) {
+            put("server", JsonPrimitive(serverName.orEmpty()))
         }
-        "- $name [${attrs.joinToString(", ")}]"
-    }
-    return buildString {
-        append("Found ").append(tabs.size).append(" terminal tab(s):")
-        append('\n')
-        append(lines.joinToString("\n"))
-        if (tabs.any { it.tab == null }) {
-            append("\n\n")
-            append("Only entries with a tab id and addressable=true can be passed to terminal_io.")
-        }
+        put("default", defaultTab?.let(::JsonPrimitive) ?: JsonNull)
+        put("tabs", buildJsonArray { tabs.forEach { add(it.toJson()) } })
     }
 }
 
+internal fun terminalGroupsToJson(groups: List<TerminalSourceGroup>): JsonObject = buildJsonObject {
+    put("sources", buildJsonArray { groups.forEach { add(it.toJson()) } })
+}
+
+/**
+ * 面向 agent 的清单：按来源分组，每组先报默认 tab，再列组内 tab 的简表。
+ *
+ * 用户手开的 tab 只给数量（它们不可控制，逐条列出来只会把 MCP 的 tab 淹掉）；完整记录仍在
+ * structuredContent 里。列固定且对齐，`last` 放最后（它最长，不参与对齐）。
+ */
+internal fun formatTerminalList(groups: List<TerminalSourceGroup>): String {
+    if (groups.isEmpty()) return "No terminal tabs found."
+
+    return buildString {
+        for ((index, group) in groups.withIndex()) {
+            if (index > 0) append('\n')
+            append(groupTitle(group))
+            append('\n')
+
+            val managed = group.tabs.filter { it.tab != null }
+            val userOnly = group.tabs.filter { it.tab == null }
+            if (managed.isEmpty() && userOnly.isNotEmpty()) {
+                append("  ").append(userOnly.size).append(" tab(s).")
+                append('\n')
+                continue
+            }
+            if (managed.isEmpty()) {
+                append("  (none)")
+                append('\n')
+                continue
+            }
+            append(renderTable(managed))
+        }
+    }.trimEnd()
+}
+
+/** 组的标题行：来源 + 默认 tab（用户组则说明不可寻址）。 */
+private fun groupTitle(group: TerminalSourceGroup): String {
+    val label = when (group.kind) {
+        TerminalKind.ProjectSdk -> "MCP Project SDK"
+        TerminalKind.Remote -> "Remote host ${group.serverName.orEmpty()}".trimEnd()
+        TerminalKind.User -> "User tabs"
+    }
+    return when (group.kind) {
+        TerminalKind.User -> "$label — opened by the user, not addressable"
+        else -> label + " — " + (
+            group.defaultTab?.let { "default: $it" }
+                ?: "no default yet (the next command creates one)"
+            )
+    }
+}
+
+private fun renderTable(tabs: List<TerminalTabInfo>): String {
+    val rows = tabs.map { info ->
+        listOf(
+            info.tab.orEmpty(),
+            info.status,
+            info.currentDirectory ?: info.workingDirectory ?: "",
+            info.lastCommand?.lineSequence()?.first()?.take(80) ?: "",
+        )
+    }
+    val headers = listOf("tab", "status", "cwd", "last")
+    val widths = headers.indices.map { i ->
+        maxOf(headers[i].length, rows.maxOfOrNull { it[i].length } ?: 0)
+    }
+    fun render(cells: List<String>): String = cells
+        .mapIndexed { i, cell -> if (i == cells.lastIndex) cell else cell.padEnd(widths[i]) }
+        .joinToString("  ")
+        .trimEnd()
+
+    return buildString {
+        append("  ").append(render(headers)).append('\n')
+        rows.forEach { append("  ").append(render(it)).append('\n') }
+    }
+}
+
+/** 表格里的来源名：本地 / 远程 / 用户手开。 */
 /** 一次命令执行的结果。 */
 internal data class TerminalRunResult(
     val tab: String,
@@ -145,7 +219,7 @@ internal data class TerminalCommandSegment(
     }
 }
 
-/** `terminal_io(read)` 的结果。`text` 与 `commands` 二选一。 */
+/** `terminal_read` 的结果。`text` 与 `commands` 二选一。 */
 internal data class TerminalReadResult(
     val tab: String,
     val text: String?,
@@ -476,16 +550,12 @@ internal fun buildRemoteCommand(
     shell: String,
     loginShell: Boolean,
 ): String {
+    // 不用 `exec`：loginShell 为 false 时这条命令直接跑在 tab 的交互 shell 里，
+    // `exec` 会用命令替换掉那个 shell，命令一结束 tab 就没了 —— 也就无法复用。
     val withDir = if (workingDirectory.isNullOrBlank()) {
         command
     } else {
-        val cd = when {
-            workingDirectory == "~" -> "cd \"\$HOME\""
-            workingDirectory.startsWith("~/") ->
-                "cd \"\$HOME\"/${posixQuote(workingDirectory.removePrefix("~/"))}"
-            else -> "cd ${posixQuote(workingDirectory)}"
-        }
-        "$cd; exec $command"
+        "${remoteCd(workingDirectory)} && $command"
     }
     if (!loginShell) return withDir
     val shellCommand = when (shell) {
@@ -496,3 +566,50 @@ internal fun buildRemoteCommand(
     }
     return "$shellCommand ${posixQuote(withDir)}"
 }
+
+/**
+ * 已存在 tab 里跑的命令：只切目录，不再套登录 shell。
+ *
+ * 复用时会话本身就是登录 shell，再套一层 `zsh -lic` 只会让 `cd`、`export`
+ * 和后台进程都留在子 shell 里，下一条命令看不见。
+ */
+internal fun buildRemoteCommandInTab(command: String, workingDirectory: String?): String =
+    if (workingDirectory.isNullOrBlank()) command else "${remoteCd(workingDirectory)} && $command"
+
+/** `~` / `~/...` 必须特殊处理：`cd '~'` 不会展开，会报 no such file or directory。 */
+private fun remoteCd(workingDirectory: String): String = when {
+    workingDirectory == "~" -> "cd \"\$HOME\""
+    workingDirectory.startsWith("~/") ->
+        "cd \"\$HOME\"/${posixQuote(workingDirectory.removePrefix("~/"))}"
+    else -> "cd ${posixQuote(workingDirectory)}"
+}
+
+/**
+ * 远程 tab 名前缀：`mcp-<服务器名>`，实际 tab 名形如 `mcp-mbpmiddleware-1`。
+ *
+ * 用服务器名而不是 `MCP-R`：用户一眼能看出这条终端连的是哪台机器。
+ */
+internal fun remoteTabPrefix(serverName: String): String {
+    val cleaned = serverName.trim().replace(Regex("""[\s/\\]+"""), "-").ifEmpty { "remote" }
+    return "mcp-$cleaned"
+}
+
+/**
+ * 通用退避序列：250ms、500ms，之后每次 1000ms。
+ *
+ * 两处用途：① tab 忙等待（绝大多数"忙"是假的 —— shell integration 的 `outputStatus` 在命令
+ * 结束或被 Ctrl-C 打断后约 200ms 才翻状态，第一次等待就能过）；② 等进程退出 / 启动 /
+ * 配置注册这类轮询。固定 50ms 轮询在 300 秒窗口里会白跑几千次，退避既快过首轮也不浪费。
+ */
+internal fun retryBackoffMs(attempt: Int): Long = when (attempt) {
+    0 -> 250L
+    1 -> 500L
+    else -> 1_000L
+}
+
+/**
+ * `terminal_interrupt` 唯一会写的字节：Ctrl-C（ETX）。
+ *
+ * 只发这一个字符而不是任意文本，是为了让"打断"停留在打断 —— 不留下任何能执行命令的通道。
+ */
+internal const val TERMINAL_INTERRUPT_CHAR = "\u0003"

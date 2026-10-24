@@ -227,7 +227,7 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **写完 `.run.xml` 必须调 `LocalFileSystem.refreshAndFindFileByNioFile`** —— 否则 VFS 注意不到，文件落盘了但配置不进列表
 - **取进程号别用 `getNativePid()`**（`@ApiStatus.Experimental`）—— 用 `BaseProcessHandler.getProcess().pid()`
 - **MCP Server 只认 header `IJ_MCP_SERVER_PROJECT_PATH` 或入参 `projectPath` 决定项目** —— 每个工具的 schema 都要声明 `projectPath`（可空、不进 `required`）
-- **单次工具调用的总时长必须远小于 MCP Server 的会话耐心（实测约 15 秒）** —— 超时客户端拿到的是空 404
+- **单次工具调用能否超长，取决于客户端有没有挂 `GET /stream` 的 SSE 流** —— 挂了流（OpenCode 这类标准 streamable-http 客户端）会话一直活着，实测 100 秒调用正常返回；只发 POST 不挂流会被 IDE 当 pending transport，`PENDING_TRANSPORT_TIMEOUT = 15s` 后清掉会话（日志 `Pending StreamableHttp transport timed out`），工具算完也送不回，客户端拿到空 404
 - **`rerun` 的三道前置判定别删**：中间态拒绝 / 旧实例没停干净不启动 / 平台启动门
 - **`ProcessAdapter` 在 2026.2 已废弃** —— 直接实现 `ProcessListener`，只覆写 `onTextAvailable`
 - **错误结果里没有 `structuredContent`**（只有 `isError == false` 且注册表开关打开才有）⇒ 错误的关键信息一律写进 text

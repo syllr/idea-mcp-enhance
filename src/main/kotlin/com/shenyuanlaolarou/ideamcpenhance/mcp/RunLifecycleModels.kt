@@ -131,37 +131,6 @@ internal fun rerunBlockedReason(
     else -> null
 }
 
-/**
- * 启动等待超时时的说明文案（纯函数，便于单测）。
- *
- * 关键点是**不要只说"超时了"**：如果这个配置配了 before-launch 步骤（构建 / 另一个 run configuration），
- * 那它很可能正卡在那一步上——平台在 before-launch 跑完之前不会产出 Run 内容，
- * 所以"还没启动"是正常现象，调用方该做的是把 `startTimeoutMs` 调大，而不是重试。
- *
- * @param beforeLaunchSteps 该配置配了几个 before-launch 步骤（`RunConfiguration.getBeforeRunTasks()`）
- */
-internal fun startTimeoutReason(
-    configurationName: String,
-    timeoutMs: Int,
-    beforeLaunchSteps: Int,
-): String = buildString {
-    append("The IDE did not report \"")
-    append(configurationName)
-    append("\" as started or failed within ")
-    append(timeoutMs)
-    append("ms.")
-    if (beforeLaunchSteps > 0) {
-        append(" This configuration has ")
-        append(beforeLaunchSteps)
-        append(" before-launch step(s) (a build, or another run configuration): they run before the IDE creates the Run content, ")
-        append("so one of them may still be running. Either raise `startTimeoutMs` if you need to wait for it ")
-        append("(keep the whole call under roughly 15s, otherwise the answer may never reach you), ")
-        append("or call again with `waitForStart = false` and poll `list_running_configurations` instead.")
-    } else {
-        append(" The process was not reported as started; the IDE may have ignored this start request, ")
-        append("or the configuration simply takes longer to launch. Raise `startTimeoutMs` to wait longer.")
-    }
-}
 
 /**
  * "平台正在等用户交互（模态对话框占着 EDT）"时的说明文案（纯函数，便于单测）。
@@ -232,7 +201,7 @@ data class RerunReport(
     val stoppedInstances: Int,
     /** 新进程起来**并且注册进 Run 内容列表之后**，仍在跑的实例数。 */
     /**
-     * 新进程起来后仍在跑的实例数；`null` 表示**没等**（`waitForStart = false`），不是 0。
+     * 新进程起来后仍在跑的实例数；`null` 表示**等窗口用完也没确认**，不是 0。
      *
      * 这里刻意不用 0：提交后立刻拍到的快照必然是 0，把它当结果回报会重演
      * "`runningAfter` 恒为 0 却写着已启动"那个自相矛盾的老毛病。
@@ -244,7 +213,7 @@ data class RerunReport(
      * 新进程是否真的起来了。
      *
      * - `true` / `false`：等到了结果（false 时看 [startFailure]，不要只看 [mode]）
-     * - `null`：**不知道** —— 启动请求已提交但没等（`waitForStart = false`），
+     * - `null`：**不知道** —— 启动请求已提交，但等窗口内没确认进程起来，
      *   进程可能还在 before-launch 阶段。与仓库约定一致："值为 null = 进程还没起来"
      */
     val started: Boolean? = false,
@@ -283,7 +252,7 @@ enum class TransitionPhase(val jsonValue: String) {
     STARTED("STARTED"),
 
     /**
-     * 启动请求已提交，但**没有等它起来**（`waitForStart = false`）。
+     * 启动请求已提交，但等窗口内**没有确认它起来**。
      *
      * 与 [STARTED] / [START_FAILED] 的区别是"**不知道**"：提交后立刻返回，
      * 进程可能还在 before-launch（构建 / 另一个配置）阶段，也可能刚起来。

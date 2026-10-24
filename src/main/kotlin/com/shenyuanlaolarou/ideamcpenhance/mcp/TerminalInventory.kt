@@ -42,15 +42,14 @@ internal suspend fun aliveTerminalTabNames(project: Project): Set<String> = with
 /**
  * 终端清单：把 MCP 管理的 tab、用户自己打开的 tab 放在同一张表里。
  *
- * 只有 `TerminalSessionRegistry` 里的 tab 有 id，能传给 `terminal_io`；
+ * 只有 `TerminalSessionRegistry` 里的 tab 有 id，能传给 `terminal_read` / `terminal_interrupt`；
  * 用户手动打开的 tab 只能展示，不可寻址。
  *
  * 所有 UI 读取都在 EDT 上完成；这里只读，不创建/关闭 tab。
  */
 internal suspend fun listTerminalTabs(
     project: Project,
-    includeUnmanaged: Boolean,
-): List<TerminalTabInfo> = withContext(Dispatchers.EDT) {
+): List<TerminalSourceGroup> = withContext(Dispatchers.EDT) {
     val registry = project.service<TerminalSessionRegistry>()
     val states = registry.snapshot()
 
@@ -89,11 +88,7 @@ internal suspend fun listTerminalTabs(
         content?.let { seenContents.add(it) }
 
         val managed = content?.let { managedByContent[it] } ?: managedLocalByView[view]
-        if (managed != null) {
-            addManaged(managed.first, managed.second)
-        } else if (includeUnmanaged) {
-            result += userInfoFromView(tab, view, content)
-        }
+        if (managed != null) addManaged(managed.first, managed.second)
     }
 
     val manager = runCatching { TerminalToolWindowManager.getInstance(project) }.getOrNull()
@@ -103,16 +98,30 @@ internal suspend fun listTerminalTabs(
         if (content != null && !seenContents.add(content)) continue
 
         val managed = managedRemoteByWidget[widget]
-        if (managed != null) {
-            addManaged(managed.first, managed.second)
-        } else if (includeUnmanaged) {
-            result += userInfoFromWidget(widget, content)
-        }
+        if (managed != null) addManaged(managed.first, managed.second)
     }
 
     // 平台枚举不到（例如远程 legacy tab）的受管 tab，仍以 registry 为准列出来。
     for ((tab, state) in states) addManaged(tab, state)
-    result
+
+    // 按来源分组：本地一组、每台服务器各一组、用户手开一组。
+    val groups = mutableListOf<TerminalSourceGroup>()
+    val bySource = LinkedHashMap<Pair<TerminalKind, String?>, MutableList<TerminalTabInfo>>()
+    for (info in result) {
+        val key = info.kind to (info.serverName.takeIf { info.kind == TerminalKind.Remote })
+        bySource.getOrPut(key) { mutableListOf() } += info
+    }
+    for ((key, tabs) in bySource) {
+        val (kind, server) = key
+        groups += TerminalSourceGroup(
+            kind = kind,
+            serverName = server,
+            defaultTab = registry.defaultTab(kind, server),
+            tabs = tabs,
+        )
+    }
+    val order = mapOf(TerminalKind.ProjectSdk to 0, TerminalKind.Remote to 1, TerminalKind.User to 2)
+    groups.sortedWith(compareBy({ order[it.kind] ?: 3 }, { it.serverName ?: "" }))
 }
 
 private fun managedInfo(
@@ -143,9 +152,6 @@ private fun managedInfo(
         }
         else -> "unknown"
     }
-    val title = local?.content?.tabName?.takeIf { it.isNotBlank() }
-        ?: remote?.let { remoteContent(project, it)?.tabName }?.takeIf { !it.isNullOrBlank() }
-        ?: tab
     val currentDirectory = local?.let { runCatching { it.view.workingDirectoryFlow.value?.toString() }.getOrNull() }
         ?: remote?.let { runCatching { it.getCurrentDirectory() }.getOrNull() }
 
@@ -153,7 +159,6 @@ private fun managedInfo(
         tab = tab,
         kind = state.kind,
         addressable = alive,
-        title = title,
         status = status,
         shell = state.shell,
         workingDirectory = state.workingDirectory,
@@ -167,66 +172,6 @@ private fun managedInfo(
         lastUsedAt = state.lastUsedAt,
     )
 }
-
-private fun userInfoFromView(
-    tab: TerminalToolWindowTab,
-    view: TerminalView,
-    content: Content?,
-): TerminalTabInfo {
-    val processOptions = runCatching { tab.processOptions }.getOrNull()
-    val shell = processOptions?.shellCommand?.firstOrNull()
-        ?.substringAfterLast('/')
-        ?.substringAfterLast('\\')
-        ?.takeIf { it.isNotBlank() }
-    return TerminalTabInfo(
-        tab = null,
-        kind = TerminalKind.User,
-        addressable = false,
-        title = titleOf(content, view),
-        status = viewStatus(view),
-        shell = shell,
-        workingDirectory = processOptions?.workingDirectory,
-        currentDirectory = runCatching { view.workingDirectoryFlow.value?.toString() }.getOrNull(),
-        serverName = null,
-        lastCommand = null,
-        lastCommandAt = null,
-        lastExitCode = null,
-        lastTimedOut = null,
-        createdAt = null,
-        lastUsedAt = null,
-    )
-}
-
-private fun userInfoFromWidget(widget: TerminalWidget, content: Content?): TerminalTabInfo {
-    val shell = runCatching { widget.shellCommand.orEmpty().firstOrNull() }.getOrNull()
-        ?.substringAfterLast('/')
-        ?.substringAfterLast('\\')
-        ?.takeIf { it.isNotBlank() }
-    val screen = runCatching { widget.getText().toString() }.getOrNull()
-    val idle = screen?.lines()?.lastOrNull { it.isNotBlank() }?.let(::looksLikePrompt) == true
-    return TerminalTabInfo(
-        tab = null,
-        kind = TerminalKind.User,
-        addressable = false,
-        title = content?.tabName?.takeIf { it.isNotBlank() }
-            ?: runCatching { widget.terminalTitle.buildTitle() }.getOrNull(),
-        status = if (idle) "idle" else "unknown",
-        shell = shell,
-        workingDirectory = null,
-        currentDirectory = runCatching { widget.getCurrentDirectory() }.getOrNull(),
-        serverName = null,
-        lastCommand = null,
-        lastCommandAt = null,
-        lastExitCode = null,
-        lastTimedOut = null,
-        createdAt = null,
-        lastUsedAt = null,
-    )
-}
-
-private fun titleOf(content: Content?, view: TerminalView): String? =
-    content?.tabName?.takeIf { it.isNotBlank() }
-        ?: runCatching { view.title.buildTitle() }.getOrNull()
 
 private fun viewStatus(view: TerminalView): String = when (
     runCatching { view.sessionState.value }.getOrNull()

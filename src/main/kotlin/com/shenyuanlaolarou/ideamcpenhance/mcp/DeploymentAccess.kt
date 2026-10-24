@@ -258,10 +258,13 @@ internal const val DEPLOYMENT_STATE_COMPLETED = "completed"
 internal const val DEPLOYMENT_STATE_IN_PROGRESS = "in_progress"
 
 /** 默认等待预算（毫秒）。实测 18 文件约 1 秒、318 文件约 25 秒。 */
-internal const val DEFAULT_DEPLOYMENT_WAIT_MS = 10_000L
+internal const val DEFAULT_DEPLOYMENT_WAIT_MS = 300_000L
 
-/** 允许调用方把预算调到多少（上限）。再大也超不过 MCP 的会话耐心（约 15 秒）。 */
-internal const val MAX_DEPLOYMENT_WAIT_MS = 12_000L
+/** 等待预算的下限：低于它没有意义，只是更早把 handle 交回去。 */
+internal const val MIN_DEPLOYMENT_WAIT_MS = 60_000L
+
+/** 允许调用方把预算调到多少（上限）。再大也没有意义：调用方仍然要一直等到它结束。 */
+internal const val MAX_DEPLOYMENT_WAIT_MS = 43_200_000L
 
 /** 一次 deployment 任务的结果（平台层产出）。带 [handle] 以便事后查询。 */
 internal data class DeploymentTaskOutcome(
@@ -491,7 +494,8 @@ private suspend fun awaitSlot(
     waitMs: Long,
     joinedExisting: Boolean,
 ): DeploymentTaskOutcome = withContext(Dispatchers.IO) {
-    val finished = withTimeoutOrNull(waitMs.coerceIn(0, MAX_DEPLOYMENT_WAIT_MS)) { slot.finished.await() }
+    // 和终端工具同一套语义：先同步等，超时就把 handle 交回去接着轮询。
+    val finished = withTimeoutOrNull(waitMs.coerceIn(MIN_DEPLOYMENT_WAIT_MS, MAX_DEPLOYMENT_WAIT_MS)) { slot.finished.await() }
     if (finished != null) return@withContext outcomeOf(registry, slot)
     inProgressOutcome(registry, slot, joinedExisting, extra = null)
 }

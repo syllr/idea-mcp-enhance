@@ -66,7 +66,7 @@ private val DEPLOYMENT_SERVER_SCHEMA: JsonObject = buildJsonObject {
         "hasCredentials" to property(
             "boolean",
             "Whether usable credentials are known to the IDE. When false, connecting opens a modal login dialog, " +
-                "which blocks the MCP call — do not try to use such a server.",
+                "which would block the MCP call.",
         ),
         "validationIssue" to nullableProperty(
             "string",
@@ -229,9 +229,9 @@ internal val listServerDeploymentsDescriptor = McpToolDescriptor(
     Upload/download: pass `servers[].deployments[].name` as `deploymentName`.
 
     Each server reports level, accessType, host/port, `deployments[]`, `hasCredentials` and
-    `validationIssue`. Do not connect when `hasCredentials=false` (the IDE would open a modal
-    login dialog and block the MCP call). `options` are project-wide; `warnings` flags risky
-    combinations and servers without deployments.
+    `validationIssue`. A server with `hasCredentials: false` opens a modal login dialog and blocks
+    the MCP call, so pass only servers that report credentials. `options` are project-wide;
+    `warnings` flags risky combinations and servers without deployments.
 
     Read-only; no network access.
     """.trimIndent(),
@@ -278,10 +278,10 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
       no confirmation step here.
     - `"upload"`: send local files only.
 
-    The transfer runs in the background. It waits up to `waitMs` (default 10000, max 12000).
-    Finished → `state: "completed"`. Not finished → `state: "in_progress"` plus `handle`; poll
-    `get_deployment_task_status`. Do not call upload again — that starts another transfer; an
-    upload already running for the same server returns its existing handle.
+    The call waits for the transfer and returns as soon as it finishes → `state: "completed"`.
+    Only a transfer that outlives the wait window comes back as `state: "in_progress"` plus `handle`; poll
+    `get_deployment_task_status`. A second upload starts another transfer; an upload already
+    running for the same server returns its existing handle.
 
     `counters` count operations, not files (a removed directory is one delete); counts are
     meaningless while in progress. Project-wide settings control skipping/confirmation; this
@@ -299,12 +299,6 @@ internal val uploadToDeploymentDescriptor = McpToolDescriptor(
                 "string",
                 "\"mirror\" (default) uploads local files AND deletes remote files the project no longer " +
                     "contains — destructive; \"upload\" sends local files only and leaves remote extras alone.",
-            ),
-            "waitMs" to property(
-                "integer",
-                "How long to wait for the upload to actually finish before reporting `in_progress`, in " +
-                    "milliseconds. Defaults to 10000, capped at 12000 — beyond that the MCP session itself " +
-                    "would be dropped before the answer arrives.",
             ),
             "projectPath" to projectPathProperty(),
         ),
@@ -326,7 +320,7 @@ internal val getDeploymentTaskStatusDescriptor = McpToolDescriptor(
     """
     Read the current state of an upload or download task by its handle.
 
-    This tool never starts a transfer. Use it to poll a task that came back with
+    This tool only reads state. Use it to poll a task that came back with
     `state: "in_progress"`; the handle identifies that one task, even when a server has many.
     `kind` tells you whether it is an upload or a download.
 
@@ -378,11 +372,11 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
     left alone. There is no "keep my local version" option: a dialog cannot be answered on the MCP path,
     so the server is always the source of truth.
 
-    The transfer runs in the background. The call waits up to `waitMs` (default 10000, max 12000):
+    The call waits for the transfer and returns as soon as it finishes:
     - finished → `state: "completed"`.
-    - not finished → `state: "in_progress"` with a `handle`; the download keeps running. Poll it with
-      `get_deployment_task_status`; do not call download again — that starts another transfer.
-      A transfer already running for the same server returns its existing handle instead.
+    - wait window ran out → `state: "in_progress"` with a `handle`; the download keeps running. Poll it with
+      `get_deployment_task_status`. A second download starts another transfer; a transfer already
+      running for the same server returns its existing handle instead.
     """.trimIndent(),
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.download_from_deployment",
@@ -391,12 +385,6 @@ internal val downloadFromDeploymentDescriptor = McpToolDescriptor(
             "deploymentName" to property(
                 "string",
                 "Deployment name from `list_server_deployments.servers[].deployments[].name`.",
-            ),
-            "waitMs" to property(
-                "integer",
-                "How long to wait for the download to actually finish before reporting `in_progress`, in " +
-                    "milliseconds. Defaults to 10000, capped at 12000 — beyond that the MCP session itself " +
-                    "would be dropped before the answer arrives.",
             ),
             "projectPath" to projectPathProperty(),
         ),

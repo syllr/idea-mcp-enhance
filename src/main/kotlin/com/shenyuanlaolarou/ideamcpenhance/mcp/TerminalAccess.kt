@@ -23,6 +23,7 @@ import org.jetbrains.plugins.terminal.startup.TerminalProcessType
 import org.jetbrains.plugins.terminal.view.TerminalOffset
 import org.jetbrains.plugins.terminal.view.TerminalOutputModel
 import org.jetbrains.plugins.terminal.view.shellIntegration.TerminalCommandBlock
+import org.jetbrains.plugins.terminal.view.shellIntegration.TerminalShellIntegration
 import org.jetbrains.plugins.terminal.view.shellIntegration.TerminalCommandExecutionListener
 import org.jetbrains.plugins.terminal.view.shellIntegration.TerminalCommandFinishedEvent
 import org.jetbrains.plugins.terminal.view.shellIntegration.TerminalOutputStatus
@@ -81,13 +82,40 @@ internal class TerminalSessionRegistry {
         var lastTimedOut: Boolean? = null,
         var lastRunning: Boolean? = null,
         var lastUsedAt: Long? = null,
+        /** 这条命令还没跑完：复用选 tab 时跳过，避免两条命令挤进同一个 shell。 */
+        var busy: Boolean = false,
     )
 
     private val states = ConcurrentHashMap<String, State>()
-    private val counter = AtomicInteger(0)
+    /** 每个前缀各自的序号：`mcp-<主机>-1` 从 1 起，不和别的机器共用计数器。 */
+    private val counters = ConcurrentHashMap<String, AtomicInteger>()
+
+    /**
+     * 每种来源的默认 tab：key = `project_sdk` / `remote:<服务器名>`。
+     *
+     * "默认"只由**自动创建**的那条 tab 取得（不传 `tab`、不传 `newTab`、不带 `env`）。
+     * `newTab` 建出来的第二条不抢这个身份，所以默认值不会随使用历史漂移。
+     */
+    private val defaultTabs = ConcurrentHashMap<String, String>()
+
+    /** 一种来源的 key：本地固定一个，远程按服务器各一个。 */
+    fun defaultKey(kind: TerminalKind, serverName: String?): String =
+        if (kind == TerminalKind.Remote) "remote:${serverName.orEmpty()}" else kind.wire
+
+    /** 该来源当前的默认 tab；不存在或已关闭时返回 null（调用方据此新建）。 */
+    fun defaultTab(kind: TerminalKind, serverName: String? = null): String? {
+        val tab = defaultTabs[defaultKey(kind, serverName)] ?: return null
+        return if (states.containsKey(tab)) tab else null
+    }
+
+    /** 登记默认 tab；已经有默认时不动（默认只在"没有"时才建立）。 */
+    fun registerDefault(tab: String, kind: TerminalKind, serverName: String? = null) {
+        defaultTabs.putIfAbsent(defaultKey(kind, serverName), tab)
+    }
 
     /** 生成当前项目里尚未使用的 tab 名；避免 IDE 重启后与恢复的旧 tab 重名。 */
     fun nextTabName(prefix: String, isTaken: (String) -> Boolean = { false }): String {
+        val counter = counters.computeIfAbsent(prefix) { AtomicInteger(0) }
         while (true) {
             val name = "$prefix-${counter.incrementAndGet()}"
             if (!isTaken(name) && !states.containsKey(name)) return name
@@ -105,6 +133,8 @@ internal class TerminalSessionRegistry {
 
     fun remove(tab: String) {
         states.remove(tab)
+        // 关掉的可能正是默认 tab：一并清掉，下次调用会重建一条新的默认。
+        defaultTabs.entries.removeIf { it.value == tab }
     }
 }
 
@@ -195,10 +225,37 @@ internal suspend fun runInLocalTerminal(
     workingDirectory: String?,
     env: Map<String, String>,
     maxChars: Int = TERMINAL_DEFAULT_MAX_CHARS,
+    tab: String? = null,
+    newTab: Boolean = false,
 ): TerminalRunResult {
+    val registry = project.service<TerminalSessionRegistry>()
+
+    // 不传 tab 时用本项目的那条**默认** tab（不是"最近用过的"）：落点可预测，
+    // 连续命令永远落在同一条 shell 上。带 env 的调用不复用 —— env 只在新 tab
+    // 建的时候生效，复用会静默丢掉它。
+    val autoCreate = tab == null && !newTab && env.isEmpty()
+    val reuseTarget = tab
+        ?: if (!autoCreate) null else registry.defaultTab(TerminalKind.ProjectSdk)
+    if (reuseTarget != null) {
+        val state = registry.get(reuseTarget)
+        // 默认 tab 可能已经被用户关掉（registry.remove 也会清掉默认登记）：当作没有，
+        // 直接新开一条；但如果是调用方点名的 tab，关掉了要明确报错，不能偷偷换一条。
+        val view = state?.let { runCatching { requireLocalHandle(project, reuseTarget, it).view }.getOrNull() }
+        if (view != null) {
+            return executeLocalCommand(
+                view, state, reuseTarget, workingDirectory, command, input, timeoutMs, maxChars,
+            )
+        }
+        if (tab != null) {
+            throw TerminalAccessException(
+                code = "terminal_tab_not_found",
+                message = "终端 tab \"$tab\" 不存在或已被关闭。请传 newTab=true 新开一个，或用 list_terminals 查现有 tab。",
+            )
+        }
+    }
+
     preflightLocalTerminal(project)?.let { throw TerminalAccessException(it.code, it.message, it.current, it.fix) }
 
-    val registry = project.service<TerminalSessionRegistry>()
     val aliveNames = aliveTerminalTabNames(project)
     val tabName = registry.nextTabName("MCP", aliveNames::contains)
     // 项目级工具环境（Maven home / PATH）；用户显式 env 覆盖自动值
@@ -209,7 +266,7 @@ internal suspend fun runInLocalTerminal(
         File.separatorChar,
     ) ?: project.basePath
 
-    val tab = withContext(Dispatchers.EDT) {
+    val createdTab = withContext(Dispatchers.EDT) {
         TerminalToolWindowTabsManager.getInstance(project)
             .createTabBuilder()
             .tabName(tabName)
@@ -222,13 +279,15 @@ internal suspend fun runInLocalTerminal(
             .createTab()
     }
 
-    val view = tab.view
+    val view = createdTab.view
     val state = TerminalSessionRegistry.State(
-        uiHandle = LocalTerminalHandle(view, tab.content),
+        uiHandle = LocalTerminalHandle(view, createdTab.content),
         kind = TerminalKind.ProjectSdk,
         workingDirectory = resolvedWorkingDirectory,
     )
     registry.put(tabName, state)
+    // 只有"自动创建"的那条才成为默认；newTab / env 建出来的是临时 shell，不抢这个身份。
+    if (autoCreate) registry.registerDefault(tabName, TerminalKind.ProjectSdk)
 
     val running = withTimeoutOrNull(10_000) {
         view.sessionState.first { it is TerminalViewSessionState.Running }
@@ -250,7 +309,7 @@ internal suspend fun runInLocalTerminal(
     if (startup != null && isCmdShell(startup.shellCommand)) {
         registry.remove(tabName)
         withContext(Dispatchers.EDT) {
-            TerminalToolWindowTabsManager.getInstance(project).closeTab(tab)
+            TerminalToolWindowTabsManager.getInstance(project).closeTab(createdTab)
         }
         throw TerminalAccessException(
             code = "local_shell_not_supported",
@@ -284,6 +343,49 @@ internal suspend fun runInLocalTerminal(
         message = "终端已打开，但 10 秒内没有出现提示符，命令未执行。请在 IDE 终端里确认 shell 能正常启动。",
     )
 
+    // 刚建的 tab 已经站在 resolvedWorkingDirectory 里，不用再 cd 一次。
+    return executeLocalCommand(view, state, tabName, null, command, input, timeoutMs, maxChars)
+}
+
+/**
+ * 在一个**已经就绪**的本地 tab 里跑一条命令并读回结果。
+ *
+ * 建 tab 与复用走的是同一段逻辑：命令块监听、超时、读输出都只有这一份实现。
+ */
+private suspend fun executeLocalCommand(
+    view: TerminalView,
+    state: TerminalSessionRegistry.State,
+    tabName: String,
+    workingDirectory: String?,
+    command: String,
+    input: String?,
+    timeoutMs: Int,
+    maxChars: Int,
+): TerminalRunResult {
+    val integration = withTimeoutOrNull(10_000) { view.shellIntegrationDeferred.await() }
+        ?: throw TerminalAccessException(
+            code = "shell_integration_not_started",
+            message = "终端 \"$tabName\" 的 Shell integration 没有就绪，命令未执行。",
+        )
+
+    // 复用的 tab 可能还在跑上一条命令（也可能只是 shell integration 晚了约 200ms
+    // 才翻状态）：一直退避等到它回到提示符，不设上限 —— tab 真关掉了才放弃。
+    if (!awaitLocalIdle(integration)) {
+        throw TerminalAccessException(
+            code = "terminal_tab_busy",
+            message = "终端 \"$tabName\" 在等待期间被关闭，本次命令没有发送。请重新 project_sdk_terminal 开一个 tab。",
+        )
+    }
+
+    // 复用时不重开 shell：只把目录切过去，其余状态（export、后台进程）原样保留。
+    // 没传 workingDirectory 就沿用这个 shell 当前所在目录。
+    val sent = if (workingDirectory.isNullOrBlank()) {
+        command
+    } else {
+        "cd ${posixQuote(workingDirectory)} && $command"
+    }
+
+    state.busy = true
     val finished = CompletableDeferred<CommandFinished>()
     val disposable = Disposer.newDisposable()
     integration.addCommandExecutionListener(
@@ -318,33 +420,10 @@ internal suspend fun runInLocalTerminal(
         val beforeEnd = model.endOffset
 
         withContext(Dispatchers.EDT) {
-            view.createSendTextBuilder().shouldExecute().send(command)
+            view.createSendTextBuilder().shouldExecute().send(sent)
         }
         if (!input.isNullOrEmpty()) {
             withContext(Dispatchers.EDT) { view.sendText(input) }
-        }
-
-        if (timeoutMs <= 0) {
-            // 让命令回显 / 提示符先出现，异步快照才有意义
-            delay(200)
-            // 从 command block 的输出起点读，避免首帧带上半截命令回显
-            val active = integration.blocksModel.activeBlock as? TerminalCommandBlock
-            val start = active?.outputStartOffset ?: beforeEnd
-            val from = maxOf(start, model.startOffset)
-            val raw = runCatching { model.getText(from, model.endOffset).toString() }.getOrDefault("")
-            val (text, truncated) = cleanTerminalText(raw, maxChars)
-            state.lastReadOffset = model.endOffset.toAbsolute()
-            return record(
-                TerminalRunResult(
-                    tab = tabName,
-                    text = text,
-                    exitCode = null,
-                    timedOut = false,
-                    running = integration.outputStatus.value is TerminalOutputStatus.ExecutingCommand,
-                    truncated = truncated,
-                    warning = shellChangeWarning(command),
-                ),
-            )
         }
 
         val result = withTimeoutOrNull(timeoutMs.toLong()) { finished.await() }
@@ -354,7 +433,9 @@ internal suspend fun runInLocalTerminal(
             val from = maxOf(start, model.startOffset)
             val raw = runCatching { model.getText(from, model.endOffset).toString() }.getOrDefault("")
             val (text, truncated) = cleanTerminalText(raw, maxChars)
-            state.lastReadOffset = model.endOffset.toAbsolute()
+            // 不推进 lastReadOffset：它只属于 terminal_read 的增量游标。这里的 model 是命令
+            // 结束时的那个，和 read 时的 active model 未必同一套坐标；推进会让下一次读误判成
+            // buffer reset，把整段历史重放一遍。
             return record(
                 TerminalRunResult(
                     tab = tabName,
@@ -369,7 +450,7 @@ internal suspend fun runInLocalTerminal(
         }
 
         val (text, truncated) = cleanTerminalText(result.text, maxChars)
-        state.lastReadOffset = model.endOffset.toAbsolute()
+        // 同上：执行路径不碰读游标。
         return record(
             TerminalRunResult(
                 tab = tabName,
@@ -382,10 +463,33 @@ internal suspend fun runInLocalTerminal(
             ),
         )
     } finally {
+        state.busy = false
         state.lastBlockCount = integration.blocksModel.blocks
             .filterIsInstance<TerminalCommandBlock>()
             .count { !it.executedCommand.isNullOrBlank() }
         Disposer.dispose(disposable)
+    }
+}
+
+/**
+ * 退避等本地 shell 回到提示符，**不设上限**。
+ *
+ * 序列按 [retryBackoffMs]：250ms、500ms，之后每次 1000ms。只有读不到终端状态
+ * （tab 被关掉）时才返回 false —— 那已经不是"忙"，是真没了。
+ *
+ * 无限等待成立的前提是客户端按 Streamable HTTP 规范挂着 `GET /stream` 的 SSE 流
+ * （OpenCode 这类标准客户端就是）：挂了流会话一直活着，实测 100 秒的调用正常返回。
+ * 只发 POST 不挂流的裸客户端会被 IDE 当 pending transport，15 秒后清掉会话，
+ * 那种情况下长调用会拿到 404 —— 这是客户端问题，不是这里该退让的理由。
+ */
+private suspend fun awaitLocalIdle(integration: TerminalShellIntegration): Boolean {
+    var attempt = 0
+    while (true) {
+        val busy = runCatching {
+            integration.outputStatus.value is TerminalOutputStatus.ExecutingCommand
+        }.getOrElse { return false }
+        if (!busy) return true
+        delay(retryBackoffMs(attempt++))
     }
 }
 
@@ -425,7 +529,6 @@ internal suspend fun readLocalTerminal(
     tab: String,
     tail: Int?,
     full: Boolean,
-    timeoutMs: Int,
     maxChars: Int = TERMINAL_DEFAULT_MAX_CHARS,
 ): TerminalReadResult {
     val state = project.service<TerminalSessionRegistry>().get(tab)
@@ -443,7 +546,6 @@ internal suspend fun readLocalTerminal(
         )
 
     val model = view.outputModels.active.value
-    if (timeoutMs > 0) waitForStable(model, timeoutMs)
 
     val running = integration.outputStatus.value is TerminalOutputStatus.ExecutingCommand
     state.lastRunning = running
@@ -493,7 +595,13 @@ internal suspend fun readLocalTerminal(
     return TerminalReadResult(tab, text, null, running, truncated || truncatedByScrollback || bufferReset)
 }
 
-internal suspend fun writeLocalTerminal(project: Project, tab: String, text: String) {
+/**
+ * 往本地终端发一次 Ctrl-C。
+ *
+ * 这是唯一能在命令**还跑着**时生效的写入：执行工具发送前会先等 tab 空闲，卡住的命令
+ * 会把它们永远挡在门外。只发一个字节，不接受文本，所以它不能变成执行通道。
+ */
+internal suspend fun interruptLocalTerminal(project: Project, tab: String) {
     val state = project.service<TerminalSessionRegistry>().get(tab)
         ?: throw TerminalAccessException(
             code = "terminal_tab_not_found",
@@ -502,7 +610,7 @@ internal suspend fun writeLocalTerminal(project: Project, tab: String, text: Str
     val view = requireLocalHandle(project, tab, state).view
     state.lastUsedAt = System.currentTimeMillis()
     try {
-        withContext(Dispatchers.EDT) { view.sendText(text) }
+        withContext(Dispatchers.EDT) { view.sendText(TERMINAL_INTERRUPT_CHAR) }
     } catch (e: Throwable) {
         throw TerminalAccessException(
             code = "terminal_closed",
@@ -512,19 +620,3 @@ internal suspend fun writeLocalTerminal(project: Project, tab: String, text: Str
     }
 }
 
-/** 轮询到输出稳定（500ms 没变化）或超时。 */
-private suspend fun waitForStable(model: TerminalOutputModel, timeoutMs: Int) {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    var last = model.modificationStamp
-    var stableSince = System.currentTimeMillis()
-    while (System.currentTimeMillis() < deadline) {
-        delay(100)
-        val now = model.modificationStamp
-        if (now != last) {
-            last = now
-            stableSince = System.currentTimeMillis()
-        } else if (System.currentTimeMillis() - stableSince >= 500) {
-            return
-        }
-    }
-}

@@ -232,9 +232,8 @@ internal val createRunConfigurationDefinitionDescriptor = McpToolDescriptor(
     """
     Create a project-level run configuration — a durable team asset.
 
-    Do not create or edit that file yourself: this tool (with `update_run_configuration` and
-    `delete_run_configuration`) is the only writer. A hand-written file fails silently when its type
-    or field names are wrong.
+    This tool (with `update_run_configuration` and `delete_run_configuration`) is the only writer of
+    that file. A hand-written file fails silently when its type or field names are wrong.
 
     Ask the user before creating anything. State the name, type, command and why it is worth keeping,
     then wait for agreement. For a one-off command, run it another way.
@@ -331,8 +330,7 @@ internal val updateRunConfigurationDescriptor = McpToolDescriptor(
     """
     Change an existing project-level run configuration, including its name.
 
-    Do not edit the configuration's file yourself: this tool is the writer and re-checks that the
-    result still runs.
+    This tool is the writer and re-checks that the result still runs.
 
     Fields (omit `newName`): `options` / `attributes` / `envs` are patches; `null` removes a key.
     `replaceConfigurationXml` replaces the body for nested types such as Gradle/npm. Changes apply on
@@ -437,8 +435,7 @@ internal val deleteRunConfigurationDescriptor = McpToolDescriptor(
     """
     Delete a project-level run configuration: remove it from the IDE and delete the file holding it.
 
-    **Do not delete the file yourself** — this tool is the writer. It refuses while the configuration is
-    running (stop it first with `stop_run_configuration`) and while other configurations reference it
+    This tool is the writer. It refuses while the configuration is running (stop it first with `stop_run_configuration`) and while other configurations reference it
     (a before-launch step or a compound configuration): pass `force = true` to delete it **and** remove
     those references, which is reported back.
 

@@ -1,5 +1,5 @@
 <!--
-  本地终端工具（project_sdk_terminal / terminal_io）的注册文件。
+  本地终端工具（project_sdk_terminal / terminal_read / terminal_interrupt）的注册文件。
   只有 org.jetbrains.plugins.terminal 存在时才会被读取（见 mcpserver.xml 的 optional 依赖）。
 -->
 <idea-plugin>

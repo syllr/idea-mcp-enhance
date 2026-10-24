@@ -58,24 +58,20 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `rerun 工具的说明要点明整次调用的时长预算`() {
-        // SPEC §3.6：总时长 = stopTimeoutMs + startTimeoutMs + 输出窗口；慢停 + 慢启会超过服务器的会话耐心，
-        // 结果会丢成空 404。默认值（5000 + 10000 + 2000）本身就在边界上，所以描述必须提醒。
+    fun `rerun 工具的说明要点明整次调用会被一直等着`() {
+        // 等待窗口现在是内部固定值（不开放参数），所以描述只需说清"调用会一直等到启动完成"，
+        // 并给出"等不起就走异步"的出路。
         val description = toolByName(RERUN_TOOL_NAME).descriptor.description
 
         assertTrue(
-            "必须点明 stopTimeoutMs 与 startTimeoutMs 一起构成总预算",
-            description.contains("stopTimeoutMs` + `startTimeoutMs"),
+            "必须点明 before-launch 会让调用一直等",
+            description.contains("The call"),
         )
         assertTrue(
-            "必须给出改成异步调用的出路",
-            description.contains("asynchronous mode"),
+            "必须说明等不到时结果未知、要自己轮询",
+            description.contains("started` is null") && description.contains("list_running_configurations"),
         )
-        assertTrue(
-            "必须点明调小 stopTimeoutMs 不是解法",
-            description.contains("Do not shrink `stopTimeoutMs`"),
-        )
-        assertTrue("必须给出服务器耐心的量级", description.contains("roughly 15"))
+        assertFalse("waitForStart 不再是参数", description.contains("waitForStart"))
     }
 
     @Test
@@ -234,7 +230,7 @@ class RunLifecycleSchemaTest {
         typesOf(rerun, "sessionId")
         typesOf(rerun, "fullOutputPath")
 
-        // waitForStart = false 时这两个是 null（"不知道"），不是 0 / false —— 声明成非空会让严格客户端校验失败
+        // 等窗口用完时这两个是 null（"不知道"），不是 0 / false —— 声明成非空会让严格客户端校验失败
         fun typeListOf(properties: JsonObject, key: String): List<String> =
             properties[key]!!.jsonObject["type"]!!.jsonArray.map { it.jsonPrimitive.content }
         assertEquals("started 应声明为可空", listOf("boolean", "null"), typeListOf(rerun, "started"))
@@ -255,28 +251,20 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `rerun 允许覆盖启动等待窗口`() {
+    fun `rerun 不开放等待窗口参数`() {
+        // 等待预算是工具自身行为，不是调用方的旋钮。
         val schema = toolByName(RERUN_TOOL_NAME).descriptor.inputSchema
-        assertTrue(schema.propertiesSchema.containsKey("startTimeoutMs"))
-        assertTrue(schema.propertiesSchema.containsKey("stopTimeoutMs"))
+        assertFalse(schema.propertiesSchema.containsKey("startTimeoutMs"))
+        assertFalse(schema.propertiesSchema.containsKey("stopTimeoutMs"))
         assertEquals(setOf("configurationName"), schema.requiredProperties)
     }
 
     @Test
-    fun `rerun 可以只提交不等启动`() {
-        // before-launch 比服务器会话耐心还长的配置，只能走"提交即返回 + 自己轮询"这条路。
-        // 参数命名刻意对齐原生 execute_run_configuration 的 waitForExit。
+    fun `rerun 不再开放 waitForStart`() {
+        // 等多久、什么时候转异步是工具自身行为，不是调用方的开关。
         val schema = toolByName(RERUN_TOOL_NAME).descriptor.inputSchema
-        val waitForStart = schema.propertiesSchema["waitForStart"]!!.jsonObject
-        assertEquals("boolean", waitForStart["type"]!!.jsonPrimitive.content)
-        assertFalse(
-            "waitForStart 必须可选：默认 true（同步等），不传就是现在的语义",
-            schema.requiredProperties.contains("waitForStart"),
-        )
-        assertTrue(
-            "描述里必须说明它是给'before-launch 很久'用的，且之后要轮询",
-            waitForStart["description"]!!.jsonPrimitive.content.contains("list_running_configurations"),
-        )
+        assertFalse(schema.propertiesSchema.containsKey("waitForStart"))
+        assertEquals(setOf("configurationName", "projectPath"), schema.propertiesSchema.keys)
     }
 
     // ---------- 参数解析 ----------
@@ -439,31 +427,10 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `启动等待的默认值与原生一致`() {
-        // 原生 execute_run_configuration 的 timeout 默认就是 10000（ExecutionToolset 字节码里的 sipush 10000）。
-        // 注意：整次调用是"停旧 + 等启动 + 采日志"三段相加，所以慢停 + 慢启的组合会超过服务器的会话耐心
-        // （实测约 15 秒）——那种组合下调用方会拿到空 404。要更保险，可以把 stopTimeoutMs 调小。
-        assertEquals(10_000, defaultStartTimeoutMs())
-        assertEquals(5_000, defaultWaitTimeoutMs())
-    }
-
-    @Test
-    fun `超时文案在配置有 before-launch 时点明原因`() {
-        // 有 before-launch 步骤时，平台要等它跑完才产出 Run 内容 ⇒ "还没启动"是正常现象，
-        // 文案必须点出这一点，并给出两条可行路径（调大 startTimeoutMs / 改走异步），
-        // 而不是让人以为启动失败了。
-        val withSteps = startTimeoutReason("console > dev", 10_000, beforeLaunchSteps = 2)
-        assertTrue(withSteps, withSteps.contains("console > dev"))
-        assertTrue("必须带上实际生效的毫秒数", withSteps.contains("10000ms"))
-        assertTrue("必须点明有 before-launch 步骤", withSteps.contains("2 before-launch step(s)"))
-        assertTrue("必须给出第一条路：调大 startTimeoutMs", withSteps.contains("`startTimeoutMs`"))
-        assertTrue("必须给出第二条路：改走异步", withSteps.contains("`waitForStart = false`"))
-        assertTrue("必须说清异步之后怎么查状态", withSteps.contains("list_running_configurations"))
-
-        val withoutSteps = startTimeoutReason("Main", 3_000, beforeLaunchSteps = 0)
-        assertTrue(withoutSteps, withoutSteps.contains("3000ms"))
-        assertFalse("没有 before-launch 时不要瞎说", withoutSteps.contains("before-launch"))
-        assertTrue(withoutSteps, withoutSteps.contains("Raise `startTimeoutMs`"))
+    fun `停止与启动的等待预算统一为 300 秒`() {
+        // 和其他工具一套语义：固定 300 秒，等不起的调用方走异步提交 + 自己轮询。
+        assertEquals(300_000, defaultStartTimeoutMs())
+        assertEquals(300_000, defaultWaitTimeoutMs())
     }
 
     @Test
@@ -489,11 +456,11 @@ class RunLifecycleSchemaTest {
             stoppedInstances = 0,
             runningAfter = null,
             instances = emptyList(),
-            warnings = listOf("The start was submitted but not awaited (waitForStart = false)."),
+            warnings = listOf("The start was submitted but the process did not appear within the wait window."),
             started = null,
             startFailure = null,
             transition = listOf(
-                RunTransitionStep(TransitionPhase.START_SUBMITTED, "start request submitted, not awaited", 12),
+                RunTransitionStep(TransitionPhase.START_SUBMITTED, "start request submitted, not confirmed", 12),
             ),
         ).toJson()
 
