@@ -2,6 +2,17 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.7] - 2026-10-29
+
+### Changed
+
+- **定义态工具改为只读**：Run Configuration 的新建 / 修改 / 删除回到 IDE 界面做。可重复的流程（构建、生成、迁移、发布）改由 job skill 承担，不再由 agent 代写 `.run/` 下的 xml。
+
+### Removed
+
+- **`create_run_configuration` / `update_run_configuration` / `delete_run_configuration`**：三个写工具连同 `RunConfigAuthoringAccess.kt`（类型查找、平台校验、模板、引用改写、VFS 删除）与它们的 schema 一并删除。
+- **改名与引用改写能力**：随 `update` 一起移除，`RunLogAccess` 不再提供日志键迁移。
+
 ## [0.1.5] - 2026-10-29
 
 ### Added

@@ -13,6 +13,17 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.7] - 2026-10-29
+
+### Changed
+
+- **Definition-side tools are read-only**: creating, editing and deleting run configurations now happens in the IDE UI. Repeatable flows (build, generate, migrate, release) are handled by job skills instead of agents writing `.run/` xml files.
+
+### Removed
+
+- **`create_run_configuration` / `update_run_configuration` / `delete_run_configuration`**: the three write tools, together with `RunConfigAuthoringAccess.kt` (type lookup, platform validation, templates, reference rewriting, VFS delete) and their schemas.
+- **Rename and reference rewriting**: removed with `update`; `RunLogAccess` no longer migrates log keys.
+
 ## [0.1.5] - 2026-10-29
 
 ### Added
