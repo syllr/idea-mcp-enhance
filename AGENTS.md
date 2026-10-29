@@ -62,10 +62,9 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │   ├── RunLogAccess.kt            平台：启动即采集输出、写 sidecar、扫历史、清理
 │   ├── RunConfigNaming.kt         纯：`[os@]base[@env]` 解析
 │   ├── RunConfigDefinitionModels.kt   纯：inspect 的全貌 → JSON
-│   ├── RunConfigDefinitionAccess.kt   平台：读写 `.run.xml`、解析 options/envs/method
-│   ├── RunConfigAuthoringAccess.kt    平台：建 / 改 / 删 / 引用改写 / VFS 删除
-│   ├── RunConfigDefinitionSchemas.kt  定义态 4 个工具的描述符
-│   └── RunConfigDefinitionToolsProvider.kt  inspect / create / update / delete
+│   ├── RunConfigDefinitionAccess.kt   平台：读 `.run.xml`、解析 options/envs/method
+│   ├── RunConfigDefinitionSchemas.kt  `inspect` 的描述符
+│   └── RunConfigDefinitionToolsProvider.kt  inspect_run_configuration
     （mcp/ 下还有能力三，见下）
 ```
 
@@ -147,10 +146,9 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改项目环境变量的 provider / 顺序         | `mcp/TerminalEnv.kt`（枚举顺序 + 聚合）+ 各 `*TerminalEnv.kt` + `mcp/ProjectEnvSchemas.kt`（返回契约）                              |
 | 改 `get_project_env` 的调用方            | `opencode-idea` 的 `src/plugin.js`：`loadProjectEnv` / `shell.hook("create.before")` / `env-unready` 状态                          |
 | 改远程执行（已移出本插件）               | `opencode-idea` 的 `src/remote/`（`hosts.js` 三级合并 / `ssh.js` 执行 / `tools.js` 工具与缓存）                                       |
-| 改运行日志的采集 / 落盘 / 清理           | `mcp/RunLogAccess.kt`（抓点、大小上限、sidecar、历史扫描、改名迁移）+ `mcp/RunLogModels.kt`（键 / 文件名 / JSON）                                                                                   |
+| 改运行日志的采集 / 落盘 / 清理           | `mcp/RunLogAccess.kt`（抓点、大小上限、sidecar、历史扫描）+ `mcp/RunLogModels.kt`（键 / 文件名 / JSON）                                                                                             |
 | 改配置名的解析规则                       | `mcp/RunConfigNaming.kt` + `RunLogAndNamingTest`                                                                                                                                                    |
 | 改 `inspect` 返回的字段                  | `mcp/RunConfigDefinitionModels.kt` + `RunConfigDefinitionSchemas.kt` + `RunLogAndNamingTest`                                                                                                        |
-| 改建 / 改 / 删的行为                     | `mcp/RunConfigAuthoringAccess.kt`（平台接线）+ `mcp/RunConfigDefinitionToolsProvider.kt`（编排）                                                                                                    |
 | 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                               |
 
 ## HARD RULES
@@ -248,11 +246,9 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **日志文件名里的键 = `sha256(项目路径 + "\0" + 配置名)` 前 16 位** —— 别用官方的 `sanitizeFileName`，它会把 `console-web` 与 `console_web` 抹成同一个名字
 - **历史实例按开始时间倒序，身份就是日志文件路径** —— 平台关掉 Run 标签页就什么都不剩，不靠任何内存表
 - **`.log` 是本体，`.json` sidecar 只补 `pid` / `exitCode` / `endedAt`** —— sidecar 丢了安静降级，不发 warning
-- **终端形态的 Shell（`EXECUTE_IN_TERMINAL=true`）是运行态工具的盲区**（没有 `ProcessHandler` ⇒ 没日志、停不掉、list 看不见）—— 我们的 create 写死 `false`
-- **类型插件没装 ≠ 配置不可读** —— 以 `.run.xml` 里的 `type` 为准并给 `typeKnown: false`，`cloneFrom` / `update` 照常工作
-- **`.run/` 的写入口只有定义态工具** —— 这条规矩**只写在提示词里、不做硬拦截**：用户明确要求手改文件时，工具报错比放行更糟；原生 `write` / `shell` 本来也拦不住
-- **改名必须迁移日志键**（`update_run_configuration` 的 `newName` 分支调 `renameRunLogs`）—— 漏了这步，历史会「凭空消失」
-- **写完 `.run.xml` 必须调 `LocalFileSystem.refreshAndFindFileByNioFile`** —— 否则 VFS 注意不到，文件落盘了但配置不进列表
+- **终端形态的 Shell（`EXECUTE_IN_TERMINAL=true`）是运行态工具的盲区**（没有 `ProcessHandler` ⇒ 没日志、停不掉、list 看不见）—— `inspect` 对它发 warning
+- **类型插件没装 ≠ 配置不可读** —— 以 `.run.xml` 里的 `type` 为准并给 `typeKnown: false`，`inspect` 照常工作
+- **定义态工具只读** —— 配置的新增 / 修改 / 删除回 IDE 界面；可重复的流程走 job skill（opencode-idea 侧 `run-job-manager`），不由 agent 代写 `.run/` 下的 xml
 - **取进程号别用 `getNativePid()`**（`@ApiStatus.Experimental`）—— 用 `BaseProcessHandler.getProcess().pid()`
 - **MCP Server 只认 header `IJ_MCP_SERVER_PROJECT_PATH` 或入参 `projectPath` 决定项目** —— 每个工具的 schema 都要声明 `projectPath`（可空、不进 `required`）
 - **单次工具调用能否超长，取决于客户端有没有挂 `GET /stream` 的 SSE 流** —— 挂了流（OpenCode 这类标准 streamable-http 客户端）会话一直活着，实测 100 秒调用正常返回；只发 POST 不挂流会被 IDE 当 pending transport，`PENDING_TRANSPORT_TIMEOUT = 15s` 后清掉会话（日志 `Pending StreamableHttp transport timed out`），工具算完也送不回，客户端拿到空 404

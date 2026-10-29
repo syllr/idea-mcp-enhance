@@ -347,13 +347,12 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 | `mcp/RunLifecycleSchemas.kt`                         | 纯   | 三个 `McpToolDescriptor` + 输入 schema + 参数解析工具函数                                                                             |
 | `mcp/RunConfigAccess.kt`                             | 平台 | `descriptorsByConfigurationName` / `snapshotOf` / `stopHandler` / `stopDescriptors` / `buildRunEnvironment` / `startRunAndAwait`      |
 | `mcp/RunLogModels.kt`                                | 纯   | 日志键 / 文件名 / 历史条目 / JSON                                                                                                     |
-| `mcp/RunLogAccess.kt`                                | 平台 | 启动即采集输出、sidecar、历史扫描、改名迁移、过期清理                                                                                 |
+| `mcp/RunLogAccess.kt`                                | 平台 | 启动即采集输出、sidecar、历史扫描、过期清理                                                                                           |
 | `mcp/RunConfigNaming.kt`                             | 纯   | `[os@]base[@env]` 解析                                                                                                                |
 | `mcp/RunConfigDefinitionModels.kt`                   | 纯   | `RunConfigurationInspection` + JSON                                                                                                   |
-| `mcp/RunConfigDefinitionAccess.kt`                   | 平台 | 读写 `.run.xml`、解析 options / envs / method、拼回 IDE 格式                                                                          |
-| `mcp/RunConfigAuthoringAccess.kt`                    | 平台 | 类型查找、平台校验、模板、引用改写、VFS 删除                                                                                          |
-| `mcp/RunConfigDefinitionSchemas.kt`                  | 纯   | 定义态 4 个描述符                                                                                                                     |
-| `mcp/RunConfigDefinitionToolsProvider.kt`            | 编排 | `inspect` / `create` / `update` / `delete`                                                                                            |
+| `mcp/RunConfigDefinitionAccess.kt`                   | 平台 | 读 `.run.xml`、解析 options / envs / method                                                                                           |
+| `mcp/RunConfigDefinitionSchemas.kt`                  | 纯   | `inspect` 描述符                                                                                                                      |
+| `mcp/RunConfigDefinitionToolsProvider.kt`            | 编排 | `inspect_run_configuration`                                                                                                           |
 | `mcp/RunLifecycleToolsProvider.kt`                   | 编排 | `RunLifecycleToolsProvider` + `BaseRunTool` + 三个工具                                                                                |
 | `resources/META-INF/plugin.xml`                      | —    | 插件描述 + 2 个 action + 可选依赖声明                                                                                                 |
 | `resources/META-INF/mcpserver.xml`                   | —    | 可选依赖专属：`mcpServer.mcpToolsProvider` 注册                                                                                       |
@@ -381,10 +380,10 @@ MCP 工具的等待上限（默认 5s / 10s）是 **有意的**：避免 agent �
 
 ---
 
-## 7. 定义态工具集：Run Configuration 的增删改查 + 运行日志
+## 7. 定义态工具集：Run Configuration 的只读查看 + 运行日志
 
 前面 §3 解决的是 **运行态**（谁在跑、停、重启）。这一章解决 **定义态**：一个 Run Configuration
-长什么样、怎么建、怎么改、怎么删，以及"上次那次跑的日志在哪"。
+长什么样、上次那次跑的日志在哪。
 
 ### 7.1 工具集与职责边界
 
@@ -392,22 +391,14 @@ MCP 工具的等待上限（默认 5s / 10s）是 **有意的**：避免 agent �
 |------------------------------------------------------|-----------|----------------------------------------------|
 | `list_running_configurations`                        | **索引**  | 谁在跑、几个实例、各自 pid / 状态 / 日志路径 |
 | `inspect_run_configuration`                          | **详情**  | 这个配置是什么、跑过几次、每次的日志在哪     |
-| `create_run_configuration`                           | 建        | 建任意类型                                   |
-| `update_run_configuration`                           | 改 + 改名 | 改字段、改名字（连带更新别人对它的引用）     |
-| `delete_run_configuration`                           | 删        | 删掉它                                       |
 | `stop_run_configuration` / `rerun_run_configuration` | 动作      | 停止 / 重启的执行报告                        |
 
-**"一个产物一个写入口"**：`.run/*.run.xml` 的增删改查只走上面三个 CRUD 工具。
-这条规则 **只写在提示词里**（工具描述 + opencode-idea 侧的 guidance / skill）， **不做硬拦截** ——
-硬拦会让"用户明确要求手改某个文件"这件事直接失败，
-比现在更糟；而且原生 `write` / `shell` 本来也拦不住，只会造成"看起来有保障其实没有"。
+**只读**：新建 / 修改 / 删除配置回到 IDE 界面做。可重复的流程固化成 job skill
+（`.opencode/skills/job-<名>/`，见 opencode-idea 侧的 `run-job-manager`），不再由 agent 代写
+`.run/` 下的 xml 文件 —— 没有写入口，也就不需要"只有一个写入口"这条提示词纪律。
 
 **枚举不重复造轮子**：内置的 `get_run_configurations` 已经回答"项目里有哪些配置"，
 所以 **不新增** `list_run_configurations`；定义态的读取由 `inspect_run_configuration` 承担。
-
-**旧的 Shell 专用创建工具已删除**（`create_shell_run_configuration`）：它本来就是通用 create 的一个子集，
-留着只会让"写文件 / 平台校验 / 默认值归一化"出现第二套实现。现在建 Shell 配置直接用
-`create_run_configuration`（`type: "ShConfigurationType"`，或 `cloneFrom` 一个现成的 Shell 配置）。
 
 ### 7.2 一个配置、多个实例、一个实例一份日志
 
@@ -484,55 +475,7 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 `toInstanceState` 对 `processHandler == null` 返回 null，所以 `list` / `stop` / `rerun` 都看不见它。
 它不是"没日志"，是 **平台接管不了**。
 
-### 7.6 通用 create：让平台自己校验
-
-"所有类型都能建"不等于"为每种类型写一套代码"。路线是 **用平台自己的序列化器**：
-
-1. `ConfigurationTypeUtil.findConfigurationType(typeId)` 找类型；找不到 → 报"这个 IDE 没装对应插件"
-2. 三种内容来源 **三选一**：
-    - `cloneFrom`（最安全）：复制一个已存在的同类型配置
-    - 平台模板：`RunManager.getConfigurationTemplate(factory)` 拿该类型的默认配置
-    - `configurationXml`：调用方给的 XML 片段（逃生舱）
-3. 把内容灌进一个临时配置对象：`RunConfiguration.readExternal(Element)` —— **该类型自己的代码**在解析
-4. 再 `writeExternal(Element)` 序列化回来，得到平台认可的规范 XML
-5. **往返对比**：请求里给了、序列化后消失的字段 = 这个类型不认识 → 作为 warning 返回
-   （对应 `AGENTS.md` 里的老坑"多余的字段被忽略、名字写错静默用默认值，都不会报错"）
-6. 写盘：包进 `<component name="ProjectRunConfigurationManager">` 信封，写进 `.run/<name>.run.xml`
-7. 等 IDE 的文件监听注册它，再用 `checkSettings` 报 `canRun`
-
-> **能力边界**：工具覆盖任意类型，但 **不代表 agent 能凭空知道某个类型的字段名**。
-> 全新类型最稳的路径仍是"用户在 IDE 里建一个样例 → agent `cloneFrom` / `inspect` 后照抄"。
-> 这比"让 agent 猜 XML"可靠得多，所以 `cloneFrom` 是一等公民。
-
-### 7.7 update 的两种模式
-
-| 模式   | 触发           | 做什么                                                                |
-|--------|----------------|-----------------------------------------------------------------------|
-| 改字段 | 不传 `newName` | 按名字打补丁：`options` / `attributes` / `envs`，可增改删             |
-| 改名   | 传 `newName`   | 挪文件 + 改 `name` 属性 + **更新别人对它的引用** + 按新名字重建日志键 |
-
-改名的额外规则：
-
-- 目标名被占用 → 拒绝，列出相近的名字
-- 名字非法（`/`、`\`、空、过长）→ 拒绝
-- **该配置在跑 → 拒绝**，提示先 `stop_run_configuration`：运行实例是按名字盖的章，
-  改名后 `list` 与 IDE Run 窗口会对不上
-- 模板 / 非 `.run/` 存储 → 拒绝（只读）
-- 引用更新范围：别的 `.run/*.run.xml` 里 before-launch 的 `run_configuration_name`、复合配置的成员名；
-  workspace / `.idea` 里的引用不动，作为 warning 说明
-
-实现顺序上先写新文件、再删旧文件；中途失败如实报"已建新名、旧名还在"，不做半吊子回滚。
-
-### 7.8 delete 的引用检查
-
-`delete` 单独一个工具而不是 `update` 的一个模式：两者安全等级不同 ——
-`update` 是幂等收敛的（改完还是同一个配置），`delete` 是"让东西消失"，不可逆。
-
-- 在跑 → 拒绝，提示先停
-- 被引用（before-launch / 复合配置成员）→ 拒绝并列出引用者
-- 模板 / 非 `.run/` 存储 → 拒绝
-
-### 7.9 命名文法：`[os@]base[@env]`
+### 7.6 命名文法：`[os@]base[@env]`
 
 平台对配置名没有任何结构理解，但我们的约定有（见 opencode-idea 侧的 skill）：
 

@@ -272,17 +272,13 @@ class RunLogAndNamingTest {
     private fun definitionTools() = RunConfigDefinitionToolsProvider().getTools()
 
     @Test
-    fun `定义态 provider 暴露四个工具`() {
-        assertEquals(
-            listOf(INSPECT_TOOL_NAME, CREATE_DEFINITION_TOOL_NAME, UPDATE_TOOL_NAME, DELETE_TOOL_NAME),
-            definitionTools().map { it.descriptor.name },
-        )
+    fun `定义态 provider 只暴露 inspect`() {
+        assertEquals(listOf(INSPECT_TOOL_NAME), definitionTools().map { it.descriptor.name })
     }
 
     @Test
-    fun `四个工具都声明了 projectPath 且只有配置名必填`() {
-        val tools = definitionTools()
-        for (tool in tools) {
+    fun `工具声明了 projectPath 且只有配置名必填`() {
+        for (tool in definitionTools()) {
             val schema = tool.descriptor.inputSchema
             assertTrue(
                 "${tool.descriptor.name} 必须声明 projectPath（没配 header 的客户端只能靠它）",
@@ -298,22 +294,8 @@ class RunLogAndNamingTest {
     }
 
     @Test
-    fun `删除是破坏性的而 inspect 是只读的`() {
-        val annotations = definitionTools().associate { tool ->
-            tool.descriptor.name to tool.descriptor.annotations
-        }
+    fun `inspect 是只读的`() {
+        val annotations = definitionTools().associate { it.descriptor.name to it.descriptor.annotations }
         assertTrue(annotations.getValue(INSPECT_TOOL_NAME)?.readOnlyHint == true)
-        assertTrue(annotations.getValue(DELETE_TOOL_NAME)?.destructiveHint == true)
-        assertFalse(annotations.getValue(CREATE_DEFINITION_TOOL_NAME)?.readOnlyHint == true)
-    }
-
-    @Test
-    fun `描述里点明唯一写入口 而且不提文件路径`() {
-        val create = definitionTools().first { it.descriptor.name == CREATE_DEFINITION_TOOL_NAME }.descriptor
-        // 正向表述：这个工具就是唯一写入口（不是"你不要自己写"那种反例）
-        assertTrue(create.description.contains("is the only writer of"))
-        // 描述里**不出现**文件路径 —— 提了模型就会去手写文件。
-        assertFalse(create.description.contains(".run/"))
-        assertFalse(create.description.contains(".run.xml"))
     }
 }

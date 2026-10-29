@@ -150,9 +150,6 @@ diagnostics:
 | 运行态 | `stop_run_configuration`                                                         | ✗   | ✓     | ✓   |
 | 运行态 | `rerun_run_configuration`                                                        | ✗   | ✓     | ✗   |
 | 定义态 | `inspect_run_configuration`                                                      | ✓   | ✗     | ✓   |
-| 定义态 | `create_run_configuration`                                                       | ✗   | ✗     | ✗   |
-| 定义态 | `update_run_configuration`（含改名）                                             | ✗   | ✗     | ✓   |
-| 定义态 | `delete_run_configuration`                                                       | ✗   | ✓     | ✗   |
 
 每个工具 MUST：
 
@@ -471,31 +468,6 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 - MUST NOT 输出派生计数
 - `warnings` 只在 **需要 agent 动手**时出现（终端形态的 Shell、非 `.run/` 存储、模板）；
   "元数据缺失 / 日志已清理" MUST 安静降级，不出 warning
-
-`create_run_configuration`：
-
-- 内容来源三选一：`cloneFrom` / `configurationXml` / 平台模板；`type` 在 `cloneFrom` 时可省略
-- MUST 先查重（精确 + 忽略大小写）→ 名字被占用时报错并给建议名
-- MUST 在写盘前用平台反序列化校验（`RunConfiguration.readExternal`），并把"请求了但平台不认识"的
-  option 名字作为 `unknownOptions` 返回（拼写错误的证据）
-- **`cloneFrom` 一个"本机类型插件没装"的配置 MUST 被允许**（按文件内容原样复制、跳过平台校验，并给 warning）：
-  配置是文件驱动的，装了插件的机器就能跑。但调用方**显式**给了 `type` 而该类型不可用时 MUST 拒绝
-- MUST 在描述里要求 agent **先征得用户同意**；一次性命令不该建配置
-
-`update_run_configuration`：
-
-- `options` / `attributes` / `envs` 是 **补丁**语义：值为 `null` = 删除该键
-- `expectedContentHash`（可选）不匹配时 MUST 拒绝，MUST NOT 覆盖
-- `newName` 触发改名：MUST 拒绝目标重名、非法名字、以及 **正在运行**的配置；
-  MUST 更新引用（before-launch 的 `run_configuration_name`、复合配置成员）并把历史日志的键一起迁移
-- 改名 MUST 先写新文件、再删旧文件（中途失败不能把配置弄丢）
-
-`delete_run_configuration`：
-
-- 正在运行 MUST 拒绝（提示先 `stop_run_configuration`）
-- 被引用且 `force = false` MUST 拒绝并列出引用者；`force = true` 时 MUST 删除配置 **并移除那些引用**，
-  在 `removedReferences` 里如实报告
-- 删除 MUST 走 VFS，确保 RunManager 立刻不再列出它
 
 命名文法（`inspect.naming`）：
 
