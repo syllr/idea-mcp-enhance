@@ -45,237 +45,80 @@ data class DeploymentMappingState(
 }
 
 /**
- * 一个 **Server** 的快照，以及它在本项目下挂的 deployments（路径映射）。
+ * 一个 SFTP server 的**连接凭据**，给 `get_deployment_servers` 用。
  *
- * Server 是连接目标；deployment 是挂在 Server 上的发布映射。一个 Server 可以有 0 到 N 个
- * deployments —— 没有 deployment 时仍可用于远程终端，但不能上传/下载。
+ * 这个形状故意不暴露给模型（工具在 `opencode-idea` 的隐藏清单里）：它是那个插件
+ * `remote_exec` 的数据通道，不是任务工具。
  *
- * @param name 服务器名。**远程终端把它当 `serverName` 入参**；上传/下载使用
- *   deployment 派生出的全局唯一 `deploymentName`。服务器 ID 是生成的本机 UUID
- *   （换台机器就不同），只有名字跨机器可读、可复用。
- * @param id 本机 UUID，仅作参考，不要拿它做跨机器匹配
- * @param projectLevel true = 只对这个项目可见（存在 `.idea/webServers.xml`）；false = 应用级（所有项目共享）
- * @param accessType SFTP / FTP / FTPS / WEBDAV / MOUNT / LOCAL
- * @param needsTransfer false 表示这类服务器不产生网络传输（LOCAL 类型），传不了文件
- * @param hasCredentials 有没有可用凭据。**这是认证预检**：false 时不要发起连接，
- *   否则平台会弹模态登录框（`PublishUtils.showLoginDialogAfterAuthFail`），在 MCP 路径上会把调用卡死
- * @param validationIssue `validateFast()` 的就地校验结果（不联网）；非 null 表示配置有毛病，
- *   平台自己也会把它从"可上传的默认服务器"里剔掉
- * @param isDefault 是不是当前默认服务器/组
- * @param deployments 该 Server 在**本项目**下显式配置的 deployment（来自 `PublishConfig` 的
- *   path mappings，不来自 `WebServerConfig`）；空列表表示这个 Server 没挂 deployment
+ * 只收 SFTP：FTP / WebDAV / MOUNT 没有 SSH 凭据，`remote_exec` 也用不上。
+ *
+ * @param authType PASSWORD / KEY_PAIR / OPEN_SSH。调用方据此决定用 `password` 还是
+ *   `privateKeyPath`；OPEN_SSH 两者都可能为空（凭据由 `~/.ssh/config` 提供）。
+ * @param password 仅 PASSWORD 有值。**不要打印、不要写日志**。
+ * @param passphrase 仅 KEY_PAIR 且私钥带口令时有值。
+ * @param privateKeyPath 仅 KEY_PAIR 有值；已展开 `$USER_HOME$`。
  */
-data class DeploymentServerState(
+data class DeploymentServerCredentials(
     val name: String,
-    val id: String,
-    val projectLevel: Boolean,
-    val accessType: String,
-    val host: String?,
+    val sshConfigName: String,
+    val host: String,
     val port: Int,
+    val username: String,
+    val authType: String,
+    val password: String?,
+    val passphrase: String?,
+    val privateKeyPath: String?,
     val rootFolder: String?,
-    val needsTransfer: Boolean,
-    val hasCredentials: Boolean,
-    val validationIssue: String?,
-    val isDefault: Boolean,
     val deployments: List<DeploymentMappingState>,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("name", name)
-        put("id", id)
-        put("level", if (projectLevel) "project" else "application")
-        put("accessType", accessType)
+        // `name` 是 Deployment 面板里的 WebServer 名；`sshConfigName` 是它引用的 SSH 配置名。
+        // 调用方用后者当服务器主键（一台 SSH 主机），前者只作诊断。
+        put("sshConfigName", sshConfigName)
         put("host", host)
         put("port", port)
+        put("username", username)
+        put("authType", authType)
+        put("password", password)
+        put("passphrase", passphrase)
+        put("privateKeyPath", privateKeyPath)
         put("rootFolder", rootFolder)
-        put("needsTransfer", needsTransfer)
-        put("hasCredentials", hasCredentials)
-        put("validationIssue", validationIssue)
-        put("isDefault", isDefault)
-        putJsonArray("deployments") { for (deployment in deployments) add(deployment.toJson()) }
+        // 这里比 `list_server_deployments` 多给 localPath / deployPath：上传 / 下载要靠它
+        // 定位两边的目录，只给 name 的话调用方没法自己拼。
+        //
+        // `name` 用 **WebServer 名**（Deployment 面板左边那一条），不是 localPath 末段：
+        // 用户配一条 deployment 就是在面板里建一条 WebServer，那才是他调用时看到的名字。
+        // 一个 WebServer 挂多条 mapping 时才追加序号（正常是一对一）。
+        putJsonArray("deployments") {
+            for ((index, deployment) in deployments.withIndex()) {
+                add(buildJsonObject {
+                    put("name", if (deployments.size == 1) name else "$name-${index + 1}")
+                    put("localPath", deployment.localPath)
+                    // IDE 的 mapping 里 `deployPath` 是**相对 rootFolder** 的（`/` 表示服务器根），
+                    // 直接拿它当目标目录会把文件传到 `/` —— 这里拼成调用方能直接用的完整路径。
+                    put("deployPath", resolveRemotePath(rootFolder, deployment.deployPath))
+                })
+            }
+        }
     }
 }
 
-/**
- * 项目级的部署选项。
- *
- * **它们是整个项目一套，所有 server 共用**（见文件头的说明）——这也是为什么把它放在
- * `list_server_deployments` 的返回里：它不是"某个服务器"的属性。
- *
- * @param autoUpload ALWAYS / ON_EXPLICIT_SAVE / NEVER
- * @param overwriteAll true = **不做** size+mtime 比较，每次全量覆盖（注意语义与字面相反：
- *   true 时 `isUpToDate` 那段跳过逻辑压根不执行）
- * @param deleteMissingItems true = 本地没有而远端有的文件会被删除（"镜像"效果）
- * @param preserveTimestamps true = 上传后把远端 mtime 设成本地 mtime（这是下次能跳过未变更文件的前提）
- * @param confirmBeforeDeletion true = 删除前弹确认框。**MCP 路径必须规避**：那个框会占住 EDT，
- *   把工具调用连同其它要上 EDT 的工具一起卡死
- * @param autoUploadExternalChanges true = 连 VCS / 外部工具造成的变更也触发自动上传（危险项）
- */
-data class DeploymentOptionsState(
-    val autoUpload: String,
-    val overwriteAll: Boolean,
-    val deleteMissingItems: Boolean,
-    val preserveTimestamps: Boolean,
-    val confirmBeforeUploading: Boolean,
-    val confirmBeforeDeletion: Boolean,
-    val autoUploadExternalChanges: Boolean,
-    val remoteFilesAllowedToDisappearOnAutoupload: Boolean,
-    val excludeMask: String?,
-) {
+/** `get_deployment_servers` 的完整返回。 */
+data class DeploymentCredentialsReport(val servers: List<DeploymentServerCredentials>) {
     fun toJson(): JsonObject = buildJsonObject {
-        put("autoUpload", autoUpload)
-        put("overwriteAll", overwriteAll)
-        put("deleteMissingItems", deleteMissingItems)
-        put("preserveTimestamps", preserveTimestamps)
-        put("confirmBeforeUploading", confirmBeforeUploading)
-        put("confirmBeforeDeletion", confirmBeforeDeletion)
-        put("autoUploadExternalChanges", autoUploadExternalChanges)
-        put("remoteFilesAllowedToDisappearOnAutoupload", remoteFilesAllowedToDisappearOnAutoupload)
-        put("excludeMask", excludeMask)
-    }
-}
-
-/** `list_server_deployments` 的完整返回：Server 列表，每个 Server 带自己的 deployments。 */
-data class DeploymentServersReport(
-    val defaultServerOrGroupName: String?,
-    val servers: List<DeploymentServerState>,
-    val options: DeploymentOptionsState,
-    val warnings: List<String>,
-) {
-    fun toJson(): JsonObject = buildJsonObject {
-        put("defaultServerOrGroupName", defaultServerOrGroupName)
-        put("serverCount", servers.size)
         putJsonArray("servers") { for (server in servers) add(server.toJson()) }
-        put("options", options.toJson())
-        putJsonArray("warnings") { for (warning in warnings) add(JsonPrimitive(warning)) }
     }
 }
 
 /**
- * 从当前配置推导**风险提示**。纯函数，便于单测。
+ * IDE 的 mapping 路径是相对 server 的 `rootFolder` 的：`deploy="/"` 表示 rootFolder 本身。
  *
- * 这里放的是"用户看配置文件看不出来、但会咬人"的组合。刻意不做成拒绝性错误：
- * 它们描述的是**既有的持久配置**，不是这次调用做错了什么，所以只在返回里点出来。
+ * 拼成绝对路径再交给调用方，省掉"先读 rootFolder 再自己 join"这一步 —— 远端是 POSIX 路径，
+ * 这里统一用 `/`。
  */
-internal fun deploymentWarnings(
-    defaultServerOrGroupName: String?,
-    servers: List<DeploymentServerState>,
-    options: DeploymentOptionsState,
-): List<String> = buildList {
-    if (defaultServerOrGroupName == null) {
-        add(
-            "No default server or group is configured, so `uploadToDefaultServer` and automatic upload have " +
-                "no target at all. Pick one in Settings | Build, Execution, Deployment | Deployment.",
-        )
-    }
-
-    if (options.overwriteAll) {
-        add(
-            "overwriteAll = true: every file is re-uploaded on each upload (the size+mtime \"skip unchanged\" " +
-                "check is bypassed). Uncheck \"Overwrite up-to-date files\" in Settings | Build, Execution, " +
-                "Deployment | Deployment | Options to upload only changes.",
-        )
-    }
-
-    if (options.deleteMissingItems && options.autoUploadExternalChanges) {
-        add(
-            "Dangerous combination: automatic upload reacts to changes made by external tools (VCS, scripts) " +
-                "AND deleteMissingItems is on — switching a git branch can delete the corresponding files on " +
-                "the remote host.",
-        )
-    }
-
-    if (options.deleteMissingItems && options.confirmBeforeDeletion) {
-        add(
-            "deleteMissingItems is on while confirmBeforeDeletion is on: the IDE will show a modal confirmation " +
-                "dialog before each deletion. On the MCP path nothing can answer that dialog, so it would block " +
-                "the call (and any other tool call that needs the EDT).",
-        )
-    }
-
-    if (options.autoUpload != "NEVER") {
-        add(
-            "Automatic upload is '${options.autoUpload}': changing the default server changes the target of every " +
-                "subsequent save, immediately. If you rely on automatic upload, keep the default pointed at your " +
-                "everyday environment and pass `deploymentName` to upload_to_deployment for one-off uploads.",
-        )
-    }
-
-    for (server in servers) {
-        if (!server.needsTransfer) {
-            add(
-                "\"${server.name}\" is a ${server.accessType} server, which does not transfer anything over the " +
-                    "network — upload/download are no-ops for it.",
-            )
-        }
-        if (server.validationIssue != null) {
-            add("\"${server.name}\" has a configuration problem: ${server.validationIssue}")
-        }
-        if (server.needsTransfer && !server.hasCredentials) {
-            add(
-                "\"${server.name}\" has no usable credentials. Connecting to it makes the IDE open a modal login " +
-                    "dialog, which blocks the MCP call. Fix the credentials in the IDE first.",
-            )
-        }
-        if (server.deployments.isEmpty()) {
-            add(
-                "\"${server.name}\" has no deployment mapping. It can still be used by `execute_in_remote_host`, " +
-                    "but upload/download have no target until a mapping is added in Deployment settings.",
-            )
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// upload_to_deployment
-// ---------------------------------------------------------------------------
-
-/**
- * `upload_to_deployment` / `download_from_deployment` / `get_deployment_task_status` 三者共用的返回结构。
- *
- * 三个工具返回**同一套字段**——它们的区别只在"谁触发的"，不在"数据长什么样"，这样 agent 只需记一套读法。
- *
- * @param handle 这一次任务的句柄。**查询状态只认它**，不要用 serverName 去查（一个服务器会先后有多个任务）
- * @param kind `upload`（推到服务器）或 `download`（从服务器拉）
- * @param mode 该方向的策略：上传是 `upload`/`mirror`，下载目前只有 `take-remote`
- * @param state `completed`（任务真正结束，结果可信）或 `in_progress`（**还在传**，见下方说明）
- * @param elapsedMs 这个任务已经跑了多久（毫秒）；**已结束的取结束时刻**，不再随时间增长
- * @param processed / total 平台计数器的实时进度。两个方向都拿得到（上传/下载都是我们自己的任务子类）；
- *   收集阶段结束前 `total` 可能还是 0，如实反映，不假装有进度
- * @param counters 平台按操作类型记的计数，key 是它自己的 bundle key（形如
- *   `transfer.details.transferred` / `transfer.details.deleted`）。**粒度是平台定的，不是"文件数"**：
- *   `transferred` 数文件，`deleted` 数删除操作（一个被整个删掉的目录算 1）。
- *   **`state = "in_progress"` 时为空**——还没统计完，报了也没意义
- */
-data class DeploymentTaskReport(
-    val handle: String,
-    val kind: String,
-    val serverName: String,
-    val mode: String,
-    val roots: List<String>,
-    val state: String,
-    val elapsedMs: Long,
-    val processed: Int,
-    val total: Int,
-    val succeeded: Boolean,
-    val totalProcessed: Int,
-    val failed: Int,
-    val counters: Map<String, Int>,
-    val warnings: List<String>,
-) {
-    fun toJson(): JsonObject = buildJsonObject {
-        put("handle", handle)
-        put("kind", kind)
-        put("serverName", serverName)
-        put("mode", mode)
-        putJsonArray("localRoots") { for (root in roots) add(JsonPrimitive(root)) }
-        put("state", state)
-        put("elapsedMs", elapsedMs)
-        put("processed", processed)
-        put("total", total)
-        put("succeeded", succeeded)
-        put("totalProcessed", totalProcessed)
-        put("failed", failed)
-        putJsonObject("counters") { for ((key, value) in counters) put(key, value) }
-        putJsonArray("warnings") { for (warning in warnings) add(JsonPrimitive(warning)) }
-    }
+private fun resolveRemotePath(rootFolder: String?, deployPath: String): String {
+    val root = rootFolder?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return deployPath
+    val child = deployPath.trim().trimStart('/')
+    return if (child.isEmpty()) root else "$root/$child"
 }

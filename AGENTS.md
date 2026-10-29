@@ -69,18 +69,43 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
     （mcp/ 下还有能力三，见下）
 ```
 
-**能力三：Deployment MCP 工具**（同一个 `mcp/` 包，同样三层；额外需要 `com.jetbrains.plugins.webDeployment`， **仅 Ultimate
+**能力三：Deployment 凭据通道（`get_deployment_servers`）**（额外需要 `com.jetbrains.plugins.webDeployment`，**仅 Ultimate
 有**）
 
 ```
-    ├── DeploymentModels.kt          纯数据 + 纯函数：服务器快照 → JSON + 风险提示
-    ├── DeploymentSchemas.kt         工具描述符 / 输入 schema / 输出 schema
+    ├── DeploymentModels.kt          纯数据：SFTP server + 凭据 + 路径映射 → JSON
+    ├── DeploymentSchemas.kt         唯一一个工具的描述符 / 输入输出 schema
     ├── DeploymentAccess.kt          平台接线：**全插件唯一** import webDeployment 的文件
     └── DeploymentToolsProvider.kt   McpTool（前提由 config-file 把守）
 ```
 
-| 层                                       | 允许                                                | 禁止                                      | 测试方式                                            |
-|------------------------------------------|-----------------------------------------------------|-------------------------------------------|-----------------------------------------------------|
+只是一个**数据通道**：返回 SFTP server 的 host / port / 用户名 / 凭据，以及 deployment 的
+`name` / `localPath` / `deployPath`（已拼上 `rootFolder`）。传文件与远程执行都在
+`opencode-idea` 里自己用 ssh2 做，本插件不再有 `upload_to_deployment` / `download_from_deployment` /
+`get_deployment_task_status` / `list_server_deployments`。
+
+**能力四：项目环境变量（`get_project_env`）**
+
+```
+    ├── TerminalEnv.kt                纯聚合：5 个 provider 按固定顺序拼 PATH
+    ├── JavaTerminalEnv.kt            第 5 个 provider（项目 JDK）
+    ├── NodeTerminalEnv.kt            Node runtime / 包管理器
+    ├── GoTerminalEnv.kt              Go SDK
+    ├── MavenTerminalEnv.kt           Maven home
+    ├── PythonTerminalEnv.kt          Python SDK / venv
+    ├── ProjectEnvSchemas.kt          工具描述符 / 输入输出 schema
+    └── ProjectEnvToolsProvider.kt    McpTool
+```
+
+它不是给模型用的工具，而是 `opencode-idea` 在 `shell.hook("create.before")` 里直接调用的数据通道：
+把 IDE 里配的 SDK / runtime 变成 `{ PATH, variables }`，由那边前置拼到 OpenCode 原生 shell 的 PATH 上。
+所以**本地终端能力（`project_sdk_terminal`）已经整体移除** —— 不再有 tab、`terminal_read` 的本地分支。
+
+同一个道理，**远程执行也移出去了**：`DeploymentToolsProvider` 只多一个隐藏工具 `get_deployment_servers`
+（返回 SFTP server + 凭据），`opencode-idea` 的 `remote_exec` 自己 SSH。本插件不再碰远程进程。
+
+| 层                                    | 允许                                                | 禁止                                      | 测试方式                                            |
+|---------------------------------------|-----------------------------------------------------|-------------------------------------------|-----------------------------------------------------|
 | `prompt/format/`                         | 字符串操作                                          | 平台 import、IO、环境变量                 | 纯 JUnit 4（秒级）                                  |
 | `mcp/RunLifecycleModels` / `Schemas`     | 字符串、JsonObject、mcpserver 的 descriptor 类型    | 平台 import、IO                           | 纯 JUnit 4（秒级）                                  |
 | `prompt/actions/`、`mcp/RunConfigAccess` | 平台 API                                            | 字符串格式化 / 手写 JSON                  | `BasePlatformTestCase`（见「已知阻塞」）或 `runIde` |
@@ -97,6 +122,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（42 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
 | `mcp/DeploymentSchemaTest`             | 纯 JUnit 4（15 例）    | deployment 描述符 / 风险提示（危险组合的判定）/ 输出 JSON 形状                              | ✅ 通过         |
 | `mcp/RunLogAndNamingTest`              | 纯 JUnit 4（22 例）    | 命名文法 / 日志键与文件名 / 历史条目 null 键 / 列表精简形状 / 定义态 schema                 | ✅ 通过         |
+| `mcp/ProjectEnvTest`                   | 纯 JUnit 4             | `get_project_env` 的返回形状 / provider 固定顺序                                            | ✅ 通过         |
 | `prompt/actions/EditorDiagnosticsTest` | `BasePlatformTestCase` | 诊断采集能从 markup model 捞出编译错误                                                      | ⛔ 禁用（见下） |
 
 ## WHERE TO LOOK
@@ -116,9 +142,11 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改 rerun / stop 的可重入语义             | `RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent` + 平台启动门 |
 | 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                       |
 | 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                               |
-| 改 deployment 工具的名字 / 描述 / 入参   | `mcp/DeploymentSchemas.kt` 的 descriptor + `DeploymentSchemaTest`                                                                                                                                    |
-| 改 deployment 的返回 JSON / 风险提示     | `mcp/DeploymentModels.kt` 的 `toJson()` / `deploymentWarnings()`                                                                                                                                    |
-| 加一个 deployment 工具 / 改它的平台接线   | `DeploymentToolsProvider.kt` 加子类并注册（类加载隔离规矩见该文件 KDoc）+ `DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）      |
+| 改 `get_deployment_servers` 的字段        | `mcp/DeploymentModels.kt` 的 `DeploymentServerCredentials.toJson()` + `mcp/DeploymentSchemas.kt` + `DeploymentSchemaTest`                                                                          |
+| 改它读哪些 server / 凭据                  | `DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）                                                                                                                                    |
+| 改项目环境变量的 provider / 顺序         | `mcp/TerminalEnv.kt`（枚举顺序 + 聚合）+ 各 `*TerminalEnv.kt` + `mcp/ProjectEnvSchemas.kt`（返回契约）                              |
+| 改 `get_project_env` 的调用方            | `opencode-idea` 的 `src/plugin.js`：`loadProjectEnv` / `shell.hook("create.before")` / `env-unready` 状态                          |
+| 改远程执行（已移出本插件）               | `opencode-idea` 的 `src/remote/`（`hosts.js` 三级合并 / `ssh.js` 执行 / `tools.js` 工具与缓存）                                       |
 | 改运行日志的采集 / 落盘 / 清理           | `mcp/RunLogAccess.kt`（抓点、大小上限、sidecar、历史扫描、改名迁移）+ `mcp/RunLogModels.kt`（键 / 文件名 / JSON）                                                                                   |
 | 改配置名的解析规则                       | `mcp/RunConfigNaming.kt` + `RunLogAndNamingTest`                                                                                                                                                    |
 | 改 `inspect` 返回的字段                  | `mcp/RunConfigDefinitionModels.kt` + `RunConfigDefinitionSchemas.kt` + `RunLogAndNamingTest`                                                                                                        |
@@ -242,6 +270,13 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **`webDeployment` 是产品内部实现，不是平台 API**（只在 Ultimate 有）⇒ 引用它的类只能在确认插件存在后才加载（链式 optional 依赖把守）
 - **下载方向默认 `AlwaysAsk` 会弹框** —— 必须显式传 `AlwaysOverwrite` / `AlwaysSkip`
 - **建连接前先 `hasCredentials()` 预检** —— 否则认证失败会弹模态登录框
+- **`get_project_env` 不是模型工具** —— 它是 `opencode-idea` 的 `shell.hook("create.before")` 的数据通道，在那个插件的隐藏清单里；`project_sdk_terminal` 与本地 `terminal_read` / `terminal_interrupt` / `list_terminals` 分支已经整体删除
+- **`PATH` 只含 5 个 provider 的 bin，不含 IDE 进程的 `PATH`** —— 调用方负责前置拼接；如果这里把系统 PATH 也带上，OpenCode 进程的 PATH 会被整条顶掉
+- **provider 的顺序由 `ProjectEnvProvider` 枚举决定，不能用注册顺序** —— `ProjectActivity` 的启动顺序不保证，直接遍历注册表会让 PATH 每次启动都不同
+- **env 拉取是 `/open-in-ide` 的硬条件** —— 没拉到就报 `env-unready`，自愈路径也不清 `needsRebuild`；否则会话会停在"工具有、环境是空的"中间态
+- **远程执行已整体移出本插件** —— `execute_in_remote_host` / `terminal_read` / `terminal_interrupt` / `list_terminals` / `RemoteTerminalAccess` / `terminal-io.xml` / `remote-terminal.xml` 全部删除；`opencode-idea` 的 `remote_exec` 直接 SSH，凭据由本插件的隐藏工具 `get_deployment_servers` 提供
+- **`get_deployment_servers` 只返回 SFTP server，且凭据来自平台** —— `Deployable.copyToCredentials()` 会把 `Credentials.getPasswordAsString()` 塞进 holder（PASSWORD → `password`，KEY_PAIR → `passphrase`），所以不需要读 PasswordSafe / Keychain；工具在 `opencode-idea` 的隐藏清单里，summary 里**绝不能出现凭据字段**
+- **mapping 的 `deployPath` 必须拼上 `rootFolder` 再返回** —— IDE 里它是**相对路径**（`/` = 服务器根），直接当目标目录会把文件传到远端 `/`；`runIde` 沙箱实测过 `mcp-test-project` 这一条（`rootFolder=/Users/yutao/Desktop/data/test` + `deploy=/`）
 
 ## REFERENCES
 

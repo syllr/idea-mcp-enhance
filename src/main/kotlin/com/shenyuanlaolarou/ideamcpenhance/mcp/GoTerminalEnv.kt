@@ -19,6 +19,8 @@ class GoTerminalEnvRegistrar : ProjectActivity {
 }
 
 private object GoTerminalEnvProvider : ProjectTerminalEnvProvider {
+    override val id = ProjectEnvProvider.Go
+
     override fun extraEnv(project: Project): ProjectTerminalEnv {
         val service = GoSdkService.getInstance(project)
         val module = ModuleManager.getInstance(project).modules.firstOrNull()

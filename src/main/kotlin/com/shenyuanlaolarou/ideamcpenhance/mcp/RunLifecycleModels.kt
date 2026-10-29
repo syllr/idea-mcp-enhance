@@ -437,3 +437,15 @@ internal fun UnknownConfigurationReport.toJson(): JsonObject = buildJsonObject {
         }
     }
 }
+
+/**
+ * 通用退避序列：250ms、500ms，之后每次 1000ms。
+ *
+ * 用途是等进程退出 / 启动 / 配置注册这类轮询。固定 50ms 轮询在 300 秒窗口里会白跑几千次，
+ * 退避既快过首轮也不浪费。
+ */
+internal fun retryBackoffMs(attempt: Int): Long = when (attempt) {
+    0 -> 250L
+    1 -> 500L
+    else -> 1_000L
+}

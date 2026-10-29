@@ -2,6 +2,30 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.5] - 2026-10-29
+
+### Added
+
+- **`get_deployment_servers`（SFTP 凭据通道）**：返回本项目可用的 SFTP server 及其 `host` / `port` / `username` / `authType` / `password` / `passphrase` / `privateKeyPath` / `rootFolder` / `deployments`。凭据由平台直接读出（`Deployable.copyToCredentials` 会把 `Credentials.getPasswordAsString()` 放进 holder），不读 PasswordSafe / Keychain，也不经过任何配置文件。它的 `deployments[]` 同时给出 `name` / `localPath` / `deployPath`，其中 `deployPath` 已经拼上 server 的 `rootFolder`（IDE 的 mapping 里它是相对路径，`/` 表示服务器根）—— 调用方拿到的是能直接用的绝对路径。它不进模型可见的工具表，只作为 `opencode-idea` 远程执行与文件同步的凭据来源。
+
+- **`get_project_env`（项目环境变量）**：返回 `{ PATH, variables }`。`PATH` 由 5 个 provider（Java / Node / Go / Maven / Python）的 bin 按固定顺序拼成，只含 provider 自己的目录，不含 IDE 进程的 `PATH`；`variables` 是各 provider 的标量变量（`GOROOT` / `GOPATH` / `GOBIN` / `MAVEN_HOME` / `M2_HOME` / `VIRTUAL_ENV`）。
+- **Java 成为第 5 个 provider**：项目 JDK 的 `bin` 与另外四个 provider 同级，不再写死在聚合逻辑里。
+
+### Changed
+
+- **项目环境变量改由 OpenCode 原生 shell 承载**：新增的 `get_project_env` 不进模型可见的工具表，只作为 `opencode-idea` 的 `shell.hook("create.before")` 的数据通道；那边把 `PATH` 前置拼到自己的 PATH 上，其余变量直接覆盖。
+- `terminal_read` / `terminal_interrupt` 不再接收 `target` 参数：本地终端已移除，它们只服务远程 tab。
+- `list_terminals` 只剩 `mcp_remote` 分组。
+- 这三个工具的注册从 `terminal.xml` 迁到 `terminal-io.xml`（挂在 `remote-terminal.xml` 下，再 gate Terminal 插件）。
+
+### Removed
+
+- **本地终端能力整体移除**：`project_sdk_terminal` 工具、本地 `terminal_read` / `terminal_interrupt` / `list_terminals` 分支、`TerminalAccess.kt`、`terminal.xml`、`TerminalToolFilterProvider` 全部删除。项目 SDK / runtime 的环境变量改由 `get_project_env` 提供。
+- **Deployment 系列收敛成一个凭据通道**：`list_server_deployments` / `upload_to_deployment` /
+  `download_from_deployment` / `get_deployment_task_status` 全部删除，只保留 `get_deployment_servers`。
+  上传 / 下载改由 `opencode-idea` 的 `remote_upload` / `remote_download` 直接走 SFTP（`overwrite` / `mirror`）。
+- **远程终端能力整体移出**：`execute_in_remote_host` / `terminal_read` / `terminal_interrupt` / `list_terminals`、`RemoteTerminalAccess.kt`、`TerminalSessionRegistry.kt`、`TerminalInventory.kt`、`TerminalModels.kt`、`TerminalSchemas.kt`、`terminal-io.xml`、`remote-terminal.xml` 全部删除。远程执行改由 `opencode-idea` 的 `remote_exec` 直接 SSH，凭据来自新增的 `get_deployment_servers`；不再依赖 `remote-run` / Terminal 插件。上传 / 下载仍由本插件的 deployment 工具负责。
+
 ## [0.1.4] - 2026-10-24
 
 ### Added

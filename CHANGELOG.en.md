@@ -13,6 +13,54 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.5] - 2026-10-29
+
+### Added
+
+- **`get_deployment_servers` (SFTP credential channel)**: returns this project's SFTP servers with
+  `host` / `port` / `username` / `authType` / `password` / `passphrase` / `privateKeyPath` /
+  `rootFolder` / `deployments`. Credentials come straight from the platform
+  (`Deployable.copyToCredentials` fills the holder from `Credentials.getPasswordAsString()`), so
+  neither PasswordSafe nor the macOS Keychain is touched. The tool is hidden from the model and
+  Its `deployments[]` carries `name` / `localPath` / `deployPath`, with `deployPath` already
+  joined to the server's `rootFolder` (the IDE stores it relative, where `/` means the server
+  root) — callers get an absolute path they can use directly.
+  The tool serves only as the credential and mapping source for `opencode-idea`'s remote
+  execution and file sync.
+
+- **`get_project_env`**: returns `{ PATH, variables }`. `PATH` joins the five providers (Java / Node / Go /
+  Maven / Python) in a fixed order and contains only their own directories — never the IDE process PATH —
+  so a caller can prepend it to its existing PATH instead of replacing it. `variables` holds each provider's
+  scalar values (`GOROOT` / `GOPATH` / `GOBIN` / `MAVEN_HOME` / `M2_HOME` / `VIRTUAL_ENV`).
+- **Java is the fifth provider**: the project JDK's `bin` now sits next to the other four instead of being
+  hard-wired into the aggregation.
+
+### Changed
+
+- **The project environment now lives in the native shell**: `get_project_env` is not exposed to the model.
+  It is the data channel for `opencode-idea`'s `shell.hook("create.before")`, which prepends `PATH` and
+  applies the scalar variables to every shell it creates.
+- `terminal_read` / `terminal_interrupt` no longer take a `target` argument: local terminals are gone, so
+  they only serve remote tabs.
+- `list_terminals` only reports the `mcp_remote` group.
+- Those three tools are now registered from `terminal-io.xml` (gated on Terminal, under `remote-terminal.xml`).
+
+### Removed
+
+- **Local terminal support**: the `project_sdk_terminal` tool, the local branches of `terminal_read` /
+  `terminal_interrupt` / `list_terminals`, `TerminalAccess.kt`, `terminal.xml` and the
+  `TerminalToolFilterProvider` are all gone.
+- **The deployment toolset is now one credential channel**: `list_server_deployments` /
+  `upload_to_deployment` / `download_from_deployment` / `get_deployment_task_status` are gone;
+  only `get_deployment_servers` remains. Upload / download now run through `opencode-idea`'s
+  `remote_upload` / `remote_download` over SFTP (`overwrite` / `mirror`).
+- **Remote terminal support moved out**: `execute_in_remote_host` / `terminal_read` /
+  `terminal_interrupt` / `list_terminals`, `RemoteTerminalAccess.kt`, `TerminalSessionRegistry.kt`,
+  `TerminalInventory.kt`, `TerminalModels.kt`, `TerminalSchemas.kt`, `terminal-io.xml` and
+  `remote-terminal.xml` are gone. Remote commands now run through `opencode-idea`'s `remote_exec`
+  over SSH, using credentials from the new `get_deployment_servers` — no `remote-run` or Terminal
+  plugin required. Upload / download stay with this plugin's deployment tools.
+
 ## [0.1.4] - 2026-10-24
 
 ### Added

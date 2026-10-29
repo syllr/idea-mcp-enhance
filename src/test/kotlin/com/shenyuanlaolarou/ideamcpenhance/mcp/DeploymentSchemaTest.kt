@@ -1,363 +1,127 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
-import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.int
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Deployment 工具的**契约测试**：工具描述符的形状 + 风险提示（[deploymentWarnings]）的逻辑 +
- * 返回 JSON 的形状。
+ * `get_deployment_servers` 的契约测试：描述符形状、凭据字段、mapping 的路径拼接。
  *
- * 全都是纯函数，所以用纯 JUnit 断言，不需要启动 IDE、也不需要真的连一台 SFTP 服务器。
+ * 它是本插件唯一的 deployment 工具 —— 上传 / 下载已经移到 `opencode-idea`，这里只负责
+ * 把 SFTP server + 凭据 + 路径映射交出去。
  *
  * 刻意**不测**的部分：`DeploymentAccess` 里对 `com.jetbrains.plugins.webDeployment` 的调用。
- * 那部分既需要插件存在，也要真的有一台服务器，只能靠 `./gradlew runIde` 手工验证
- * （与 `RunConfigAccess` 的处理一致）。
+ * 那部分要有真的服务器，只能 `./gradlew runIde` 手工验证（2026-10-29 在沙箱里实测过
+ * `mcp-test-project` 那一台，确认凭据与 `rootFolder` 都能读到）。
  */
 class DeploymentSchemaTest {
 
-    // ---------- 测试数据 ----------
-
-    private fun options(
-        autoUpload: String = "NEVER",
-        overwriteAll: Boolean = false,
-        deleteMissingItems: Boolean = false,
-        preserveTimestamps: Boolean = true,
-        confirmBeforeUploading: Boolean = false,
-        confirmBeforeDeletion: Boolean = false,
-        autoUploadExternalChanges: Boolean = false,
-        remoteFilesAllowedToDisappearOnAutoupload: Boolean = true,
-        excludeMask: String? = null,
-    ) = DeploymentOptionsState(
-        autoUpload = autoUpload,
-        overwriteAll = overwriteAll,
-        deleteMissingItems = deleteMissingItems,
-        preserveTimestamps = preserveTimestamps,
-        confirmBeforeUploading = confirmBeforeUploading,
-        confirmBeforeDeletion = confirmBeforeDeletion,
-        autoUploadExternalChanges = autoUploadExternalChanges,
-        remoteFilesAllowedToDisappearOnAutoupload = remoteFilesAllowedToDisappearOnAutoupload,
-        excludeMask = excludeMask,
-    )
-
-    private fun server(
-        name: String = "sftp",
-        needsTransfer: Boolean = true,
-        hasCredentials: Boolean = true,
-        validationIssue: String? = null,
-        deployments: List<DeploymentMappingState> = listOf(
-            DeploymentMappingState(localPath = "/local", deployPath = "./", webPath = "/"),
-        ),
-    ) = DeploymentServerState(
-        name = name,
-        id = "id-$name",
-        projectLevel = false,
-        accessType = if (needsTransfer) "SFTP" else "LOCAL",
-        host = "example.com",
+    private fun credentials(
+        rootFolder: String? = "/data",
+        deployPath: String = "/srv/app",
+        password: String? = "p",
+        authType: String = "PASSWORD",
+        privateKeyPath: String? = null,
+    ) = DeploymentServerCredentials(
+        name = "aidata-middleware",
+        sshConfigName = "mbp",
+        host = "100.64.0.1",
         port = 22,
-        rootFolder = "/srv",
-        needsTransfer = needsTransfer,
-        hasCredentials = hasCredentials,
-        validationIssue = validationIssue,
-        isDefault = false,
-        deployments = deployments,
+        username = "yutao",
+        authType = authType,
+        password = password,
+        passphrase = null,
+        privateKeyPath = privateKeyPath,
+        rootFolder = rootFolder,
+        deployments = listOf(DeploymentMappingState("/local/app", deployPath, "/")),
     )
 
-    private fun warnings(
-        defaultName: String? = "sftp",
-        servers: List<DeploymentServerState> = listOf(server()),
-        options: DeploymentOptionsState = options(),
-    ) = deploymentWarnings(defaultName, servers, options)
-
-    // ---------- 风险提示 ----------
-
     @Test
-    fun `全套健康配置不产生任何警告`() {
-        assertEquals(emptyList<String>(), warnings())
+    fun `get_deployment_servers 的入参与输出 schema 对齐`() {
+        val descriptor = getDeploymentServersDescriptor
+        assertEquals("get_deployment_servers", descriptor.name)
+        assertEquals("Deployment", descriptor.category.shortName)
+        assertEquals(setOf("projectPath"), descriptor.inputSchema.propertiesSchema.keys)
+        assertEquals(setOf("servers"), descriptor.outputSchema!!.requiredProperties)
+        assertTrue(descriptor.annotations!!.readOnlyHint == true)
+        assertFalse(descriptor.annotations!!.destructiveHint == true)
     }
 
     @Test
-    fun `没配默认服务器会被点名`() {
-        val result = warnings(defaultName = null)
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("No default server or group"))
+    fun `描述符声明只返回 SFTP server`() {
+        // 调用方（opencode-idea）的 remote_exec 只对 SSH 有意义；FTP/WebDAV 没有凭据可用。
+        assertTrue(getDeploymentServersDescriptor.description.contains("Only SFTP"))
     }
 
     @Test
-    fun `overwriteAll 会提示每次全量重传`() {
-        val result = warnings(options = options(overwriteAll = true))
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("every file is re-uploaded"))
-    }
+    fun `每个凭据字段都在输出 schema 里`() {
+        val required = getDeploymentServersDescriptor.outputSchema!!
+            .propertiesSchema["servers"]!!.jsonObject["items"]!!.jsonObject
+            .let { it["required"]!!.jsonArray.map { id -> id.jsonPrimitive.content }.toSet() }
+        val produced = DeploymentCredentialsReport(servers = listOf(credentials())).toJson()
+            .let { it["servers"]!!.jsonArray.first().jsonObject.keys }
 
-    @Test
-    fun `删多余 搭配 外部变更自动上传 是危险组合`() {
-        // 这条是真正会咬人的组合：切 git 分支属于"外部变更"，而 deleteMissingItems 会删远端对应文件。
-        val result = warnings(
-            options = options(deleteMissingItems = true, autoUploadExternalChanges = true),
-        )
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("git branch"))
-    }
-
-    @Test
-    fun `删多余 搭配 删除前确认 会弹模态框`() {
-        val result = warnings(
-            options = options(deleteMissingItems = true, confirmBeforeDeletion = true),
-        )
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("modal confirmation"))
-    }
-
-    @Test
-    fun `自动上传开启时提示切 default 的即时影响`() {
-        val result = warnings(options = options(autoUpload = "ALWAYS"))
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("Automatic upload is 'ALWAYS'"))
-    }
-
-    @Test
-    fun `没有凭据的服务器会被点名`() {
-        val result = warnings(servers = listOf(server(name = "prod", hasCredentials = false)))
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("\"prod\""))
-        assertTrue(result.single().contains("modal login dialog"))
-    }
-
-    @Test
-    fun `配置有问题的服务器会被点名`() {
-        val result = warnings(servers = listOf(server(name = "prod", validationIssue = "host is empty")))
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("host is empty"))
-    }
-
-    @Test
-    fun `LOCAL 类型只提示不传输 不再要求凭据`() {
-        // needsTransfer=false 时，凭据那条警告带 `needsTransfer &&` 前缀，所以不该出现：
-        // 对本地/挂载类型谈"凭据"是噪音。
-        val result = warnings(
-            servers = listOf(
-                server(
-                    name = "local",
-                    needsTransfer = false,
-                    hasCredentials = false,
-                    deployments = listOf(DeploymentMappingState("/local", "/", "/")),
-                ),
-            ),
-        )
-        assertEquals(1, result.size)
-        assertTrue(result.single().contains("does not transfer anything"))
-    }
-
-    @Test
-    fun `多个问题会全部列出来`() {
-        val result = warnings(
-            defaultName = null,
-            servers = listOf(server(name = "prod", hasCredentials = false)),
-            options = options(overwriteAll = true, autoUpload = "ALWAYS"),
-        )
-        // 4 条：无 default / overwriteAll / 自动上传 / 该服务器无凭据
-        assertEquals(4, result.size)
-    }
-
-    // ---------- 描述符契约 ----------
-
-    @Test
-    fun `list_server_deployments 的入参只有 projectPath`() {
-        assertEquals(
-            setOf("projectPath"),
-            listServerDeploymentsDescriptor.inputSchema.propertiesSchema.keys,
-        )
-    }
-
-    @Test
-    fun `list_server_deployments 的必填项与 toJson 一致`() {
-        val required = listServerDeploymentsDescriptor.outputSchema!!.requiredProperties
-        val produced = DeploymentServersReport(
-            defaultServerOrGroupName = null,
-            servers = emptyList(),
-            options = options(),
-            warnings = emptyList(),
-        ).toJson().keys
         assertEquals(produced, required)
     }
 
     @Test
-    fun `list_server_deployments 标记为只读`() {
-        assertTrue(listServerDeploymentsDescriptor.annotations!!.readOnlyHint == true)
-        assertFalse(listServerDeploymentsDescriptor.annotations!!.destructiveHint == true)
+    fun `凭据里的 deployment 同时给出两端目录`() {
+        val mapping = DeploymentCredentialsReport(servers = listOf(credentials()))
+            .toJson()["servers"]!!.jsonArray.first().jsonObject["deployments"]!!.jsonArray.first().jsonObject
+
+        // 只给 name 的话调用方没法拼出两端路径，上传 / 下载就用不了。
+        assertEquals(JsonPrimitive("/local/app"), mapping["localPath"])
+        // deployPath 是相对 rootFolder 的，返回时必须拼成绝对路径
+        assertEquals(JsonPrimitive("/data/srv/app"), mapping["deployPath"])
+        // deployment 名 = Deployment 面板里那条 WebServer 的名字，不是 localPath 末段。
+        assertEquals(JsonPrimitive("aidata-middleware"), mapping["name"])
     }
 
     @Test
-    fun `报告 JSON 的字段与形状`() {
-        val json = DeploymentServersReport(
-            defaultServerOrGroupName = "sftp",
-            servers = listOf(server()),
-            options = options(),
-            warnings = listOf("w1", "w2"),
-        ).toJson()
+    fun `deploy 为斜杠时远程目录就是 rootFolder`() {
+        val mapping = DeploymentCredentialsReport(
+            servers = listOf(credentials(rootFolder = "/Users/yutao/Desktop/data/test", deployPath = "/")),
+        ).toJson()["servers"]!!.jsonArray.first().jsonObject["deployments"]!!.jsonArray.first().jsonObject
 
-        assertEquals(setOf("defaultServerOrGroupName", "serverCount", "servers", "options", "warnings"), json.keys)
-        assertEquals("sftp", json["defaultServerOrGroupName"]!!.jsonPrimitive.content)
-        assertEquals(1, json["serverCount"]!!.jsonPrimitive.int)
-
-        val serverJson = json["servers"]!!.jsonArray.single().jsonObject
-        assertEquals(
-            setOf(
-                "name", "id", "level", "accessType", "host", "port", "rootFolder", "needsTransfer",
-                "hasCredentials", "validationIssue", "isDefault", "deployments",
-            ),
-            serverJson.keys,
-        )
-        // null 键必须保留：agent 要能区分"键不存在"（工具出错）与"值为 null"（确实读不到）。
-        assertTrue(serverJson["validationIssue"] is kotlinx.serialization.json.JsonNull)
-
-        val deploymentJson = serverJson["deployments"]!!.jsonArray.single().jsonObject
-        assertEquals(setOf("name"), deploymentJson.keys)
-        assertEquals("local", deploymentJson["name"]!!.jsonPrimitive.content)
-
-        assertEquals(setOf("w1", "w2"), json["warnings"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
-    }
-
-    // ---------- upload_to_deployment 契约 ----------
-
-    @Test
-    fun `upload 的入参是 deploymentName、mode`() {
-        assertEquals(
-            setOf("deploymentName", "mode", "projectPath"),
-            uploadToDeploymentDescriptor.inputSchema.propertiesSchema.keys,
-        )
-        assertEquals(setOf("deploymentName"), uploadToDeploymentDescriptor.inputSchema.requiredProperties)
+        assertEquals(JsonPrimitive("/Users/yutao/Desktop/data/test"), mapping["deployPath"])
     }
 
     @Test
-    fun `status 工具必填 handle，且是只读的`() {
-        assertEquals(
-            setOf("handle"),
-            getDeploymentTaskStatusDescriptor.inputSchema.requiredProperties,
-        )
-        assertTrue(getDeploymentTaskStatusDescriptor.annotations!!.readOnlyHint == true)
-        assertFalse(getDeploymentTaskStatusDescriptor.annotations!!.destructiveHint == true)
+    fun `rootFolder 为空时 deployPath 原样返回`() {
+        val mapping = DeploymentCredentialsReport(
+            servers = listOf(credentials(rootFolder = null, deployPath = "/srv/app")),
+        ).toJson()["servers"]!!.jsonArray.first().jsonObject["deployments"]!!.jsonArray.first().jsonObject
+
+        assertEquals(JsonPrimitive("/srv/app"), mapping["deployPath"])
     }
 
     @Test
-    fun `upload 与 status 的返回形状一致（同一个 report 结构）`() {
-        fun report() = DeploymentTaskReport(
-            handle = "dep-1a2b3c4d",
-            kind = "upload",
-            serverName = "s",
-            mode = "mirror",
-            roots = emptyList(),
-            state = DEPLOYMENT_STATE_IN_PROGRESS,
-            elapsedMs = 1000,
-            processed = 12,
-            total = 318,
-            succeeded = false,
-            totalProcessed = 0,
-            failed = 0,
-            counters = emptyMap(),
-            warnings = emptyList(),
-        ).toJson().keys
+    fun `认证方式缺字段时给出明确的配置问题`() {
+        // 正常配置
+        assertNull(credentialIssueOf("PASSWORD", "p", null))
+        assertNull(credentialIssueOf("KEY_PAIR", null, "/k"))
+        assertNull(credentialIssueOf("OPEN_SSH", null, null))
 
-        assertEquals(report(), uploadToDeploymentDescriptor.outputSchema!!.requiredProperties)
-        assertEquals(report(), getDeploymentTaskStatusDescriptor.outputSchema!!.requiredProperties)
+        // 配了密码认证却没有密码（典型原因：IDE 里引用的 SSH 配置被删了）
+        assertTrue(credentialIssueOf("PASSWORD", null, null)!!.contains("没有读到密码"))
+        assertTrue(credentialIssueOf("KEY_PAIR", null, null)!!.contains("没有私钥路径"))
+        assertTrue(credentialIssueOf("UNKNOWN", null, null)!!.contains("无法识别"))
     }
 
     @Test
-    fun `upload 的必填项与 toJson 一致`() {
-        val required = uploadToDeploymentDescriptor.outputSchema!!.requiredProperties
-        val produced = DeploymentTaskReport(
-            handle = "dep-1a2b3c4d",
-            kind = "upload",
-            serverName = "s",
-            mode = "mirror",
-            roots = emptyList(),
-            state = DEPLOYMENT_STATE_COMPLETED,
-            elapsedMs = 12,
-            processed = 5,
-            total = 5,
-            succeeded = true,
-            totalProcessed = 5,
-            failed = 0,
-            counters = emptyMap(),
-            warnings = emptyList(),
-        ).toJson().keys
-        assertEquals(produced, required)
-    }
+    fun `凭据 JSON 保留 null 键而不是省略`() {
+        val json = credentials(authType = "KEY_PAIR", password = null, privateKeyPath = "/home/u/.ssh/id_ed25519")
+            .toJson()
 
-    @Test
-    fun `upload 报告 JSON 的字段与形状`() {
-        val json = DeploymentTaskReport(
-            handle = "dep-1a2b3c4d",
-            kind = "upload",
-            serverName = "mbptest",
-            mode = "mirror",
-            roots = listOf("/tmp/local"),
-            state = DEPLOYMENT_STATE_COMPLETED,
-            elapsedMs = 1540,
-            processed = 5,
-            total = 5,
-            succeeded = true,
-            totalProcessed = 5,
-            failed = 1,
-            counters = mapOf("transfer.details.transferred" to 4, "transfer.details.deleted" to 1),
-            warnings = listOf("w"),
-        ).toJson()
-
-        assertEquals("dep-1a2b3c4d", json["handle"]!!.jsonPrimitive.content)
-        assertEquals("mbptest", json["serverName"]!!.jsonPrimitive.content)
-        assertEquals("mirror", json["mode"]!!.jsonPrimitive.content)
-        assertEquals(listOf("/tmp/local"), json["localRoots"]!!.jsonArray.map { it.jsonPrimitive.content })
-        assertEquals(DEPLOYMENT_STATE_COMPLETED, json["state"]!!.jsonPrimitive.content)
-        assertEquals(1540, json["elapsedMs"]!!.jsonPrimitive.long)
-        assertEquals(5, json["totalProcessed"]!!.jsonPrimitive.int)
-        assertEquals(1, json["failed"]!!.jsonPrimitive.int)
-        val counters = json["counters"]!!.jsonObject
-        assertEquals(setOf("transfer.details.transferred", "transfer.details.deleted"), counters.keys)
-        assertEquals(4, counters["transfer.details.transferred"]!!.jsonPrimitive.int)
-        assertEquals(1, counters["transfer.details.deleted"]!!.jsonPrimitive.int)
-    }
-
-    @Test
-    fun `upload 标记为破坏性、非只读、openWorld`() {
-        val annotations = uploadToDeploymentDescriptor.annotations!!
-        assertFalse(annotations.readOnlyHint == true)
-        assertTrue(annotations.destructiveHint == true)
-        assertTrue(annotations.openWorldHint == true)
-    }
-
-    @Test
-    fun `download 的入参是 deploymentName`() {
-        assertEquals(
-            setOf("deploymentName", "projectPath"),
-            downloadFromDeploymentDescriptor.inputSchema.propertiesSchema.keys,
-        )
-        assertEquals(setOf("deploymentName"), downloadFromDeploymentDescriptor.inputSchema.requiredProperties)
-    }
-
-    @Test
-    fun `download 标记为破坏性（会改本地文件）`() {
-        val annotations = downloadFromDeploymentDescriptor.annotations!!
-        assertFalse(annotations.readOnlyHint == true)
-        assertTrue(annotations.destructiveHint == true)
-    }
-
-    @Test
-    fun `三个 deployment 工具的返回形状完全一致`() {
-        val expected = setOf(
-            "handle", "kind", "serverName", "mode", "localRoots", "state",
-            "elapsedMs", "processed", "total", "succeeded", "totalProcessed", "failed",
-            "counters", "warnings",
-        )
-        assertEquals(expected, uploadToDeploymentDescriptor.outputSchema!!.requiredProperties)
-        assertEquals(expected, downloadFromDeploymentDescriptor.outputSchema!!.requiredProperties)
-        assertEquals(expected, getDeploymentTaskStatusDescriptor.outputSchema!!.requiredProperties)
+        // 调用方要能区分"键不存在"（工具出错）和"值为 null"（这种认证方式没有这个字段）
+        assertEquals(JsonNull, json["password"])
+        assertEquals("/home/u/.ssh/id_ed25519", json["privateKeyPath"]!!.jsonPrimitive.content)
     }
 }

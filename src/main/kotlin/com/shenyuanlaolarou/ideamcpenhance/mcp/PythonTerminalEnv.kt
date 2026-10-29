@@ -17,6 +17,8 @@ class PythonTerminalEnvRegistrar : ProjectActivity {
 }
 
 private object PythonTerminalEnvProvider : ProjectTerminalEnvProvider {
+    override val id = ProjectEnvProvider.Python
+
     override fun extraEnv(project: Project): ProjectTerminalEnv {
         val sdk = findPythonSdk(project)
         val interpreter = sdk?.homePath?.takeIf { it.isNotBlank() }

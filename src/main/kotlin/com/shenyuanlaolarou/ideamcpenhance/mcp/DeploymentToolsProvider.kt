@@ -56,12 +56,7 @@ import kotlin.coroutines.coroutineContext
  */
 class DeploymentToolsProvider : McpToolsProvider {
 
-    override fun getTools(): List<McpTool> = listOf(
-        ListServerDeploymentsTool(),
-        UploadToDeploymentTool(),
-        DownloadFromDeploymentTool(),
-        GetDeploymentTaskStatusTool(),
-    )
+    override fun getTools(): List<McpTool> = listOf(GetDeploymentServersTool())
 }
 
 /**
@@ -87,361 +82,37 @@ private abstract class BaseDeploymentTool : McpTool {
 }
 
 // ---------------------------------------------------------------------------
-// list_server_deployments
+// get_deployment_servers（凭据通道，调用方是 opencode-idea 的 remote_exec）
 // ---------------------------------------------------------------------------
 
-private class ListServerDeploymentsTool : BaseDeploymentTool() {
+private class GetDeploymentServersTool : BaseDeploymentTool() {
 
-    override val descriptor: McpToolDescriptor = listServerDeploymentsDescriptor
+    override val descriptor: McpToolDescriptor = getDeploymentServersDescriptor
 
     override suspend fun body(arguments: JsonObject): McpToolCallResult {
         val project = currentProject() ?: return McpToolCallResult.error(
-            "$LIST_SERVER_DEPLOYMENTS_TOOL_NAME: no project is bound to this MCP session.",
+            "$GET_DEPLOYMENT_SERVERS_TOOL_NAME: no project is bound to this MCP session.",
             null,
         )
 
-        // 纯读：只读 IDE 已存的设置，不建连接、不碰网络。
-        val servers = allDeploymentServers(project)
-        val options = currentDeploymentOptions(project)
-        val defaultName = currentDefaultServerOrGroupName(project)
-
-        val report = DeploymentServersReport(
-            defaultServerOrGroupName = defaultName,
-            servers = servers,
-            options = options,
-            warnings = deploymentWarnings(defaultName, servers, options),
-        )
-
-        // summary 必须自带「有哪些服务器、哪台是默认、每台挂哪些 deployment」：这些是调用方决定
-        // 传 `serverName`（远程终端）还是 `deploymentName`（上传/下载）的前提。完整字段只在
-        // structuredContent 里 —— 客户端是否读它不可控，只有 text 会稳定到达。
-        //
-        // (default) 标记打在每台自己身上，而不是只在首行写一次名字：这样台数一多也不用把首行和
-        // 列表逐个对名字，名字相近或重名时不会看错。
-        val summary = when {
-            servers.isEmpty() ->
-                "No servers are configured for this project."
-
-            else -> {
-                // 默认服务器是**组**（而不是某台具体服务器）时，没有哪台能挂 (default)，
-                // 所以这种情况要在首行说出来 —— 否则「默认是谁」这一信息就整个丢了。
-                val defaultClause = when {
-                    defaultName == null -> " no default server or group is set."
-                    servers.none { it.name == defaultName } -> " the default is a group named \"$defaultName\"."
-                    else -> ""
-                }
-                buildString {
-                    append("Found ").append(servers.size).append(" server(s);")
-                    append(defaultClause).append('\n')
-                    servers.forEach { server ->
-                        append("- \"").append(server.name.ifEmpty { "(unnamed)" }).append('"')
-                        if (server.name == defaultName) append(" (default)")
-                        append(" deployments=")
-                            .append(server.deployments.joinToString(",") { it.name }.ifEmpty { "none" })
-                            .append('\n')
-                    }
-                }.trimEnd('\n')
-            }
+        val servers = try {
+            deploymentServersWithCredentials(project)
+        } catch (e: DeploymentConfigException) {
+            // 配置问题得让调用方转给用户去改，不能包成 internal_error。
+            return McpToolCallResult.error("[deployment_config_incomplete] ${e.message}", null)
         }
-        return McpToolCallResult.text(summary, report.toJson())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// upload_to_deployment
-// ---------------------------------------------------------------------------
-
-private class UploadToDeploymentTool : BaseDeploymentTool() {
-
-    override val descriptor: McpToolDescriptor = uploadToDeploymentDescriptor
-
-    override suspend fun body(arguments: JsonObject): McpToolCallResult {
-        val project = currentProject() ?: return McpToolCallResult.error(
-            "$UPLOAD_TO_DEPLOYMENT_TOOL_NAME: no project is bound to this MCP session.",
-            null,
-        )
-
-        val deploymentName = arguments.requiredString("deploymentName")
-            ?: return McpToolCallResult.error(
-                "`deploymentName` is required; use a name from `list_server_deployments.servers[].deployments[].name`.",
-                null,
-            )
-        val mode = arguments.optionalString("mode") ?: MODE_MIRROR
-        if (mode != MODE_UPLOAD && mode != MODE_MIRROR) {
-            return McpToolCallResult.error(
-                "`mode` must be \"$MODE_UPLOAD\" or \"$MODE_MIRROR\" (got \"$mode\").",
-                null,
-            )
-        }
-        // 超时是工具自身的固定行为，不是调用方的旋钮。
-        val waitMs = DEFAULT_DEPLOYMENT_WAIT_MS
-
-        val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
-        if (target == null) {
-            return McpToolCallResult.error(
-                resolveFailure ?: "$UPLOAD_TO_DEPLOYMENT_TOOL_NAME: could not resolve a deployment.",
-                null,
-            )
-        }
-        val server = target.server
-
-        // 建连接之前先问清楚——尤其是凭据：没有它，连下去会弹模态登录框。
-        connectionPreflightFailure(project, server)?.let { failure ->
-            return McpToolCallResult.error(failure, null)
-        }
-
-        // 本次策略走**配置副本**：clone 一份、只改这次要覆盖的两项，用户的持久配置一个字节都不动。
-        val config = runCatching { PublishConfig.getInstance(project).clone() }.getOrNull()
-            ?: return McpToolCallResult.error("Could not read this project's deployment configuration.", null)
-
-        val serverName = server.getName().orEmpty()
-        val roots = listOfNotNull(
-            runCatching { target.deployment.localPath }.getOrNull()?.takeIf { it.isNotEmpty() },
-        )
-        if (roots.isEmpty()) {
-            return McpToolCallResult.error(
-                "Deployment \"$deploymentName\" has no local path, so there is nothing to upload.",
-                null,
-            )
-        }
-
-        config.isDeleteMissingItems = (mode == MODE_MIRROR)
-        // 删除确认框在 MCP 路径上没人能点：必须关掉，否则 mirror 会把调用连同 EDT 一起卡住。
-        config.isConfirmBeforeDeletion = false
-
-        val outcome = uploadToServer(project, server, config, roots, mode, waitMs)
-
-        val report = outcome.toReport(roots)
-
-        // 还在传：绝不能报成成功。用 error 让 AI 明确看到"进行中"，并把句柄给它去查。
-        if (outcome.state == DEPLOYMENT_STATE_IN_PROGRESS) {
-            return McpToolCallResult.error(
-                outcome.warnings.firstOrNull()
-                    ?: "Upload to \"${outcome.serverName}\" is still in progress (handle ${outcome.handle}).",
-                report.toJson(),
-            )
-        }
-
-        // counter 的 key 是 WDBundle 的 message key（形如 `transfer.details.deleted`），
-        // 不是裸的 `deleted` —— 用 contains 匹配，免得死记 key 名。
-        //
-        // ⚠️ 粒度是平台自己定的，**不是"文件数"**：实测删掉一个含 400 个文件的目录，`deleted` 也只是 1
-        // （它数的是"删除操作"）。所以文案写"delete operation(s)"，不写 file(s)。
-        val deleted = outcome.counters.entries.firstOrNull { it.key.contains("deleted") }?.value ?: 0
-        // 失败时不能沿用成功措辞：平台只给一个 succeeded=false，连 failed 计数都可能是 0
-        // （实测连不上主机时就是 "0 operation(s)"），读起来跟"传完了"一模一样。
-        val summary = if (outcome.succeeded) {
-            buildString {
-                append("Uploaded to \"").append(outcome.serverName).append("\" (mode=").append(mode).append("): ")
-                append(outcome.totalProcessed).append(" operation(s)")
-                if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
-                if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
-                append(" in ").append(outcome.elapsedMs).append("ms. handle=").append(outcome.handle)
-            }
-        } else {
-            buildString {
-                append("Upload to \"").append(outcome.serverName).append("\" (mode=").append(mode).append(") FAILED ")
-                appendFailureProgress(outcome)
-                append(". ").append(failureReason(outcome))
-                append(" handle=").append(outcome.handle)
-            }
-        }
-        return if (outcome.succeeded) {
-            McpToolCallResult.text(summary, report.toJson())
-        } else {
-            McpToolCallResult.error(summary, report.toJson())
-        }
-    }
-}
-
-/**
- * 平台层结果 → 工具返回值。两个工具共用，保证 upload 与 status 返回**同一套字段**。
- *
- * 发起传输那次才知道本地根（事后查状态拿不到），所以由调用方传入。
- */
-/**
- * 平台层结果 → 工具返回值。上传、下载、查状态三者共用，保证返回字段一致。
- *
- * [roots] 只有发起传输那次才知道（事后查状态拿不到），由调用方传入。
- */
-private fun DeploymentTaskOutcome.toReport(roots: List<String>) = DeploymentTaskReport(
-    handle = handle,
-    kind = kind,
-    serverName = serverName,
-    mode = mode,
-    roots = roots,
-    state = state,
-    elapsedMs = elapsedMs,
-    processed = processed,
-    total = total,
-    succeeded = succeeded,
-    totalProcessed = totalProcessed,
-    failed = failed,
-    counters = counters,
-    warnings = warnings,
-)
-
-/**
- * 失败原因的一句话。
- *
- * 平台那条路径只给一个 `succeeded = false`：`doRun` 返回布尔值，具体原因（连不上、权限、
- * 远端路径解析失败…）它自己记在 Deployment 日志里，不经过我们的返回结构。所以这里优先用
- * 任务自己填的 warning，没有就指向日志 —— 不臆测原因。
- */
-private fun failureReason(outcome: DeploymentTaskOutcome): String =
-    outcome.warnings.firstOrNull()
-        ?: "The platform reported no detail; the IDE's Deployment log has the cause."
-
-/** 失败时描述"跑到哪一步"：一个操作都没跑，和"跑了 N 个之后失败"是两回事。 */
-private fun StringBuilder.appendFailureProgress(outcome: DeploymentTaskOutcome) {
-    if (outcome.totalProcessed > 0) {
-        append("after ").append(outcome.totalProcessed).append(" operation(s)")
-        if (outcome.failed > 0) append(", of which ").append(outcome.failed).append(" failed")
-    } else {
-        append("before any operation ran")
-    }
-}
-
-// ---------------------------------------------------------------------------
-// get_deployment_task_status
-// ---------------------------------------------------------------------------
-
-/**
- * 查询**一次** deployment 传输（上传或下载）的进度。
- *
- * 纯只读：它**不会**启动任何传输。看到 `in_progress` 就继续查，看到 `completed` 收工。
- */
-private class GetDeploymentTaskStatusTool : BaseDeploymentTool() {
-
-    override val descriptor: McpToolDescriptor = getDeploymentTaskStatusDescriptor
-
-    override suspend fun body(arguments: JsonObject): McpToolCallResult {
-        val project = currentProject() ?: return McpToolCallResult.error(
-            "$GET_TASK_STATUS_TOOL_NAME: no project is bound to this MCP session.",
-            null,
-        )
-
-        val handle = arguments.requiredString("handle") ?: return McpToolCallResult.error(
-            "$GET_TASK_STATUS_TOOL_NAME: `handle` is required — pass the handle returned by " +
-                "`upload_to_deployment` or `download_from_deployment`.",
-            null,
-        )
-
-        val outcome = deploymentTaskStatusOf(project, handle) ?: return McpToolCallResult.error(
-            "Unknown handle \"$handle\". It never existed in this project, or it was one of the oldest finished " +
-                "transfers and has since been dropped (only the most recent 20 finished ones per project are kept).",
-            null,
-        )
-
-        val report = outcome.toReport(emptyList())
-
-        if (outcome.state == DEPLOYMENT_STATE_IN_PROGRESS) {
-            val progress = if (outcome.total > 0) "${outcome.processed}/${outcome.total}" else "${outcome.processed}"
-            return McpToolCallResult.text(
-                "${outcome.kind} ${outcome.handle} \"${outcome.serverName}\" is still in progress " +
-                    "(${progress} operations done, ${outcome.elapsedMs}ms so far). Query again in a few seconds.",
-                report.toJson(),
-            )
-        }
-
-        val deleted = outcome.counters.entries.firstOrNull { it.key.contains("deleted") }?.value ?: 0
-        // 与 upload 同一条规则：失败时不能说 "finished"，否则 "0 operation(s)" 会被读成成功。
-        val summary = if (outcome.succeeded) {
-            buildString {
-                append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
-                append(" \"").append(outcome.serverName).append("\" finished in ")
-                append(outcome.elapsedMs).append("ms: ").append(outcome.totalProcessed).append(" operation(s)")
-                if (deleted > 0) append(", removed remote extras in ").append(deleted).append(" delete operation(s)")
-                if (outcome.failed > 0) append(", ").append(outcome.failed).append(" failed")
-                append('.')
-            }
-        } else {
-            buildString {
-                append(outcome.kind.replaceFirstChar { it.uppercase() }).append(' ').append(outcome.handle)
-                append(" \"").append(outcome.serverName).append("\" FAILED ")
-                appendFailureProgress(outcome)
-                append(". ").append(failureReason(outcome))
-            }
-        }
-        return if (outcome.succeeded) {
-            McpToolCallResult.text(summary, report.toJson())
-        } else {
-            McpToolCallResult.error(summary, report.toJson())
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// download_from_deployment
-// ---------------------------------------------------------------------------
-
-private class DownloadFromDeploymentTool : BaseDeploymentTool() {
-
-    override val descriptor: McpToolDescriptor = downloadFromDeploymentDescriptor
-
-    override suspend fun body(arguments: JsonObject): McpToolCallResult {
-        val project = currentProject() ?: return McpToolCallResult.error(
-            "$DOWNLOAD_TOOL_NAME: no project is bound to this MCP session.",
-            null,
-        )
-
-        val deploymentName = arguments.requiredString("deploymentName")
-            ?: return McpToolCallResult.error(
-                "`deploymentName` is required; use a name from `list_server_deployments.servers[].deployments[].name`.",
-                null,
-            )
-        // 超时是工具自身的固定行为，不是调用方的旋钮。
-        val waitMs = DEFAULT_DEPLOYMENT_WAIT_MS
-
-        val (target, resolveFailure) = resolveDeploymentTarget(project, deploymentName)
-        if (target == null) {
-            return McpToolCallResult.error(
-                resolveFailure ?: "$DOWNLOAD_TOOL_NAME: could not resolve a deployment.",
-                null,
-            )
-        }
-        val server = target.server
-
-        // 建连接之前先问清楚——尤其是凭据：没有它，连下去会弹模态登录框。
-        connectionPreflightFailure(project, server)?.let { failure ->
-            return McpToolCallResult.error(failure, null)
-        }
-
-        val serverName = server.getName().orEmpty()
-        val roots = listOfNotNull(
-            runCatching { target.deployment.localPath }.getOrNull()?.takeIf { it.isNotEmpty() },
-        )
-        if (roots.isEmpty()) {
-            return McpToolCallResult.error(
-                "Deployment \"$deploymentName\" has no local path, so there is nothing to download.",
-                null,
-            )
-        }
-
-        val outcome = downloadFromServer(project, server, roots, waitMs)
-        val report = outcome.toReport(roots)
-
-        if (outcome.state == DEPLOYMENT_STATE_IN_PROGRESS) {
-            return McpToolCallResult.error(
-                outcome.warnings.firstOrNull()
-                    ?: "Download from \"$serverName\" is still in progress (handle ${outcome.handle}).",
-                report.toJson(),
-            )
-        }
-
+        val report = DeploymentCredentialsReport(servers)
+        // summary 里绝不能出现凭据字段：它是唯一会稳定到达调用方日志 / 模型的部分，
+        // 密码只在 structuredContent 里，由 opencode-idea 直接消费。
         val summary = buildString {
-            append("Downloaded from \"").append(serverName).append("\"")
-            if (outcome.succeeded) {
-                append(": done in ").append(outcome.elapsedMs).append("ms")
-            } else {
-                append(": NOT downloaded (").append(outcome.warnings.firstOrNull() ?: "unknown error").append(')')
+            append("Found ").append(report.servers.size).append(" SFTP server(s) with credentials:\n")
+            report.servers.forEach { server ->
+                append("- ").append(server.name)
+                append(' ').append(server.host).append(':').append(server.port)
+                append(' ').append(server.username)
+                append(" [").append(server.authType).append("]\n")
             }
-            append(". handle=").append(outcome.handle)
-        }
-        return if (outcome.succeeded) {
-            McpToolCallResult.text(summary, report.toJson())
-        } else {
-            McpToolCallResult.error(summary, report.toJson())
-        }
+        }.trimEnd()
+        return McpToolCallResult.text(summary, report.toJson())
     }
 }

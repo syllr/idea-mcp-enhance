@@ -17,6 +17,8 @@ class NodeTerminalEnvRegistrar : ProjectActivity {
 }
 
 private object NodeTerminalEnvProvider : ProjectTerminalEnvProvider {
+    override val id = ProjectEnvProvider.Node
+
     override fun extraEnv(project: Project): ProjectTerminalEnv {
         val interpreter = NodeJsInterpreterManager.getInstance(project).interpreter
             ?: return ProjectTerminalEnv()

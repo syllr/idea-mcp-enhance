@@ -24,6 +24,7 @@ class MavenTerminalEnvRegistrar : ProjectActivity {
 }
 
 private object MavenTerminalEnvProvider : ProjectTerminalEnvProvider {
+    override val id = ProjectEnvProvider.Maven
 
     override fun extraEnv(project: Project): ProjectTerminalEnv {
         val manager = MavenProjectsManager.getInstanceIfCreated(project) ?: return ProjectTerminalEnv()
