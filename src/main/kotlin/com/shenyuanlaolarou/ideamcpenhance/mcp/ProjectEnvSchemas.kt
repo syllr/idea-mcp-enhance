@@ -12,8 +12,8 @@ import kotlinx.serialization.json.buildJsonObject
  * 这个工具**不是给模型用的**：它是 `opencode-idea` 在 `shell.hook("create.before")` 里
  * 直接 HTTP 调用的数据通道，所以在那个插件的隐藏清单里。
  *
- * 输出必须和 `ProjectEnv.toJson()` 逐字段对齐：
- * `PATH`（五个 provider 的 bin，按固定顺序拼好）+ `variables`（各 provider 的标量变量）。
+ * 输出：`projectPath`（这个环境属于哪个 IDE 项目）+ `PATH`（五个 provider 的 bin，按固定顺序拼好）
+ * + `variables`（各 provider 的标量变量）。`projectPath` 让调用方校验"IDE 打开的是不是同一个目录"。
  */
 
 internal val ENVIRONMENT_CATEGORY = McpToolCategory(
@@ -26,6 +26,10 @@ internal val ENVIRONMENT_CATEGORY = McpToolCategory(
 internal const val GET_PROJECT_ENV_TOOL_NAME = "get_project_env"
 
 private val PROJECT_ENV_OUTPUT_PROPERTIES: JsonObject = properties(
+    "projectPath" to property(
+        "string",
+        "Absolute path of the IDE project this environment belongs to. Empty when the project has no base path.",
+    ),
     "PATH" to property(
         "string",
         "Directories contributed by the five providers, joined with the platform path separator " +
@@ -64,6 +68,6 @@ internal val getProjectEnvDescriptor = McpToolDescriptor(
     ENVIRONMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.get_project_env",
     schema(properties = properties("projectPath" to projectPathProperty())),
-    schema(properties = PROJECT_ENV_OUTPUT_PROPERTIES, required = setOf("PATH", "variables")),
+    schema(properties = PROJECT_ENV_OUTPUT_PROPERTIES, required = setOf("projectPath", "PATH", "variables")),
     annotations(readOnly = true, destructive = false, idempotent = true, openWorld = false),
 )

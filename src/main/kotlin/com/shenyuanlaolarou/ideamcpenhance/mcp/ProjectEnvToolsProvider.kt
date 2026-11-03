@@ -6,6 +6,8 @@ import com.intellij.mcpserver.McpToolDescriptor
 import com.intellij.mcpserver.McpToolsProvider
 import com.intellij.openapi.components.service
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * 项目环境变量工具（`get_project_env`）。
@@ -30,14 +32,19 @@ private class GetProjectEnvTool : BaseMcpTool() {
         )
 
         val env = project.service<ProjectTerminalEnvRegistry>().aggregate(project)
+        val payload = buildJsonObject {
+            env.toJson().forEach { (key, value) -> put(key, value) }
+            put("projectPath", project.basePath.orEmpty())
+        }
         return McpToolCallResult.text(
             buildString {
-                append("[PATH] ").append(env.path.ifEmpty { "(none)" })
+                append("[PROJECT] ").append(project.basePath.orEmpty())
+                append('\n').append("[PATH] ").append(env.path.ifEmpty { "(none)" })
                 env.variables.forEach { (key, value) ->
                     append('\n').append('[').append(key).append("] ").append(value)
                 }
             },
-            env.toJson(),
+            payload,
         )
     }
 }

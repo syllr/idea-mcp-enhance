@@ -13,11 +13,15 @@
 ### Changed
 
 - **`localPath` 相对路径**：项目级 `hosts.json` 的 deployment 必须使用相对项目根目录的路径；全局 hosts 必须使用绝对路径。
+- **一个会话只接一个项目**：子项目概念整体移除。一个会话只连当前 workspace root，工具前缀固定 `ide_`，`/add-sub-module-in-ide` 已删除，`configure_ide_project` 只保留 `ide`。
+- **严格同目录**：IDE 必须打开 workspace root 本身。插件拿 `get_project_env` 返回的 `projectPath` 与当前项目比较，父目录打开不再算已接入。
+- **只有一份引导**：IDE 工具与远端工具的引导合并成一个文件；IDE 断开时去掉 IDE 那段，远端那段始终保留。
 - **Remote Process 的启动输出**（process）固定写到 `<working directory>/.opencode/output-<name>.log`，Run 窗口 tail 这个文件。
 
 ### Fixed
 
 - `rerun_run_configuration` / `stop_run_configuration` 对 Remote Process 配置可用：暴露远端 pid / 启动标记，不再等待不存在的本地 OS pid。
+- `get_project_env` 额外返回 `projectPath`：这个环境属于哪个 IDE 项目。
 
 ## [0.1.7] - 2026-10-29
 

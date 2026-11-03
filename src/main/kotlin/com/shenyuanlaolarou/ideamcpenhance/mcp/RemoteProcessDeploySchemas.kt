@@ -18,47 +18,49 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
     DEPLOY_REMOTE_PROCESS_TOOL_NAME,
     "Deploy Remote Process",
     """
-    Deploy a Remote Process run configuration, exactly like the configuration page's Deploy button.
+    Deploy a Remote Process run configuration — the same thing the configuration page's Deploy button
+    does.
 
-    Use this when the user asks to deploy / publish / release code. Use the normal run configuration
-    tools (`rerun_run_configuration`) when they ask to run / debug / restart.
+    Use it when the user asks to deploy / publish / release; use `rerun_run_configuration` when they
+    ask to run / debug / restart.
 
-    It opens a Run tab like the manual Deploy button, so the user can watch the logs. The Run session
-    is marked as deploy-only: pressing Stop closes the log follower but does **not** kill the remote
-    process / container. When the process / container is already running, the MCP call replaces it
-    without asking; the configuration page button still asks.
+    It syncs the deployment, starts the process / container, and opens a Run tab so the user can
+    watch the logs. That session is deploy-only: stopping it closes the log follower and leaves the
+    remote process / container running. If the process / container is already running it is replaced
+    without asking — `rerun_run_configuration` would ask first.
 
-    The result carries `fullOutputPath` — the local aggregated log (progress lines plus the remote
-    stdout/stderr), same field and format as `rerun_run_configuration`. Application logs live in the
-    configured Application log directory; find them with `list_remote_processes`.
+    The result carries the pid or container and `fullOutputPath`, the local aggregated log (progress
+    lines plus the remote stdout/stderr), same field and format as `rerun_run_configuration`. The
+    application's own logs are in the configured Application log directory — `list_remote_processes`
+    reports it as `logDir`.
 
-    If the process / container is already running it is replaced without asking (deploy semantics).
+    `configurationName` must name a Remote Process configuration in this project.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.deploy_remote_process",
     schema(
         properties = properties(
             "projectPath" to projectPathProperty(),
-            "configurationName" to property("string", "Remote Process 运行配置名。"),
+            "configurationName" to property("string", "Name of the Remote Process run configuration."),
         ),
         required = setOf("configurationName"),
     ),
     schema(
         properties = properties(
-            "configurationName" to property("string", "Remote Process 运行配置名。"),
-            "server" to property("string", "SSH 配置名。"),
-            "kind" to property("string", "process 或 docker。"),
-            "started" to property("boolean", "新进程是否真的起来了。"),
-            "submittedOnly" to property("boolean", "启动已提交但还没等到进程起来；此时 started=false 不代表失败。"),
-            "sessionId" to property("string", "Run 会话标识，可传给 stop_run_configuration。"),
-            "pid" to property("integer", "process 类型启动后的远端 PID。"),
-            "container" to property("string", "docker 类型使用的容器名。"),
-            "workingDirectory" to property("string", "process 类型的工作目录。"),
+            "configurationName" to property("string", "Name of the Remote Process run configuration."),
+            "server" to property("string", "SSH configuration name."),
+            "kind" to property("string", "process or docker."),
+            "started" to property("boolean", "Whether the new process really came up."),
+            "submittedOnly" to property("boolean", "The start was submitted but the process never came up within the wait window; `started=false` does not mean it failed."),
+            "sessionId" to property("string", "Run session identifier; pass it to `stop_run_configuration`."),
+            "pid" to property("integer", "Remote pid of the started process (process kind)."),
+            "container" to property("string", "Container name used by the docker kind."),
+            "workingDirectory" to property("string", "Working directory of the process kind."),
             "fullOutputPath" to property(
                 "string",
-                "本机聚合日志：进度 + 远端 stdout/stderr；和 rerun_run_configuration 的字段一致。",
+                "Local aggregated log: progress lines plus the remote stdout/stderr; same field and format as `rerun_run_configuration`.",
             ),
-            "output" to property("string", "本次启动的内联输出预览。"),
+            "output" to property("string", "Inline preview of this start's output."),
         ),
         required = setOf("configurationName", "server", "kind", "started", "output"),
     ),
@@ -77,16 +79,16 @@ private val REMOTE_PROCESS_ITEM_SCHEMA = buildJsonObject {
     put(
         "properties",
         properties(
-            "configurationName" to property("string", "Remote Process 配置名。"),
-            "server" to property("string", "SSH 配置名；配置不完整时为空串。"),
-            "deployment" to property("string", "绑定的 deployment 名。"),
-            "kind" to property("string", "process 或 docker。"),
+            "configurationName" to property("string", "Remote Process configuration name."),
+            "server" to property("string", "SSH configuration name; empty when the configuration is incomplete."),
+            "deployment" to property("string", "Deployment it is bound to."),
+            "kind" to property("string", "process or docker."),
             "status" to property("string", "running / stopped / invalid。"),
-            "pid" to property("integer", "process 运行时的远端 PID。"),
-            "container" to property("string", "docker 容器名。"),
-            "workingDirectory" to property("string", "process 的工作目录。"),
-            "logDir" to property("string", "应用自己的日志目录；process 是宿主机路径，docker 是容器内路径。"),
-            "error" to property("string", "status=invalid 时的原因。"),
+            "pid" to property("integer", "Remote pid while the process is running."),
+            "container" to property("string", "Docker container name."),
+            "workingDirectory" to property("string", "Working directory of the process."),
+            "logDir" to property("string", "Directory the application writes its own logs to; a host path for process, a container path for docker."),
+            "error" to property("string", "Why `status` is invalid."),
         ),
     )
     put(
@@ -104,12 +106,19 @@ internal val listRemoteProcessesDescriptor = McpToolDescriptor(
     LIST_REMOTE_PROCESSES_TOOL_NAME,
     "List Remote Processes",
     """
-    List every Remote Process run configuration in this project together with its live state.
+    List every Remote Process run configuration in this project with its live state on the remote host.
 
-    Stateless: each call probes the remote host — `ps` + cwd for `process`, `docker ps` for `docker`.
-    Stopped configurations are included. This does not use the Run lifecycle, so a configuration
-    started by `deploy_remote_process`, by the IDE Run button, or by `rerun_run_configuration`
-    appears the same way.
+    It does not go through the Run lifecycle: it probes the remote directly — `ps` + cwd for
+    `process`, `docker ps` for `docker` — so it also reports configurations that are not running, and
+    processes that were started outside the IDE. Each call opens an SSH connection per server, so
+    query it once and reuse the answer rather than polling it in a loop.
+
+    `status` is `running`, `stopped`, or `invalid` — `invalid` means the configuration cannot be
+    queried (no server / no command / no container name / unsupported kind); the `error` field says
+    why. `logDir` is the application's own log directory: a host path for `process`, a container path
+    for `docker`.
+
+    Use `list_running_configurations` instead to see which Run sessions the IDE currently has.
 
     Optional filters: `server` and `configurationName`.
     """.trimIndent(),
@@ -118,8 +127,8 @@ internal val listRemoteProcessesDescriptor = McpToolDescriptor(
     schema(
         properties = properties(
             "projectPath" to projectPathProperty(),
-            "server" to property("string", "可选：只列这台 SSH 配置上的。"),
-            "configurationName" to property("string", "可选：只列这一个配置。"),
+            "server" to property("string", "Optional: only the configurations on this SSH server."),
+            "configurationName" to property("string", "Optional: only this one configuration."),
         ),
     ),
     schema(

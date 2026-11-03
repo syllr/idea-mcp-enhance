@@ -24,11 +24,15 @@
 ### Changed
 
 - **Relative `localPath`**: project-level `hosts.json` deployments must use a path relative to the project root; global hosts must use absolute paths.
+- **One project per session**: sub-projects are gone. A session connects exactly one JetBrains project (the workspace root), the tool prefix is always `ide_`, and `/add-sub-module-in-ide` is removed. `configure_ide_project` now takes only `ide`.
+- **Strict same-directory**: the IDE must have the workspace root itself open. The plugin compares the `projectPath` reported by `get_project_env` with the current project, so an open parent directory no longer counts as connected.
+- **Single guidance file**: the IDE tool routing and the remote tool routing now live in one document; the IDE section is dropped when the IDE is not connected, the remote section is always present.
 - **Remote Process startup output** for `process` is captured in `<working directory>/.opencode/output-<name>.log`; the Run window tails that file.
 
 ### Fixed
 
 - `rerun_run_configuration` / `stop_run_configuration` now work with Remote Process configurations without waiting for a local OS pid: the remote pid / start marker is exposed to the lifecycle tools.
+- `get_project_env` also reports `projectPath`, the project the environment belongs to.
 
 ## [0.1.7] - 2026-10-29
 

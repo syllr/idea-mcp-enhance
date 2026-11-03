@@ -245,15 +245,19 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     LIST_TOOL_NAME,
     "List Running Configurations",
     """
-    Report what is actually running right now, with one entry per configuration and its live
-    processes.
+    Report what is running right now in the IDE: one entry per configuration that has a live Run
+    session, with its live instances (pid, state, `logFile`).
 
-    Unlike the built-in `get_run_configurations` (which lists definitions), this is an index of
-    live instances: pid, state (`running` / `terminating` / `starting`) and `logFile`. Read that
-    log for output; use `inspect_run_configuration` for settings and earlier-run history.
+    This is an index of live sessions, not of definitions — `get_run_configurations` lists
+    definitions. Templates never appear; several instances under one configuration mean it was
+    started more than once.
 
-    Only live processes appear; templates never appear, and multiple instances under one
-    configuration mean it was started more than once.
+    For a `Remote Process` configuration the pid is the **remote** process id, and `logFile` is
+    the local aggregated log of the session (progress plus the remote stdout/stderr) — not a file on
+    the remote host. To know whether a configured remote process is running right now, including
+    ones started outside the IDE, use `list_remote_processes`.
+
+    Names match exactly first, then case-insensitively.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_running_configurations",
@@ -287,12 +291,16 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
     Stop every running instance of a configuration and wait for it to exit.
 
     All instances are stopped, not just the newest, through the IDE's `ProcessHandler`; the Run
-    window stays consistent (unlike `pkill`).
+    window stays consistent (unlike `pkill`). `force` (default true) kills whatever is still
+    terminating when the wait window expires.
 
-    Idempotent: not running → success with `matchedInstances: 0`. If a start is **in flight**, the
-    tool waits briefly; if the process still does not appear it returns success plus a warning —
-    `matchedInstances: 0` may then mean a start is still in flight, so confirm with
-    `list_running_configurations`.
+    For a deploy-only `Remote Process` session — the one `deploy_remote_process` opened — stopping
+    closes the log follower and leaves the remote process / container running. Stopping a plain
+    `Remote Process` run session does kill the remote one.
+
+    Idempotent: not running → success with `matchedInstances: 0`. If a start is in flight the tool
+    waits briefly; if the process still does not appear it returns success plus a warning — confirm
+    with `list_running_configurations`.
 
     Names match exactly first, then case-insensitively; errors list the existing names.
     """.trimIndent(),
@@ -351,17 +359,16 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     RERUN_TOOL_NAME,
     "Rerun Run Configuration",
     """
-    Restart a run configuration, like the IDE's **Rerun** button.
+    Restart a run configuration, like the IDE's Rerun button.
 
-    Running → stop then start (`RESTARTED`); not running → start (`STARTED`); unsupported type →
-    `NO_OP`. Read `started`, not `mode`: `false` has `startFailure`; `transition[]` lists steps.
+    Running → stop then start (`RESTARTED`); not running → start (`STARTED`). Read `started`, not
+    `mode`: `false` has `startFailure`; `null` means the wait window ran out and the outcome is
+    unknown — poll `list_running_configurations`. It waits until the new process exists, and fails
+    fast if the configuration is stopping or starting, or old instances cannot be stopped.
 
-    It waits until the new process exists. It fails fast if the configuration is stopping or
-    starting, old instances cannot be stopped, or the IDE is already starting it.
-
-    Before-launch steps delay the Run content: the IDE creates it only after they finish. The call
-    waits for that; if the wait runs out, `started` is null and the outcome is unknown — poll
-    `list_running_configurations` for the real state.
+    For a `Remote Process` configuration this starts the remote process / container over SSH, and
+    stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish
+    — its Stop leaves the remote process running.
 
     Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),

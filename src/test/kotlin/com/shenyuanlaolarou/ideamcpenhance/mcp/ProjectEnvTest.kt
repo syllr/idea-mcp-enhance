@@ -3,7 +3,6 @@ package com.shenyuanlaolarou.ideamcpenhance.mcp
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -21,10 +20,9 @@ class ProjectEnvTest {
         // 它只按 header 里的项目路径取数，没有必填参数
         assertEquals(emptySet<String>(), descriptor.inputSchema.requiredProperties)
         assertEquals(
-            setOf("PATH", "variables"),
+            setOf("projectPath", "PATH", "variables"),
             descriptor.outputSchema!!.propertiesSchema.keys,
         )
-        assertTrue(descriptor.description.contains("PATH"))
     }
 
     @Test

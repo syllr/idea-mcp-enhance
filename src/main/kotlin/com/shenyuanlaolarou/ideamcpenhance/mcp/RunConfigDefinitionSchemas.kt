@@ -34,11 +34,12 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
     """
     Show one run configuration in detail: settings, runnability, live instances and earlier run logs.
 
-    Use `list_running_configurations` for the live index; use this tool for options, environment,
+    Read-only — run configurations are created and edited in the IDE, not through this tool. Use
+    `list_running_configurations` for the live index and this tool for options, environment,
     before-launch steps, raw XML and history.
 
-    Names are parsed as `[os@]base[@env]`: `win@console-web` is the Windows variant,
-    `console-web@testenv` is one environment. No prefix means macOS/Linux; no environment suffix
+    The name may carry a variant: `[os@]base[@env]` (`win@console-web` is the Windows variant,
+    `console-web@testenv` is one environment); no prefix means macOS/Linux, no environment suffix
     means the configuration applies to every environment.
 
     `instances[]` are live, with pid, state and log path. `history[]` is newest-first; read its log

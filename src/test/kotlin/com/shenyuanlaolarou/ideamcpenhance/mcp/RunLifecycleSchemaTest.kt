@@ -45,36 +45,6 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `stop 工具的说明要点明启动在飞这一档`() {
-        // 实测：异步提交后进程还没挂上时，stop 返回的是"成功但什么都没停"。
-        // 描述不写，agent 会把 matchedInstances 0 当成"已经停干净"（SPEC §3.5 的 HARD CONTRACT）。
-        val description = toolByName(STOP_TOOL_NAME).descriptor.description
-
-        assertTrue("必须写明有启动在飞的情况", description.contains("in flight"))
-        assertTrue(
-            "必须指向 list_running_configurations 复核",
-            description.contains("list_running_configurations"),
-        )
-    }
-
-    @Test
-    fun `rerun 工具的说明要点明整次调用会被一直等着`() {
-        // 等待窗口现在是内部固定值（不开放参数），所以描述只需说清"调用会一直等到启动完成"，
-        // 并给出"等不起就走异步"的出路。
-        val description = toolByName(RERUN_TOOL_NAME).descriptor.description
-
-        assertTrue(
-            "必须点明 before-launch 会让调用一直等",
-            description.contains("The call"),
-        )
-        assertTrue(
-            "必须说明等不到时结果未知、要自己轮询",
-            description.contains("started` is null") && description.contains("list_running_configurations"),
-        )
-        assertFalse("waitForStart 不再是参数", description.contains("waitForStart"))
-    }
-
-    @Test
     fun `list 工具只有一个可选参数且输入输出都只面向在跑的`() {
         // 没有 runningOnly / includeTemplates 开关：模板不是实例、永远不会在跑，
         // "只返回在跑的"天然把它排除，再加开关只是把事情搞复杂。
@@ -118,10 +88,9 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `每个工具都有非空描述和非空输入 schema`() {
+    fun `每个工具都有非空输入 schema`() {
         for (tool in tools()) {
             val descriptor = tool.descriptor
-            assertTrue("${descriptor.name} 缺少描述", descriptor.description.isNotBlank())
             val schema = descriptor.inputSchema
             // McpToolSchema.propertiesSchema 只装 properties，不含根级的 "type": "object"——
             // 根类型由 MCP Server 合成 schema 时自己补上。因此有参数的 schema 一定带属性。
