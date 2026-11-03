@@ -1,96 +1,77 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
-import com.intellij.remote.RemoteCredentialsHolder
+import com.intellij.remote.RemoteCredentials
+import com.intellij.ssh.config.unified.SshConfig
+import com.intellij.ssh.config.unified.SshConfigManager
 import com.jetbrains.plugins.webDeployment.config.AccessType
-import com.jetbrains.plugins.webDeployment.config.Deployable
 import com.jetbrains.plugins.webDeployment.config.DeploymentPathMapping
+import com.jetbrains.plugins.webDeployment.config.ExcludedPath
 import com.jetbrains.plugins.webDeployment.config.GroupedServersConfigManager
 import com.jetbrains.plugins.webDeployment.config.PublishConfig
 import com.jetbrains.plugins.webDeployment.config.WebServerConfig
 
 /**
- * Deployment 的**平台接线层**：把 `WebServerConfig` / `PublishConfig` 拍平成
- * [DeploymentServerCredentials] —— 只有这一个用途：给 `get_deployment_servers` 提供
- * SFTP server 与凭据。
+ * IDE 侧的两条平台接线：**读 SSH 配置**、**写 Deployment**。
  *
- * 这是**整个插件里唯一 import `com.jetbrains.plugins.webDeployment.*` 的文件**。
+ * 这是整个插件里唯一 import `com.jetbrains.plugins.webDeployment.*` 的文件。
  *
- * ## 为什么隔离得这么严
+ * ## 为什么要隔离
  *
  * 这个包（`com.jetbrains.*` 而不是 `com.intellij.*`）是**产品内部实现**，不是平台 API：
- * 它没有文档、没有稳定性承诺。更实际的问题是它**只在 Ultimate 里存在**
- * （插件 `com.jetbrains.plugins.webDeployment` 依赖 `com.intellij.modules.ultimate`）。
+ * 它没有文档、没有稳定性承诺，而且**只在 Ultimate 里存在**。调用方必须先确认插件在，
+ * 再走到这里（见 `deployment.xml` 的链式 optional 依赖）。
  *
- * 所以调用方（`DeploymentToolsProvider`）必须先确认插件在，再走到这里；
- * 把引用集中在一个文件里，是为了让"插件不在时会加载哪些类"这件事可推理。
+ * ## 两条工具各自的边界
  *
- * ## 读到的 API 都是实测过的公开方法
- *
- * - `GroupedServersConfigManager.getFlattenedServers()` —— 当前项目视角下可用的服务器
- *   （应用级的那些所有项目共享，项目级的只属于本项目）
- * - `PublishConfig` —— **项目级**选项 + **按服务器**的 Mappings
- * - `WebServerConfig` / `Connectable` —— 服务器自身的属性
- *
- * 注意 `hasCredentials()` 不在 `WebServerConfig` 上，而在它派生出的 `Deployable`（实现 `Connectable`）上，
- * 所以要用 `Deployable.create(server, project)` 造一个再问。**这是纯工厂，不联网、不弹框**。
+ * - `get_ssh_servers`：只读 `SshConfigManager`。deployment / mapping / 排除项全部由
+ *   `hosts.json` 维护，这里不返回。
+ * - `sync_deployments`：把 `hosts.json` 的 deployment 推到 IDE 的 Deployment 面板
+ *   （WebServer + path mapping + excluded paths）。**只增/改，不删。**
  */
 
 internal fun publishConfigOf(project: Project): PublishConfig = PublishConfig.getInstance(project)
 
 /**
- * 本项目视角下的 **SFTP server + 连接凭据**，给 `get_deployment_servers` 用。
+ * 本项目视角下的全部 SSH 配置 + 连接凭据，给 `get_ssh_servers` 用。
  *
- * 凭据来自平台，不碰 PasswordSafe：`Deployable.copyToCredentials(RemoteCredentialsHolder)`
- * 会把 `Credentials.getPasswordAsString()` 塞进 holder —— PASSWORD 进 `password`，
- * KEY_PAIR 进 `passphrase`（实测，见 `Deployable.copyToCredentials` 的字节码）。
+ * 凭据来自平台，不碰 PasswordSafe 的具体实现：`SshConfig.copyToCredentials(AuthData)`
+ * 会把 PasswordSafe 里的密码 / 私钥口令填进 [RemoteCredentials]。
  *
- * 只收 SFTP：FTP / WebDAV / MOUNT 没有 SSH 凭据，`remote_exec` 用不上。
+ * 与旧版（遍历 Deployment 面板的 WebServer）的区别：**SSH 配置本身就是服务器**，
+ * 没被任何 deployment 引用也照样返回。
  */
-internal fun deploymentServersWithCredentials(project: Project): List<DeploymentServerCredentials> {
-    val config = publishConfigOf(project)
-    val allMappings = runCatching { config.allPathMappings }.getOrNull().orEmpty()
-    val defaultMappings = defaultDeploymentMappings(project)
-    val servers = runCatching { GroupedServersConfigManager.getInstance(project).flattenedServers }
-        .getOrNull()
-        .orEmpty()
+internal fun sshServersWithCredentials(project: Project): List<DeploymentServerCredentials> {
+    val configs = runCatching { SshConfigManager.getInstance(project).configs }.getOrNull().orEmpty()
 
     val problems = mutableListOf<String>()
-    val result = servers.mapNotNull { server ->
-        val accessType = runCatching { server.accessType }.getOrNull()
-        if (accessType != AccessType.SFTP) return@mapNotNull null
+    val result = configs.mapNotNull { config ->
+        val name = config.name.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val credentials = runCatching {
+            config.copyToCredentials(config.authDataFromForPasswordSafe)
+        }.getOrNull()
+        if (credentials == null) {
+            problems += "$name: 无法读取凭据"
+            return@mapNotNull null
+        }
 
-        val name = server.getName().orEmpty()
-        val deployable = runCatching { Deployable.create(server, project) }.getOrNull()
-            ?: run {
-                problems += "$name: 无法读取服务器配置（Deployable.create 失败）"
-                return@mapNotNull null
-            }
-        val credentials = RemoteCredentialsHolder()
-        runCatching { deployable.copyToCredentials(credentials) }
         val host = credentials.host.takeIf { it.isNotBlank() }
         if (host == null) {
             problems += "$name: 没有配置 host"
             return@mapNotNull null
         }
 
-        val id = server.id.orEmpty()
-        val mappings = allMappings[id].orEmpty()
-            .map { it.toState() }
-            .takeUnless { it == defaultMappings }
-            .orEmpty()
-
-        val authType = runCatching { credentials.authType.name }.getOrNull() ?: "UNKNOWN"
+        val authType = runCatching { config.authType.name }.getOrNull() ?: "UNKNOWN"
         val password = credentials.password?.takeIf { it.isNotBlank() }
-        val privateKeyPath = credentials.privateKeyFile.takeIf { it.isNotBlank() }?.let(::expandUserHomeMacro)
+        val privateKeyPath = credentials.privateKeyFile
+            .takeIf { it.isNotBlank() }
+            ?.let(::expandUserHomeMacro)
         val credentialIssue = credentialIssueOf(authType, password, privateKeyPath)
         if (credentialIssue != null) problems += "$name: $credentialIssue"
 
         DeploymentServerCredentials(
             name = name,
-            // 主键落在 SSH 配置上：同一台主机上多套 root/mapping 只是多条 deployment，
-            // 不是多台服务器。取不到（SSH 配置被删）时留空，调用方回落到 WebServer 名。
-            sshConfigName = runCatching { server.findSshConfig(project)?.name }.getOrNull().orEmpty(),
             host = host,
             port = credentials.port,
             username = credentials.userName.orEmpty(),
@@ -98,8 +79,6 @@ internal fun deploymentServersWithCredentials(project: Project): List<Deployment
             password = password,
             passphrase = credentials.passphrase?.takeIf { it.isNotBlank() },
             privateKeyPath = privateKeyPath,
-            rootFolder = runCatching { server.fileTransferConfig.rootFolder }.getOrNull(),
-            deployments = mappings,
         )
     }
 
@@ -108,9 +87,9 @@ internal fun deploymentServersWithCredentials(project: Project): List<Deployment
     if (problems.isNotEmpty()) {
         throw DeploymentConfigException(
             buildString {
-                append("有 ").append(problems.size).append(" 台 SFTP 服务器的配置不完整，无法连接：\n")
+                append("有 ").append(problems.size).append(" 条 SSH 配置不完整，无法连接：\n")
                 problems.forEach { append("- ").append(it).append('\n') }
-                append("请在 IDE 的 Settings | Build, Execution, Deployment | Deployment 里修正后重试。")
+                append("请在 IDE 的 Settings | Settings | Tools | SSH Configurations 里修正后重试。")
             },
         )
     }
@@ -118,15 +97,143 @@ internal fun deploymentServersWithCredentials(project: Project): List<Deployment
 }
 
 /**
- * 认证方式要求的字段是空的 → 这台连不上。
+ * 把 `hosts.json` 里的 deployment 推到 IDE。
  *
- * 最常见的原因是 IDE 里引用的 SSH 配置被删了（`sshConfigId` 悬空）：`authType` 还是 PASSWORD，
- * 但密码取不到。条目仍然返回（host / mapping 有用），只是把问题带出去让调用方提醒用户。
+ * `serverName` 是 SSH 配置名，用来确认目标 WebServer 引用的是同一台机器。
+ * 已存在的 WebServer 按名字复用；不存在则新建。
+ *
+ * 只增/改：IDE 里有、`hosts.json` 没给的 deployment 只会出现在 `orphaned` 里，
+ * **不会删除** —— 自动删 IDE 配置风险太大。
+ */
+internal fun syncDeployments(
+    project: Project,
+    serverName: String,
+    requests: List<DeploymentSyncRequest>,
+): DeploymentSyncReport {
+    val sshConfig = SshConfigManager.getInstance(project).findConfigByName(serverName)
+        ?: throw DeploymentConfigException("IDE 的 SSH 配置里没有 \"$serverName\"，先添加这条 SSH 配置。")
+
+    val manager = GroupedServersConfigManager.getInstance(project)
+    val publish = publishConfigOf(project)
+
+    val created = mutableListOf<String>()
+    val updated = mutableListOf<String>()
+    val unchanged = mutableListOf<String>()
+    val handled = mutableSetOf<String>()
+
+    for (request in requests) {
+        requireRelativeLocalPath(request.name, request.localPath)
+        val existing = manager.flattenedServers.firstOrNull { it.getName() == request.name }
+        if (existing == null) {
+            val webServer = WebServerConfig().apply {
+                // `addServer` 会 clone 之后再加入；id 必须在这里生成，否则写 mapping 时
+                // 还没法按名字回查到刚加入的那一条（实测：立刻查 flattenedServers 可能还拿不到）。
+                id = java.util.UUID.randomUUID().toString()
+                setIsProjectLevel(true)
+                fileTransferConfig.apply {
+                    accessType = AccessType.SFTP
+                    setSshConfig(sshConfig)
+                    setRootFolder(request.deployPath)
+                }
+                // `setSshConfig` 会把 name 重算成 `sftp://host:port`，必须在它之后写回用户给的名字。
+                setName(request.name)
+            }
+            manager.addServer(webServer)
+            applyDeployment(project, publish, webServer, request)
+            created += request.name
+        } else {
+            if (existing.accessType != AccessType.SFTP) {
+                throw DeploymentConfigException(
+                    "deployment \"${request.name}\" 在 IDE 里不是 SFTP 类型，拒绝覆盖。",
+                )
+            }
+            val changed = applyDeployment(project, publish, existing, request)
+            if (changed) updated += request.name else unchanged += request.name
+        }
+        handled += request.name
+    }
+
+    val orphaned = manager.flattenedServers
+        .filter {
+            // 平台会给每条 SSH 配置补一个默认 WebServer（名字就是 `sftp://host:port`），
+            // 它不是用户配的 deployment，不能算 orphaned。
+            it.accessType == AccessType.SFTP &&
+                it.findSshConfig(project)?.name == serverName &&
+                !it.getName().orEmpty().startsWith("sftp://")
+        }
+        .mapNotNull { it.getName() }
+        .filterNot { it in handled }
+
+    return DeploymentSyncReport(created, updated, unchanged, orphaned)
+}
+
+/**
+ * 写入一条 deployment 的 mapping 与 excluded paths。
+ *
+ * @return 是否真的改动了内容（用于区分 `updated` / `unchanged`）。
+ */
+private fun applyDeployment(
+    project: Project,
+    publish: PublishConfig,
+    server: WebServerConfig,
+    request: DeploymentSyncRequest,
+): Boolean {
+    val mapping = mappingFor(project, server, request)
+    val excludes = request.exclude.map { ExcludedPath(it, true) }
+
+    val currentMappings = publish.getPathMappings(server.id).orEmpty()
+    val currentExcludes = publish.getExcludedPaths(server.id).orEmpty()
+    val sameMapping = currentMappings.size == 1 &&
+        currentMappings.first().localPath == mapping.localPath &&
+        currentMappings.first().deployPath == mapping.deployPath
+    val sameExcludes = currentExcludes.map { it.path.orEmpty() } == excludes.map { it.path.orEmpty() }
+    if (sameMapping && sameExcludes) return false
+
+    // 平台的配置写入口：必须在写锁里，UI 与 MCP 线程都要能看到同一个状态。
+    ApplicationManager.getApplication().invokeAndWait {
+        publish.setPathMappings(server.id, listOf(mapping))
+        publish.setExcludedPaths(server.id, excludes)
+    }
+    return true
+}
+
+/**
+ * `hosts.json` 的绝对 `deployPath` → IDE 的「rootFolder + 相对路径」。
+ *
+ * 能嵌进现有 rootFolder 就嵌进去；嵌不进就把 rootFolder 改成 deployment 目录、
+ * mapping 用 `/`。这样拼出来的绝对路径始终等于请求里的 `deployPath`。
+ */
+private fun mappingFor(
+    project: Project,
+    server: WebServerConfig,
+    request: DeploymentSyncRequest,
+): DeploymentPathMapping {
+    val root = server.fileTransferConfig.rootFolder?.trim().orEmpty()
+    val deployPath = request.deployPath.trim()
+    val relative = when {
+        root.isNotEmpty() && deployPath == root -> "/"
+        root.isNotEmpty() && deployPath.startsWith("$root/") -> deployPath.removePrefix(root)
+        else -> {
+            server.fileTransferConfig.setRootFolder(deployPath)
+            "/"
+        }
+    }
+    return DeploymentPathMapping().apply {
+        localPath = resolveLocalPath(project.basePath, request.localPath)
+        this.deployPath = relative
+        webPath = "/"
+    }
+}
+
+/**
+ * 认证方式要求的字段是空的 → 这条 SSH 配置连不上。
+ *
+ * 最常见的原因是 IDE 里引用的密码没有保存到 PasswordSafe，或者私钥路径被删。
  */
 internal fun credentialIssueOf(authType: String, password: String?, privateKeyPath: String?): String? =
     when (authType) {
         "PASSWORD" -> if (password == null) {
-            "authType=PASSWORD 但没有读到密码 —— IDE 里的 SSH 配置可能已被删除或未填写"
+            "authType=PASSWORD 但没有读到密码 —— IDE 里这条 SSH 配置可能没有保存密码"
         } else {
             null
         }
@@ -137,7 +244,7 @@ internal fun credentialIssueOf(authType: String, password: String?, privateKeyPa
     }
 
 /**
- * IDE 里的 Deployment 配置不完整（缺 host / 缺凭据 / 引用的 SSH 配置被删）。
+ * IDE 里的 SSH 配置不完整（缺 host / 缺凭据）。
  *
  * 单独一个类型是为了让工具把它转成**可读的配置错误**，而不是 `internal_error`：
  * 这是用户要去 IDE 里修的东西，不是插件崩了。
@@ -149,26 +256,3 @@ private fun expandUserHomeMacro(path: String): String {
     val home = System.getProperty("user.home").orEmpty()
     return path.replace("\$USER_HOME\$", home).replace("\${USER_HOME}", home)
 }
-
-/** 一条 `DeploymentPathMapping` → 纯数据。 */
-private fun DeploymentPathMapping.toState(): DeploymentMappingState = DeploymentMappingState(
-    // 这三个 getter 同样没有 @NotNull：字段可能为空，所以用 getOrNull() 兜底再 orEmpty()。
-    localPath = runCatching { localPath }.getOrNull().orEmpty(),
-    deployPath = runCatching { deployPath }.getOrNull().orEmpty(),
-    webPath = runCatching { webPath }.getOrNull().orEmpty(),
-)
-
-/**
- * 平台为“没有配置 mapping 的 Server”生成的默认映射。
- *
- * `PublishConfig.getAllPathMappings()` 会把这类默认 mapping 一起返回；用平台自己的
- * `addDefaultMappings()` 生成同一份结果并比较，就能把“用户真的配了 deployment”和
- * “平台补出来的默认值”区分开。这里仍然只走 IDE API，不读项目文件 —— 应用级 Server
- * 也由 `GroupedServersConfigManager` / `PublishConfig` 统一覆盖。
- */
-private fun defaultDeploymentMappings(project: Project): List<DeploymentMappingState> {
-    val mappings = mutableListOf<DeploymentPathMapping>()
-    runCatching { PublishConfig.addDefaultMappings(project, mappings) }
-    return mappings.map { it.toState() }
-}
-

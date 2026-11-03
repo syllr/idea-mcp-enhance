@@ -49,6 +49,13 @@
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycleToolsProvider"/>
 
         <!--
+          部署：同步 + 启动，但不产生 Run 会话（Run 窗口里没有它，Stop 也停不到它）。
+          启停 / 状态仍然用内置的 run configuration 工具，这里只补内置工具没有的这个动作。
+        -->
+        <mcpServer.mcpToolsProvider
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RemoteProcessToolsProvider"/>
+
+        <!--
           定义态：看 / 建 / 改 / 删 Run Configuration。
           见 mcp/RunConfigDefinitionToolsProvider.kt —— `.run/` 目录下 `*.run.xml` 的写入口只有这里。
         -->

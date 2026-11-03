@@ -2,6 +2,23 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.8] - 2026-11-03
+
+### Added
+
+- **`deploy_remote_process`**：按配置页 Deploy 按钮的方式部署 Remote Process 配置（同步 → 启动 → 打开 Run 标签页）。它是 deploy-only 语义：点 Stop 只关闭日志跟随，不 kill 远端进程 / 不删除容器；已在运行时直接替换，不弹窗。
+- **`list_remote_processes`**：无状态列出项目里所有 Remote Process 配置及远端存活状态（process 用 `ps` + cwd，docker 用 `docker ps`）；没在跑的也列出来。
+- **Application log directory**：应用自己写日志的目录（process 是宿主机路径，docker 是容器内路径），只用于查询，不影响启动。
+
+### Changed
+
+- **`localPath` 相对路径**：项目级 `hosts.json` 的 deployment 必须使用相对项目根目录的路径；全局 hosts 必须使用绝对路径。
+- **Remote Process 的启动输出**（process）固定写到 `<working directory>/.opencode/output-<name>.log`，Run 窗口 tail 这个文件。
+
+### Fixed
+
+- `rerun_run_configuration` / `stop_run_configuration` 对 Remote Process 配置可用：暴露远端 pid / 启动标记，不再等待不存在的本地 OS pid。
+
 ## [0.1.7] - 2026-10-29
 
 ### Changed

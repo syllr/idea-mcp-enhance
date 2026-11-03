@@ -64,4 +64,15 @@
         </action>
 
     </actions>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!--
+          Remote Process：在 SSH 配置对应的机器上启动 / 停止后台进程。
+          放在主 plugin.xml 而不是 deployment.xml：实测放在 optional 的 config-file 里时，
+          RunManager 认不出这个 type（`typeKnown=false`），配置被标成 "cannot be loaded"。
+        -->
+        <configurationType
+                implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RemoteProcessConfigurationType"/>
+    </extensions>
+
 </idea-plugin>

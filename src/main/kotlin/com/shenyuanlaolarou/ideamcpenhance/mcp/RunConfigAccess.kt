@@ -343,7 +343,8 @@ internal fun RunContentDescriptor.toInstanceState(): RunInstanceState? {
  * 包内可见：日志侧（[RunLogAccess] 写 sidecar）也要用它。
  */
 internal fun processPidOrNull(handler: ProcessHandler): Long? =
-    (handler as? BaseProcessHandler<*>)?.process?.let { process -> runCatching { process.pid() }.getOrNull() }
+    handler.getUserData(REMOTE_PROCESS_PID)
+        ?: (handler as? BaseProcessHandler<*>)?.process?.let { process -> runCatching { process.pid() }.getOrNull() }
 
 /**
  * 请求停止一个进程，等价于 `ExecutionManagerImpl.stopProcess`，但只用公开 API。
@@ -685,7 +686,12 @@ private suspend fun awaitProcessUp(handler: ProcessHandler, timeoutMs: Int) {
     val deadline = deadlineNanos(timeoutMs.toLong())
     var attempt = 0
     while (System.nanoTime() < deadline) {
-        if (handler.isProcessTerminated || processPidOrNull(handler) != null) return
+        if (handler.isProcessTerminated ||
+            handler.getUserData(REMOTE_PROCESS_STARTED) == true ||
+            processPidOrNull(handler) != null
+        ) {
+            return
+        }
         delay(retryBackoffMs(attempt++))
     }
 }

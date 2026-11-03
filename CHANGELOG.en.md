@@ -13,6 +13,23 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.8] - 2026-11-03
+
+### Added
+
+- **`deploy_remote_process`**: deploy a Remote Process configuration like the configuration page's Deploy button — sync, start, and open a Run tab. It is deploy-only: Stop closes the log follower without killing the remote process / container. Already-running instances are replaced without a dialog.
+- **`list_remote_processes`**: stateless listing of every Remote Process configuration with its live remote state (`ps` + cwd for `process`, `docker ps` for `docker`). Stopped configurations are included.
+- **Application log directory**: an optional field for the directory the application itself writes logs to (host path for `process`, container path for `docker`). Query-only; it does not affect startup.
+
+### Changed
+
+- **Relative `localPath`**: project-level `hosts.json` deployments must use a path relative to the project root; global hosts must use absolute paths.
+- **Remote Process startup output** for `process` is captured in `<working directory>/.opencode/output-<name>.log`; the Run window tails that file.
+
+### Fixed
+
+- `rerun_run_configuration` / `stop_run_configuration` now work with Remote Process configurations without waiting for a local OS pid: the remote pid / start marker is exposed to the lifecycle tools.
+
 ## [0.1.7] - 2026-10-29
 
 ### Changed

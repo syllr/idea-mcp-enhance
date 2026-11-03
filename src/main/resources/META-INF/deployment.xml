@@ -2,14 +2,17 @@
   链式 optional 依赖的**里层**：只有 com.intellij.mcpServer（外层，见 plugin.xml）与
   com.jetbrains.plugins.webDeployment（见 mcpserver.xml）**都在**时，这个文件才会被读取。
 
-  这里注册 Deployment 工具（列服务器 / 取凭据 / 上传 / 下载 / 查状态）。它们的类引用了
-  com.jetbrains.plugins.webDeployment.*，因此**必须在确认该插件存在之后才被加载**——
+  这里注册 Deployment 工具：
+
+  - get_ssh_servers：读 SSH 配置 + 凭据，给 OpenCode 的 remote_exec 用
+  - sync_deployments：把 hosts.json 的 deployment 推到 IDE 的 Deployment 面板
+
+  它们引用了 com.jetbrains.plugins.webDeployment.*，因此**必须在确认该插件存在之后才被加载**——
   config-file 机制正好给的就是这一点：插件不在，这个文件根本不会被读取，
   这些类也就永远不会被解析。
 
-  远程执行已经移到 OpenCode 侧（`opencode-idea` 的 `remote_exec`）：它通过
-  `get_deployment_servers` 拿这里的服务器与凭据，自己用 SSH 跑命令，所以不再需要
-  remote-run / Terminal 插件。
+  远程执行在 OpenCode 侧（`opencode-idea` 的 `remote_exec`）：它通过
+  `get_ssh_servers` 拿 SSH 配置与凭据，自己用 SSH 跑命令。
 
   扩展点全名：com.intellij.mcpServer.mcpToolsProvider
 -->
@@ -17,5 +20,6 @@
     <extensions defaultExtensionNs="com.intellij">
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.DeploymentToolsProvider"/>
+
     </extensions>
 </idea-plugin>
