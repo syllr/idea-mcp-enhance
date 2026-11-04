@@ -1,6 +1,5 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
-import com.intellij.execution.ExecutionException
 import com.intellij.execution.ProgramRunnerUtil
 import com.intellij.execution.RunManager
 import com.intellij.execution.executors.DefaultRunExecutor
@@ -12,6 +11,7 @@ import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.configurations.RunConfigurationBase
 import com.intellij.execution.configurations.RunConfigurationOptions
 import com.intellij.execution.configurations.RunProfileState
+import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
@@ -102,27 +102,27 @@ class RemoteProcessRunConfiguration(
 
     override fun checkConfiguration() {
         val server = remoteOptions.server?.takeIf { it.isNotBlank() }
-            ?: throw ExecutionException("没有选择 SSH 配置。")
+            ?: throw RuntimeConfigurationError("没有选择 SSH 配置。")
         if (RemoteSshClient.sshConfig(project, server) == null) {
-            throw ExecutionException("IDE 的 SSH 配置里没有 \"$server\"。")
+            throw RuntimeConfigurationError("IDE 的 SSH 配置里没有 \"$server\"。")
         }
         if (!RemoteProcessHosts.hasServer(project, server)) {
-            throw ExecutionException("服务器 \"$server\" 不在 hosts.json 里，先执行 /sync-remote-config。")
+            throw RuntimeConfigurationError("服务器 \"$server\" 不在 hosts.json 里，先执行 /remote-config-sync。")
         }
         if (remoteOptions.command.isNullOrBlank()) {
-            throw ExecutionException("command 不能为空。")
+            throw RuntimeConfigurationError("command 不能为空。")
         }
         val kind = remoteOptions.kind?.takeIf { it.isNotBlank() }
             ?: inferKind(remoteOptions.command.orEmpty())
         if (kind != "process" && kind != "docker") {
-            throw ExecutionException("kind 只能是 process 或 docker。")
+            throw RuntimeConfigurationError("kind 只能是 process 或 docker。")
         }
         // docker 不需要同步文件；process 必须有 deployment 才能上传。
         if (kind != "docker" && remoteOptions.deployment.isNullOrBlank()) {
-            throw ExecutionException("Deployment 不能为空（启动前要先同步它）。")
+            throw RuntimeConfigurationError("Deployment 不能为空（启动前要先同步它）。")
         }
         if (kind == "docker" && remoteOptions.container.isNullOrBlank()) {
-            throw ExecutionException("docker 需要 Container 名（用于判断容器是否已启动）。")
+            throw RuntimeConfigurationError("docker 需要 Container 名（用于判断容器是否已启动）。")
         }
     }
 

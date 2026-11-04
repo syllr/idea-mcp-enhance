@@ -13,6 +13,23 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.9] - 2026-11-03
+
+### Fixed
+
+- **`inspect_run_configuration` no longer fails on an incomplete configuration**: Remote Process's
+  `checkConfiguration()` threw a bare `ExecutionException`, which escaped `cannotRunReason`'s catch clauses and
+  made the whole inspect call fail before `canRun` could be reported. It now throws `RuntimeConfigurationError`
+  as the contract expects, and `cannotRunReason` also catches a bare `ExecutionException` as a last resort —
+  a broken configuration yields `canRun: false` plus the reason instead of crashing the tool.
+- Remote Process error text: `/sync-remote-config` → `/remote-config-sync`.
+
+### Note
+
+- The definition side stays **read-only** (only `inspect_run_configuration`). Creating / updating / deleting a run
+  configuration is done by the `idea-run-config-manager` skill, which reads and writes the project's
+  `.run/*.run.xml` directly — the file is the source of truth and can be reviewed and committed.
+
 ## [0.1.8] - 2026-11-03
 
 ### Added

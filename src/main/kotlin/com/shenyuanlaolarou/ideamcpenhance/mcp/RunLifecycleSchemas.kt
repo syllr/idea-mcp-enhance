@@ -370,6 +370,9 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish
     — its Stop leaves the remote process running.
 
+    This always starts a process. To only copy files to the remote host, use the file transfer
+    tools instead.
+
     Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,

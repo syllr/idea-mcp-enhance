@@ -2,6 +2,21 @@
 
 # IDE MCP Enhance Changelog
 
+## [0.1.9] - 2026-11-03
+
+### Fixed
+
+- **`inspect_run_configuration` 不再因配置不完整而失败**：Remote Process 的 `checkConfiguration()` 之前抛裸
+  `ExecutionException`，逃过了 `cannotRunReason` 的捕获，导致整条 inspect 直接报错、连 `canRun` 都拿不到。
+  现在它按契约抛 `RuntimeConfigurationError`，`cannotRunReason` 也兜底捕获 `ExecutionException` ——
+  坏配置返回 `canRun: false` + 原因，而不是让工具崩掉。
+- Remote Process 的报错文案：`/sync-remote-config` → `/remote-config-sync`。
+
+### Note
+
+- 定义态仍然是**只读**（只有 `inspect_run_configuration`）。新建 / 修改 / 删除 run configuration 由
+  `idea-run-config-manager` skill 直接读写项目 `.run/*.run.xml`，不经过 IDE 工具 —— 文件本身就是真相，可 review、可提交。
+
 ## [0.1.8] - 2026-11-03
 
 ### Added

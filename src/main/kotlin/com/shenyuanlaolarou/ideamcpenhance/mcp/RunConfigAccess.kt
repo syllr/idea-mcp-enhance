@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
 import com.intellij.execution.ExecutionManager
+import com.intellij.execution.ExecutionException
 import com.intellij.execution.KillableProcess
 import com.intellij.execution.ProgramRunnerUtil
 import com.intellij.execution.RunManager
@@ -100,6 +101,9 @@ internal fun beforeLaunchStepCount(settings: RunnerAndConfigurationSettings): In
  * - `IndexNotReadyException`：IDE 还在建索引（dumb mode）⇒ **不需要用户做任何事**，等索引跑完再调即可
  *
  * 第三种 `RuntimeConfigurationException`（只是警告）平台自己也当"可以跑"，这里同样放过。
+ *
+ * 最后兜一层**裸 `ExecutionException`**：有些类型不按契约抛 `ConfigurationException` 的子类
+ * （Remote Process 早先就是这样），漏掉它会让 `inspect` 整个失败、连 `canRun` 都拿不到。
  */
 internal fun cannotRunReason(settings: RunnerAndConfigurationSettings, executor: Executor?): String? =
     try {
@@ -115,6 +119,10 @@ internal fun cannotRunReason(settings: RunnerAndConfigurationSettings, executor:
     } catch (_: RuntimeConfigurationException) {
         // 平台自己也是"吞掉当通过"：警告不阻止启动
         null
+    } catch (error: ExecutionException) {
+        "This requires the user to act in the IDE: the IDE refuses to run \"${settings.name}\" " +
+            "(${error.localizedMessage ?: "invalid settings"}). Nothing was started. Fix it in the IDE, then " +
+            "call this tool again."
     }
 
 /**
