@@ -39,6 +39,14 @@
   as the contract expects, and `cannotRunReason` also catches a bare `ExecutionException` as a last resort —
   a broken configuration yields `canRun: false` plus the reason instead of crashing the tool.
 - Remote Process error text: `/sync-remote-config` → `/remote-config-sync`.
+- **Plugin Verifier compatibility**: the Go plugin API (`com.goide.*`) now goes through reflection — the Go
+  plugin does not ship with the IDE, so importing it directly made the jar "binary incompatible"; `plugin.xml` now
+  depends on **`intellij.ssh.plugin`** (plugin level, not module level — a bundled plugin's id is not its
+  directory name) — a module dependency only exposes the
+  exported API, so the classes in `com.intellij.ssh`'s implementation jar (`SshConnectionService` / `SessionConfig` /
+  `ExecChannelConfig` …) stayed invisible and the verifier reported "Access to unresolved class";
+  `PluginManagerCore.getPlugin` now goes through reflection (it and `PluginManager.getPlugin` are both
+  `@ApiStatus.Internal`), which removes the "Internal API usages" finding.
 
 ### Note
 

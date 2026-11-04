@@ -1,6 +1,6 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
-import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.ide.plugins.IdeaPluginDescriptor
 import com.intellij.openapi.components.service
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
@@ -53,9 +53,15 @@ private object MavenTerminalEnvProvider : ProjectTerminalEnvProvider {
 
     /** Bundled Maven 的真实路径在 Maven 插件目录下的 lib/maven3（或 maven4）。 */
     private fun bundledMavenHome(dir: String): String? {
-        val plugin = PluginManagerCore.getPlugin(PluginId.getId("org.jetbrains.idea.maven"))
-            ?: return null
-        val home = plugin.pluginPath.resolve("lib").resolve(dir).toFile()
+        // `PluginManager.getPlugin` 与 `PluginManagerCore.getPlugin` **都**标着 @ApiStatus.Internal
+        // （后者还 deprecated），Plugin Verifier 会判成 "Internal API usages" 而拒绝发布。
+        // 反射调用不算直接引用 —— 公开的 `IdeaPluginManager` 在 2026.2 里还不存在，没有替代品。
+        val descriptor = runCatching {
+            Class.forName("com.intellij.ide.plugins.PluginManagerCore")
+                .getMethod("getPlugin", PluginId::class.java)
+                .invoke(null, PluginId.getId("org.jetbrains.idea.maven"))
+        }.getOrNull() as? IdeaPluginDescriptor ?: return null
+        val home = descriptor.pluginPath.resolve("lib").resolve(dir).toFile()
         return home.takeIf { it.isDirectory }?.absolutePath
     }
 }

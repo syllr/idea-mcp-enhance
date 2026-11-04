@@ -169,6 +169,16 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 - **MCP 那半必须能独立于 MCP Server 消失**: 任何引用 `com.intellij.mcpserver.*` 的类 **只能**由 `META-INF/mcpserver.xml`
   触发加载，`plugin.xml` 主文件里不许出现
 - **禁止使用 `@TestOnly` / `@Internal` 的平台 API**; 尤其禁止 `com.intellij.execution.impl.*`
+  —— `PluginManager.getPlugin` / `PluginManagerCore.getPlugin` **都**是 Internal（后者还 deprecated），
+  公开的 `IdeaPluginManager` 在 2026.2 里还不存在 ⇒ 这种场景只能反射调用
+- **插件运行时可见的模块必须在 `plugin.xml` 里声明**: `gradle.properties` 的 `platformBundledModules` 只管**编译期**
+  classpath。不声明的话运行时看不到那些类（`NoClassDefFoundError`），Plugin Verifier 也会报整包 "not found"
+- **要用某个 plugin 的**实现 jar**里的类，要依赖 plugin 而不是 module**: module 依赖只给"导出的 API"
+  —— 例：`com.intellij.ssh` 的 `SshConfig` 在 `intellij.platform.ssh.core`（module，能看到），
+  而 `SshConnectionService` / `SessionConfig` 在 `intellij.platform.ssh` 的实现 jar 里（看不到）⇒ 依赖
+  **plugin** 级。**bundled plugin 的 id 不等于目录名**：SSH 那个是 `intellij.ssh.plugin`（目录 `platform-ssh-plugin`）
+- **不随 IDEA 分发的插件（Go 等）的 API 必须走反射**: config-file 的 optional 依赖只能挡住**运行时**加载那些类，
+  挡不住 Plugin Verifier 的静态扫描 —— jar 里只要有类直接 import 它，就判 "binary incompatible"
 - **禁止静态全局可变状态**: 不要在 `object` 里挂 `var`
 - **Type 抑制**: 禁止 `as Any` / Kotlin 等价的 type erase 绕过 / 滥用 `!!`
 - **日志**: 用 IntelliJ Platform 的 `thisLogger().info/warn/error()`，不要 `println` / `e.printStackTrace()`

@@ -29,6 +29,19 @@
     <depends>com.intellij.modules.platform</depends>
 
     <!--
+      IDE 自带的 SSH 支持。`RemoteSshClient` / `DeploymentAccess` 直接用 `com.intellij.ssh.*`
+      （SshConnectionService / SshConfigManager / SshExecProcess）。
+
+      这里依赖的是 **plugin**（id = `intellij.ssh.plugin`，目录名是 `platform-ssh-plugin`）而不是 module
+      （`intellij.platform.ssh`）：module 依赖只给"导出的 API"（`intellij.platform.ssh.core` 里的 SshConfig 等），
+      实现 jar 里的类（SshConnectionService / SessionConfig / ExecChannelConfig …）拿不到 ——
+      Plugin Verifier 会报 "Access to unresolved class"。
+
+      `gradle.properties` 的 `platformBundledModules` 只管编译期 classpath，运行时可见性看这里。
+    -->
+    <depends>intellij.ssh.plugin</depends>
+
+    <!--
       MCP Server（IDE 内置插件）。用 optional + config-file：没装 MCP Server 的 IDE 上，
       本插件的 prompt 功能照常工作，只是不会注册 MCP 工具。
       config-file 里引用的类全部来自 MCP Server，不会在可选依赖缺失时被加载。

@@ -27,6 +27,12 @@
   现在它按契约抛 `RuntimeConfigurationError`，`cannotRunReason` 也兜底捕获 `ExecutionException` ——
   坏配置返回 `canRun: false` + 原因，而不是让工具崩掉。
 - Remote Process 的报错文案：`/sync-remote-config` → `/remote-config-sync`。
+- **Plugin Verifier 兼容性**：① Go 插件的 API（`com.goide.*`）改成反射调用 —— Go 插件不随 IDEA 分发，
+  jar 里直接 import 它会被判 "binary incompatible"；② `plugin.xml` 依赖 **`intellij.ssh.plugin`**（plugin 级，
+  不是 module 级 —— bundled plugin 的 id 不等于目录名）—— module 依赖只给"导出的 API"，`com.intellij.ssh` 实现 jar 里的类
+  （`SshConnectionService` / `SessionConfig` / `ExecChannelConfig` …）拿不到，verifier 会报
+  "Access to unresolved class"；③ `PluginManagerCore.getPlugin` 改成反射调用（它与 `PluginManager.getPlugin`
+  都标着 `@ApiStatus.Internal`），不再触发 "Internal API usages"。
 
 ### Note
 
