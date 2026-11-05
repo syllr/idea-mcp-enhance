@@ -32,7 +32,7 @@ private const val UNKNOWN_CONFIGURATION_TYPE_ID = "Unknown"
 internal const val DEFAULT_HISTORY_LIMIT = 20
 
 /** 每条前置任务默认挂多少条自己的历史运行。 */
-internal const val BEFORE_RUN_TASK_HISTORY_LIMIT = 5
+internal const val BEFORE_RUN_TASK_HISTORY_LIMIT = 3
 
 // ---------------------------------------------------------------------------
 // inspect_run_configuration
@@ -60,9 +60,6 @@ private class InspectRunConfigurationTool : BaseRunTool() {
         val declaredType = readRunConfigurationElement(project, settings)?.getAttributeValue("type")
         val typeKnown = settings.type.id != UNKNOWN_CONFIGURATION_TYPE_ID
         val ownLogs = listRunLogs(project, settings.name)
-        // 父配置最近一次运行的开始时刻：Before launch 只可能发生在这之后，
-        // 更早的那些属于上一次运行，混进来只会误导。
-        val parentStartedAt = ownLogs.maxOfOrNull { it.startedAtMillis }
         val inspection = RunConfigurationInspection(
             configurationName = settings.name,
             typeId = if (typeKnown) settings.type.id else declaredType ?: settings.type.id,
@@ -81,7 +78,6 @@ private class InspectRunConfigurationTool : BaseRunTool() {
             beforeRunTasks = beforeRunTasksWithHistory(
                 project = project,
                 steps = definition?.beforeRunTasks.orEmpty(),
-                parentStartedAt = parentStartedAt,
             ),
             configurationXml = readRunConfigurationElement(project, settings)?.let(::writeConfigurationXml),
             instances = liveInstances,
@@ -99,20 +95,20 @@ private class InspectRunConfigurationTool : BaseRunTool() {
      * Before launch 跑的是一条**独立的** Run Configuration，它有自己的日志键与历史；
      * 父配置的 `history[]` 里永远看不到它。不把这条链显式连起来，agent 就只能去翻临时目录猜。
      *
-     * @param parentStartedAt 父配置最近一次运行的开始时刻；null（从没跑过）时不做时间过滤
+     * **不做时间过滤**：Before launch 天然发生在父配置**开始之前**，所以「只取父配置开始之后的运行」
+     * 这条判断方向是反的 —— 它会把唯一相关的那次构建整个剔掉（实测 `recentRuns` 恒为空的原因）。
+     * 每次父配置运行都会触发一次构建，"最近一次"就是这次的那次；更早的条目自带 `startedAt`，
+     * 读的人自己就能分辨。
      */
     private fun beforeRunTasksWithHistory(
         project: Project,
         steps: List<RunBeforeLaunchStep>,
-        parentStartedAt: Long?,
     ): List<RunBeforeLaunchTask> = steps.map { step ->
         val name = step.configurationName
         val runs = if (name.isNullOrBlank()) {
             emptyList()
         } else {
-            listRunLogs(project, name)
-                .filter { parentStartedAt == null || it.startedAtMillis >= parentStartedAt }
-                .take(BEFORE_RUN_TASK_HISTORY_LIMIT)
+            listRunLogs(project, name).take(BEFORE_RUN_TASK_HISTORY_LIMIT)
         }
         RunBeforeLaunchTask(step = step, recentRuns = runs)
     }
@@ -160,8 +156,18 @@ private class InspectRunConfigurationTool : BaseRunTool() {
         val beforeRunText = if (beforeRun.isEmpty()) {
             ""
         } else {
-            val names = beforeRun.joinToString(", ") { it.step.configurationName ?: it.step.taskKind ?: "?" }
-            ", ${beforeRun.size} before-launch step(s) [$names]"
+            // 摘要里直接带每步最近一次的退出码与日志路径：这是"上次构建成没成"的第一手答案，
+            // 只给步骤名等于让 agent 再去读一遍 JSON。
+            val parts = beforeRun.joinToString(", ") { task ->
+                val name = task.step.configurationName ?: task.step.taskKind ?: "?"
+                val last = task.recentRuns.firstOrNull()
+                when {
+                    last == null -> "$name (never ran)"
+                    last.exitCode == null -> "$name (exit unknown)"
+                    else -> "$name (exit ${last.exitCode}) → ${last.logFile}"
+                }
+            }
+            ", ${beforeRun.size} before-launch step(s) [$parts]"
         }
         return "${inspection.configurationName} (${inspection.typeDisplayName}): $storage, $runnable, " +
             "${inspection.instances.size} live instance(s), ${inspection.history.size} earlier run(s)$beforeRunText."

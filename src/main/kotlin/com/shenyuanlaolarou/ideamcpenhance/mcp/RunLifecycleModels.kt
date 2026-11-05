@@ -1,7 +1,6 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -9,7 +8,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 
 /**
  * MCP 工具的**纯数据层**：不含任何平台类型，也不在这里做 IO。
@@ -211,11 +209,18 @@ data class RerunReport(
     val instances: List<RunInstanceState>,
     val warnings: List<String>,
     /**
+     * 启动请求是否已被平台接受（拿到了 Run 会话）。
+     *
+     * 与 [started] 正交：server 的正常返回是 `triggered = true, started = null` ——
+     * 事情发出去了，但成功没保证，要用 `list_running_configurations` 退避查询。
+     */
+    val triggered: Boolean = false,
+    /**
      * 新进程是否真的起来了。
      *
      * - `true` / `false`：等到了结果（false 时看 [startFailure]，不要只看 [mode]）
-     * - `null`：**不知道** —— 启动请求已提交，但等窗口内没确认进程起来，
-     *   进程可能还在 before-launch 阶段。与仓库约定一致："值为 null = 进程还没起来"
+     * - `null`：**不知道** —— 要么只确认了触发（server），要么提交后平台没给回调。
+     *   与仓库约定一致："值为 null = 进程还没起来"
      */
     val started: Boolean? = false,
     /** 启动失败的原因；成功时为 null。 */
@@ -259,6 +264,14 @@ enum class TransitionPhase(val jsonValue: String) {
 
     /** 新进程已创建并注册。 */
     STARTED("STARTED"),
+
+    /**
+     * 启动请求已被平台接受，但**没有等进程起来**（server 语义）。
+     *
+     * 与 [STARTED] 的区别：这里只保证「触发成功」，部署同步 / 上传 / 拉起都还在后台跑。
+     * 与 [START_SUBMITTED] 的区别：那个连 Run 会话都没拿到。
+     */
+    TRIGGERED("TRIGGERED"),
 
     /**
      * 启动请求已提交，但等窗口内**没有确认它起来**。
@@ -376,11 +389,6 @@ internal fun RunInstanceState.toListJson(): JsonObject = buildJsonObject {
     put("logFile", logFile)
 }
 
-/** `lastRun` 为空时要保留的键。见 [RunningBeforeLaunchStep.toJson]。 */
-private val LAST_RUN_NULL_KEYS = listOf(
-    "startedAt", "startedAtIso", "endedAt", "durationMs", "pid", "exitCode", "logFile",
-)
-
 /**
  * 列表里的一条 Before launch 步骤。
  *
@@ -400,21 +408,7 @@ data class RunningBeforeLaunchStep(
         put("name", name)
         put("enabled", enabled)
         put("output", output)
-        putJsonObject("lastRun") {
-            val run = lastRun
-            if (run == null) {
-                // 键必须保留（见仓库约定）：agent 要能区分"键不存在"（工具出错）与"值为 null"（从没跑过）。
-                for (key in LAST_RUN_NULL_KEYS) put(key, JsonNull)
-            } else {
-                put("startedAt", run.startedAtMillis)
-                put("startedAtIso", isoTimestamp(run.startedAtMillis))
-                put("endedAt", run.endedAtMillis)
-                put("durationMs", run.durationMillis)
-                put("pid", run.pid)
-                put("exitCode", run.exitCode)
-                put("logFile", run.logFile)
-            }
-        }
+        put("lastRun", runLogEntryJsonOrNull(lastRun))
     }
 }
 
@@ -500,6 +494,7 @@ internal fun RunTransitionStep.toJson(): JsonObject = buildJsonObject {
 internal fun RerunReport.toJson(): JsonObject = buildJsonObject {
     put("configurationName", configurationName)
     put("mode", mode.jsonValue)
+    put("triggered", triggered)
     put("started", started)
     put("startFailure", startFailure)
     put("stoppedInstances", stoppedInstances)

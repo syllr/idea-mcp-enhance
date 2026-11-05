@@ -545,9 +545,40 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
+    fun `server 的触发成功是 triggered 为 true 加 started 为 null`() {
+        // 这是 server 语义的核心契约：只保证"事情发出去了"，不保证服务可用。
+        // 两个键必须能同时读出来，否则调用方只能把"触发"误读成"启动成功"。
+        val json = RerunReport(
+            configurationName = "aidata@mbp",
+            mode = RerunMode.RESTARTED,
+            stoppedInstances = 1,
+            runningAfter = null,
+            instances = emptyList(),
+            warnings = emptyList(),
+            triggered = true,
+            started = null,
+            runKind = RunKind.SERVER,
+            transition = listOf(
+                RunTransitionStep(TransitionPhase.TRIGGERED, "start triggered, not confirmed up", 240),
+            ),
+        ).toJson()
+
+        assertTrue("触发成功必须可读", json["triggered"]!!.jsonPrimitive.boolean)
+        assertEquals("启动成功未知，必须是 null", JsonNull, json["started"])
+        assertEquals("server", json["runKind"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `rerun 报告输出 mode 的机器可读值`() {
         for (mode in RerunMode.entries) {
-            val json = RerunReport("Main", mode, 0, 1, emptyList(), emptyList()).toJson()
+            val json = RerunReport(
+                configurationName = "Main",
+                mode = mode,
+                stoppedInstances = 0,
+                runningAfter = 1,
+                instances = emptyList(),
+                warnings = emptyList(),
+            ).toJson()
             assertEquals(mode.jsonValue, json["mode"]!!.jsonPrimitive.content)
         }
         assertEquals("RESTARTED", RerunMode.RESTARTED.jsonValue)
@@ -613,9 +644,19 @@ class RunLifecycleSchemaTest {
     }
 
     @Test
-    fun `状态流转的四个节点都有机器可读值`() {
+    fun `deploy 的输出 schema 声明 triggered 与 beforeRunTasks 且不再有 submittedOnly`() {
+        val output = deployRemoteProcessDescriptor.outputSchema!!
+        assertTrue("必须声明 triggered", output.propertiesSchema.containsKey("triggered"))
+        assertTrue("必须带回 beforeRunTasks", output.propertiesSchema.containsKey("beforeRunTasks"))
+        assertFalse("submittedOnly 已被 triggered 取代", output.propertiesSchema.containsKey("submittedOnly"))
+        assertTrue("triggered 是必填", output.requiredProperties.contains("triggered"))
+        assertTrue("beforeRunTasks 是必填", output.requiredProperties.contains("beforeRunTasks"))
+    }
+
+    @Test
+    fun `状态流转的每个节点都有机器可读值`() {
         assertEquals(
-            listOf("STOPPED", "STARTED", "START_SUBMITTED", "START_FAILED"),
+            listOf("STOPPED", "STARTED", "TRIGGERED", "START_SUBMITTED", "START_FAILED"),
             TransitionPhase.entries.map { it.jsonValue },
         )
     }
@@ -637,6 +678,31 @@ class RunLifecycleSchemaTest {
     }
 
     // ---------- 辅助 ----------
+
+    @Test
+    fun `inspect 的最近一次运行就是 recentRuns 的第一条`() {
+        // 不额外给 `lastRun`：同一份数据出现两次只会让人怀疑哪个准。
+        val run = RunLogEntry(1000, "/tmp/build.log", 2000, 42, 0)
+        val task = RunBeforeLaunchTask(
+            step = RunBeforeLaunchStep("RunConfigurationTask", "build", "NodeJSConfigurationType", true),
+            recentRuns = listOf(run),
+        )
+        val json = task.toJson()
+
+        assertFalse("不该有冗余的 lastRun 字段", json.containsKey("lastRun"))
+        assertEquals(run.toJson(), json["recentRuns"]!!.jsonArray.single())
+    }
+
+    @Test
+    fun `inspect 从没跑过时 recentRuns 是空数组`() {
+        val task = RunBeforeLaunchTask(
+            step = RunBeforeLaunchStep("RunConfigurationTask", "build", "NodeJSConfigurationType", true),
+            recentRuns = emptyList(),
+        )
+        val json = task.toJson()
+
+        assertTrue("recentRuns 必须是空数组", json["recentRuns"]!!.jsonArray.isEmpty())
+    }
 
     private fun instance(executionId: Long, running: Boolean) = RunInstanceState(
         executionId = executionId,

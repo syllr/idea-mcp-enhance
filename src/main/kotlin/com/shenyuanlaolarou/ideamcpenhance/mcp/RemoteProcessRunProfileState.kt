@@ -16,6 +16,8 @@ import com.intellij.ssh.channels.ExecChannel
 import java.io.File
 import java.io.OutputStream
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 /**
  * 一次 `Remote Process` 的执行。
@@ -149,8 +151,12 @@ internal fun startRemoteProcess(
             val directory = options.workingDirectory?.takeIf { it.isNotBlank() }
                 ?: deployment.deployPath
             workingDirectory = directory
-            // 我们只捕获 stdout/stderr；应用自己的日志目录是另一个字段，只用于查询。
-            val log = "$directory/.opencode/output-${configurationName.replace('/', '-')}.log"
+            // 启动命令的 stdout/stderr 放在部署目录下的 `process-output/`，**一次运行一个文件**：
+            // - 复用同一个文件（`>>` 追加）会把上一次的输出混进来，排查时分不清哪次是哪次；
+            // - 目录名不用插件名（`.opencode`）—— 它和这个项目没有关系，也不该隐藏；
+            // - 留在部署目录里是有意的：这份输出属于这次部署的产物，跟着应用走。
+            val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now())
+            val log = "$directory/process-output/${configurationName.replace('/', '-')}-$stamp.log"
 
             // 先校验：已在跑就问是否重启；用户取消时不做任何同步。
             val existing = RemoteProcessFinder.find(project, server, command, directory)

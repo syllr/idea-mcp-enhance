@@ -370,9 +370,10 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         // 否则紧接着做快照必然读到 0 个在跑，调用方会误判成"启动失败"。
         // 同步等到新进程真的被创建；窗口内没等到就返回"结果未知"，由调用方轮询。
         //
-        // job / server 决定要不要继续等进程退出：
-        // - job   → 等到退出，把 exitCode 与完整输出带回去
-        // - server→ 启动即返回（远端进程会一直跟随日志，等下去只会挂死）
+        // job / server 的等待语义完全不同：
+        // - job   → 等到进程退出，把 exitCode 与完整输出带回去
+        // - server→ **只等触发**：平台接受启动请求就返回，同步 / 上传 / 拉起都在后台，
+        //            进程到底起没起由调用方按退避节奏自己查
         val runKind = runKindOfConfiguration(project, settings)
         val exitTimeoutMs = if (runKind == RunKind.JOB) defaultWaitTimeoutMs().toLong() else null
         val start = withRemoteAutoReplace(settings) {
@@ -382,11 +383,13 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                 settings = settings,
                 startTimeoutMs = startTimeoutMs,
                 exitTimeoutMs = exitTimeoutMs,
+                awaitUp = runKind == RunKind.JOB,
             )
         }
         transition += RunTransitionStep(
             phase = when {
                 !start.awaited -> TransitionPhase.START_SUBMITTED
+                start.triggeredOnly -> TransitionPhase.TRIGGERED
                 start.started -> TransitionPhase.STARTED
                 else -> TransitionPhase.START_FAILED
             },
@@ -394,6 +397,7 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                 !start.awaited ->
                     "start request submitted but the process did not appear within the wait window; " +
                         "the IDE creates the Run content only after the before-launch steps finish"
+                start.triggeredOnly -> "start triggered: execution ${start.executionId}, the process is not confirmed up"
                 start.started -> "execution ${start.executionId}" + (start.pid?.let { ", pid $it" }.orEmpty())
                 else -> start.failure ?: "unknown failure"
             },
@@ -401,7 +405,7 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         )
         if (!start.awaited) {
             warnings += NOT_AWAITED_WARNING
-        } else if (!start.started) {
+        } else if (!start.triggered) {
             warnings += "The new process did not come up: ${start.failure}"
         }
         if (runKind == RunKind.JOB && start.exited == false) {
@@ -412,15 +416,21 @@ private class RerunRunConfigurationTool : BaseRunTool() {
 
         // 直接用启动过程收敛出的快照：再自己拍一次会读到中间态（见 awaitLiveState 的 KDoc）
         val after = start.state
+        val confirmed = start.awaited && !start.triggeredOnly
         val report = RerunReport(
             configurationName = settings.name,
             mode = if (stopped > 0) RerunMode.RESTARTED else RerunMode.STARTED,
             stoppedInstances = stopped,
             // 没等就用 null：提交后立刻拍到的快照必然是 0，把它当结果回报会重演那个自相矛盾的老毛病
-            runningAfter = if (start.awaited) after.runningInstanceCount else null,
+            runningAfter = if (confirmed) after.runningInstanceCount else null,
             instances = after.instances,
             warnings = warnings,
-            started = if (start.awaited) start.started else null,
+            triggered = start.triggered,
+            started = when {
+                !start.awaited -> null
+                start.triggeredOnly -> null
+                else -> start.started
+            },
             startFailure = start.failure,
             sessionId = start.sessionId,
             output = start.output,
@@ -442,8 +452,20 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             append(" (stopped ").append(report.stoppedInstances).append(" old instance(s) first)")
         }
         append(": ")
-        when (report.started) {
-            true -> {
+        when {
+            // server：只确认了触发。成功没保证，必须把"怎么查"直接写在结论里。
+            report.triggered && report.started == null -> {
+                val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.TRIGGERED }
+                append("start triggered")
+                if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
+                append(
+                    " — the process itself is not confirmed up yet: the deployment sync and the launch run " +
+                        "in the background. Read `fullOutputPath` for the startup log, and poll " +
+                        "`list_running_configurations` with a growing backoff (2s, 4s, 8s, 16s) instead of blocking.",
+                )
+            }
+
+            report.started == true -> {
                 val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.STARTED }
                 when (report.runKind) {
                     // job：真正的结果是退出码，不是"进程还在"。别写 "0 live instance(s)" 让人以为出事了。
@@ -470,12 +492,15 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                     }
                 }
             }
+
             // 失败原因本身就是完整句子（通常已带句点），这里统一收口，避免出现 ".."
-            false -> append("the new process did not come up — ").append(report.startFailure.orEmpty().trimEnd('.')).append('.')
-            // 没等：必须说清"不知道"，而不是暗示失败——否则 agent 会去重试，反而起出第二个实例
-            null -> append(
+            report.started == false ->
+                append("the new process did not come up — ").append(report.startFailure.orEmpty().trimEnd('.')).append('.')
+
+            // 提交了但平台连回调都没给：必须说清"不知道"，而不是暗示失败——否则 agent 会去重试，反而起出第二个实例
+            else -> append(
                 "the start was submitted but not awaited — the outcome is unknown; " +
-                    "poll `list_running_configurations` to see when the process is up.",
+                    "poll `list_running_configurations` with a growing backoff (2s, 4s, 8s, 16s).",
             )
         }
         beforeLaunchSummary(report.beforeRunTasks)?.let { append('\n').append(it) }

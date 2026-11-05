@@ -60,7 +60,7 @@ internal fun RunInstanceState.toInspectionJson(nowMillis: Long): JsonObject = bu
 /** 前置任务在 `inspect` 里的形状：定义 + 它自己的历史运行。 */
 internal data class RunBeforeLaunchTask(
     val step: RunBeforeLaunchStep,
-    /** 被挂配置最近的运行（按开始时间倒序）；被挂配置没有历史时为空。 */
+    /** 被挂配置最近的运行（按开始时间倒序，最多 3 条）；没有历史时为空。最近一次就是第一条。 */
     val recentRuns: List<RunLogEntry>,
 )
 

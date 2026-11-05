@@ -69,7 +69,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
     （mcp/ 下还有能力三，见下）
 ```
 
-**能力三：Deployment 凭据通道（`get_deployment_servers`）**（额外需要 `com.jetbrains.plugins.webDeployment`，**仅 Ultimate
+**能力三：Deployment 凭据通道（`get_ssh_servers`）**（额外需要 `com.jetbrains.plugins.webDeployment`，**仅 Ultimate
 有**）
 
 ```
@@ -101,7 +101,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 把 IDE 里配的 SDK / runtime 变成 `{ PATH, variables }`，由那边前置拼到 OpenCode 原生 shell 的 PATH 上。
 所以**本地终端能力（`project_sdk_terminal`）已经整体移除** —— 不再有 tab、`terminal_read` 的本地分支。
 
-同一个道理，**远程执行也移出去了**：`DeploymentToolsProvider` 只多一个隐藏工具 `get_deployment_servers`
+同一个道理，**远程执行也移出去了**：`DeploymentToolsProvider` 只多一个隐藏工具 `get_ssh_servers`
 （返回 SFTP server + 凭据），`opencode-idea` 的 `remote_exec` 自己 SSH。本插件不再碰远程进程。
 
 | 层                                    | 允许                                                | 禁止                                      | 测试方式                                            |
@@ -153,7 +153,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改 rerun / stop 的可重入语义             | `RunLifecycleModels.kt` 的 `rerunBlockedReason` / `startBlockedReason` + `RunConfigAccess.kt` 的 `hasPendingRunContent` + 平台启动门 |
 | 改 `projectPath` / `outputSchema` 的对齐 | `mcp/RunLifecycleSchemas.kt` 的 `PROJECT_PATH_DESCRIPTION` + 三个 `*Descriptor` 的第 7 个参数                                                                                                       |
 | 加一个新 MCP 工具                        | `mcp/RunLifecycleToolsProvider.kt` 加一个 `BaseRunTool` 子类 + 在 `getTools()` 里注册                                                                                                               |
-| 改 `get_deployment_servers` 的字段        | `mcp/DeploymentModels.kt` 的 `DeploymentServerCredentials.toJson()` + `mcp/DeploymentSchemas.kt` + `DeploymentSchemaTest`                                                                          |
+| 改 `get_ssh_servers` 的字段        | `mcp/DeploymentModels.kt` 的 `DeploymentServerCredentials.toJson()` + `mcp/DeploymentSchemas.kt` + `DeploymentSchemaTest`                                                                          |
 | 改它读哪些 server / 凭据                  | `DeploymentAccess.kt`（**唯一允许 import webDeployment 的文件**）                                                                                                                                    |
 | 改项目环境变量的 provider / 顺序         | `mcp/TerminalEnv.kt`（枚举顺序 + 聚合）+ 各 `*TerminalEnv.kt` + `mcp/ProjectEnvSchemas.kt`（返回契约）                              |
 | 改 `get_project_env` 的调用方            | `opencode-idea` 的 `src/plugin.js`：`loadProjectEnv` / `shell.hook("create.before")` / `env-unready` 状态                          |
@@ -285,7 +285,8 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **`pluginUntilBuild=262.*`** —— 内置 MCP Server 的 API 在 263 变了，钉住上限，别让 Marketplace 把它发给 263 用户
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性** —— 调用写 `.getTools()`
 - **平台可能为「这个配置能不能跑」弹模态框，永久卡死 EDT** ⇒ 工具侧必须主动判断「现在是不是有模态对话框在等用户」
-- **`rerun` 的"结果未知"**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来
+- **`rerun` 的"结果未知"**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来。
+  server 的**正常**返回就是 `triggered = true` + `started = null`，这不是异常
 - **`stop` 必须处理「启动在飞」**（`rerun` 异步提交后进程可能还没挂上）—— 报「没在跑」是假话
 - **克隆 = 读源文件改名** —— 只换 `<configuration>` 里的 `name`，不动 `run_configuration_name`；源不在 `.run/` 必须拒绝
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本
@@ -296,8 +297,8 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **`PATH` 只含 5 个 provider 的 bin，不含 IDE 进程的 `PATH`** —— 调用方负责前置拼接；如果这里把系统 PATH 也带上，OpenCode 进程的 PATH 会被整条顶掉
 - **provider 的顺序由 `ProjectEnvProvider` 枚举决定，不能用注册顺序** —— `ProjectActivity` 的启动顺序不保证，直接遍历注册表会让 PATH 每次启动都不同
 - **env 拉取是 `/open-in-ide` 的硬条件** —— 没拉到就报 `env-unready`，自愈路径也不清 `needsRebuild`；否则会话会停在"工具有、环境是空的"中间态
-- **远程执行已整体移出本插件** —— `execute_in_remote_host` / `terminal_read` / `terminal_interrupt` / `list_terminals` / `RemoteTerminalAccess` / `terminal-io.xml` / `remote-terminal.xml` 全部删除；`opencode-idea` 的 `remote_exec` 直接 SSH，凭据由本插件的隐藏工具 `get_deployment_servers` 提供
-- **`get_deployment_servers` 只返回 SFTP server，且凭据来自平台** —— `Deployable.copyToCredentials()` 会把 `Credentials.getPasswordAsString()` 塞进 holder（PASSWORD → `password`，KEY_PAIR → `passphrase`），所以不需要读 PasswordSafe / Keychain；工具在 `opencode-idea` 的隐藏清单里，summary 里**绝不能出现凭据字段**
+- **远程执行已整体移出本插件** —— `execute_in_remote_host` / `terminal_read` / `terminal_interrupt` / `list_terminals` / `RemoteTerminalAccess` / `terminal-io.xml` / `remote-terminal.xml` 全部删除；`opencode-idea` 的 `remote_exec` 直接 SSH，凭据由本插件的隐藏工具 `get_ssh_servers` 提供
+- **`get_ssh_servers` 只返回 SSH 配置与凭据，不含 deployment 映射** —— `Deployable.copyToCredentials()` 会把 `Credentials.getPasswordAsString()` 塞进 holder（PASSWORD → `password`，KEY_PAIR → `passphrase`），所以不需要读 PasswordSafe / Keychain；工具在 `opencode-idea` 的隐藏清单里，summary 里**绝不能出现凭据字段**
 - **mapping 的 `deployPath` 必须拼上 `rootFolder` 再返回** —— IDE 里它是**相对路径**（`/` = 服务器根），直接当目标目录会把文件传到远端 `/`；`runIde` 沙箱实测过 `mcp-test-project` 这一条（`rootFolder=/Users/yutao/Desktop/data/test` + `deploy=/`）
 
 ## REFERENCES

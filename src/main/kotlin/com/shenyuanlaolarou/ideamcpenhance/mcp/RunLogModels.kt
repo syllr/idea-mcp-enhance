@@ -1,5 +1,6 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -147,4 +148,19 @@ internal fun RunLogEntry.toJson(): JsonObject = buildJsonObject {
         put("pid", pid)
         put("exitCode", exitCode)
         put("logFile", logFile)
+    }
+
+/** `lastRun` 为空时要保留的键。null 键约定见 [toJson]。 */
+private val LAST_RUN_NULL_KEYS = listOf(
+    "startedAt", "startedAtIso", "endedAt", "durationMs", "pid", "exitCode", "logFile",
+)
+
+/**
+ * 「最近一次运行」的 JSON：从没跑过时仍然给全 7 个键、值为 null。
+ *
+ * `list` / `rerun` / `deploy` / `inspect` 四个工具共用这一份形状，避免各自写一遍后悄悄漂移。
+ */
+internal fun runLogEntryJsonOrNull(run: RunLogEntry?): JsonObject =
+    run?.toJson() ?: buildJsonObject {
+        for (key in LAST_RUN_NULL_KEYS) put(key, JsonNull)
     }

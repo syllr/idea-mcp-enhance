@@ -21,23 +21,26 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
     Deploy a Remote Process run configuration — the same thing the configuration page's Deploy button
     does.
 
-    Use it when the user asks to deploy / publish / release; use `rerun_run_configuration` when they
-    ask to run / debug / restart.
+    Use this to **publish**. The project needs only one rule: publish with the remote `{app}@{env}`
+    configuration (this tool); debug or restart with the application's own configuration
+    (`rerun_run_configuration`). The configuration type decides which tool applies — not the
+    situation, and not a judgement call.
 
-    It syncs the deployment, starts the process / container, and opens a Run tab so the user can
-    watch the logs. That session is deploy-only: stopping it closes the log follower and leaves the
-    remote process / container running. If the process / container is already running it is replaced
-    without asking — `rerun_run_configuration` would ask first.
+    On trigger it starts the whole deployment — sync, before-launch steps, launch — and opens a Run
+    tab so the user can watch the logs. That session is deploy-only: stopping it closes the log
+    follower and leaves the remote process / container running. If the process / container is already
+    running it is replaced without asking.
 
-    The result carries the pid or container and `fullOutputPath`, the local aggregated log (progress
-    lines plus the remote stdout/stderr), same field and format as `rerun_run_configuration`. The
-    application's own logs are in the configured Application log directory — `list_remote_processes`
-    reports it as `logDir`.
+    **It returns as soon as the start is triggered**, not when the deployment finished: the sync, the
+    upload and the launch keep running in the background. `triggered: true` with `started: null` says
+    exactly that. Read `fullOutputPath` for the progress and startup log, and poll
+    `list_remote_processes` with a growing backoff — 2s, then 4s, 8s, 16s.
 
-    `steps[]` names every phase of this deploy. Before-launch builds run as **separate Run sessions**
-    with their own log files, so their output never appears in `fullOutputPath` — each step carries a
-    tail preview in `output` plus its `exitCode` and `logFile`. A step that has not run yet has
-    `logFile`, `output` and `exitCode` as null.
+    `beforeRunTasks[]` carries the same shape as `rerun_run_configuration`: one entry per before-launch
+    step, with `name`, `enabled`, `output` (a tail preview of that step's own log) and `lastRun`
+    (`exitCode` / `logFile`). `steps[]` is the deploy-specific view: every before-launch build plus
+    the deploy itself, in execution order. Before-launch builds run as **separate Run sessions**, so
+    their output never appears in `fullOutputPath`.
 
     `configurationName` must name a Remote Process configuration in this project.
     """.trimIndent(),
@@ -55,17 +58,34 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
             "configurationName" to property("string", "Name of the Remote Process run configuration."),
             "server" to property("string", "SSH configuration name."),
             "kind" to property("string", "process or docker."),
-            "started" to property("boolean", "Whether the new process really came up."),
-            "submittedOnly" to property("boolean", "The start was submitted but the process never came up within the wait window; `started=false` does not mean it failed."),
-            "sessionId" to property("string", "Run session identifier; pass it to `stop_run_configuration`."),
-            "pid" to property("integer", "Remote pid of the started process (process kind)."),
+            "triggered" to property(
+                "boolean",
+                "Whether the platform accepted the start request (a Run session exists). This is the " +
+                    "normal success signal for a deploy; `triggered: false` means it never reached the platform.",
+            ),
+            "started" to nullableProperty(
+                "boolean",
+                "Whether the new process was confirmed up. Always `null` here: a deploy returns once the start " +
+                    "is triggered, so confirm the service yourself via `list_remote_processes` and `fullOutputPath`.",
+            ),
+            "sessionId" to nullableProperty("string", "Run session identifier; pass it to `stop_run_configuration`."),
+            "pid" to nullableProperty(
+                "integer",
+                "Remote pid. null when the start was only triggered and the remote process has not reported " +
+                    "one yet — poll `list_remote_processes`.",
+            ),
             "container" to property("string", "Container name used by the docker kind."),
             "workingDirectory" to property("string", "Working directory of the process kind."),
-            "fullOutputPath" to property(
+            "fullOutputPath" to nullableProperty(
                 "string",
-                "Local aggregated log: progress lines plus the remote stdout/stderr; same field and format as `rerun_run_configuration`.",
+                "Local aggregated log: progress lines plus the remote stdout/stderr. It keeps growing in the " +
+                    "background after this call returns — read it for the startup log.",
             ),
-            "output" to property("string", "Inline preview of this start's output."),
+            "output" to property(
+                "string",
+                "Inline preview captured up to the moment the start was triggered; usually short or empty. " +
+                    "The real startup log is `fullOutputPath`.",
+            ),
             "steps" to arrayOf(
                 buildJsonObject {
                     put("type", JsonPrimitive("object"))
@@ -100,8 +120,22 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
                 },
                 "Steps of this deploy in execution order. Before-launch steps come first.",
             ),
+            "beforeRunTasks" to arrayOf(
+                BEFORE_RUN_STEP_SCHEMA,
+                "Before-launch steps with their most recent run — same shape as `rerun_run_configuration`. " +
+                    "Use `output` for the build log tail and `lastRun.exitCode` for whether it passed.",
+            ),
         ),
-        required = setOf("configurationName", "server", "kind", "started", "output", "steps"),
+        required = setOf(
+            "configurationName",
+            "server",
+            "kind",
+            "triggered",
+            "started",
+            "output",
+            "steps",
+            "beforeRunTasks",
+        ),
     ),
     annotations(readOnly = false, destructive = false, idempotent = false),
 )
@@ -149,8 +183,9 @@ internal val listRemoteProcessesDescriptor = McpToolDescriptor(
 
     It does not go through the Run lifecycle: it probes the remote directly — `ps` + cwd for
     `process`, `docker ps` for `docker` — so it also reports configurations that are not running, and
-    processes that were started outside the IDE. Each call opens an SSH connection per server, so
-    query it once and reuse the answer rather than polling it in a loop.
+    processes that were started outside the IDE. Each call opens an SSH connection per server, so do
+    not poll it in a tight loop — to confirm a start, poll with a 2s / 4s / 8s / 16s backoff and reuse
+    each answer.
 
     `status` is `running`, `stopped`, or `invalid` — `invalid` means the configuration cannot be
     queried (no server / no command / no container name / unsupported kind); the `error` field says

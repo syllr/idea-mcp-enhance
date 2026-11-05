@@ -7,13 +7,20 @@
 ### Added
 
 - **`rerun_run_configuration` 区分 job / server**：job（构建脚本、测试、迁移，跑完就退）现在会**等到进程退出**
-  并返回 `exitCode` 与完整输出；server（dev server、长驻进程）仍是启动即返回。配置用环境变量
+  并返回 `exitCode` 与完整输出；server（dev server、长驻进程）改为**只等启动被触发**就返回 ——
+  同步 / 上传 / 拉起都在后台，进程起没起由调用方退避查询。返回新增 `triggered`：
+  `triggered: true` + `started: null` 才是 server 的正常结果。配置用环境变量
   `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG` 声明：写了（非 `false` / `0` / `no` / `off`）= server，
   缺省 = job —— 变量名只标注例外的那一类，和缺省语义同向。`RemoteProcess` 类型恒为 server
   —— 它的 Run 会话跟随远端日志、永不终止。返回里新增 `runKind` / `exited` / `exitCode`。
 - **`inspect_run_configuration` 关联 Before launch 的运行**：`beforeRunTasks[]` 每条带 `recentRuns[]`
-  （被挂配置自己的历史运行，含 `logFile` / `exitCode`）。Before launch 跑的是独立 Run 会话，
-  它的日志不在父配置的 `history[]` 里，这条链以前是断的。
+  （被挂配置自己的历史运行，最多 3 条，最近一次就是 `recentRuns[0]`，含 `logFile` / `exitCode`）。
+  Before launch 跑的是独立 Run 会话，它的日志不在父配置的 `history[]` 里，这条链以前是断的。
+- **`deploy_remote_process` 改为「触发即返回」，并与 `rerun` 对齐返回结构**：`triggered: true` +
+  `started: null` 表示发布已发出、成功未确认 —— 读 `fullOutputPath`，按 2s / 4s / 8s / 16s 退避查
+  `list_remote_processes`。返回新增 `beforeRunTasks[]`（与 `rerun` 同形），`submittedOnly` 由 `triggered` 取代。
+  同时把分工写进两个工具的描述：**发布用远端 `{应用}@{env}` 配置（`deploy_remote_process`），
+  调试 / 重启用应用自己的配置（`rerun_run_configuration`）** —— 由配置类型决定，不需要临场判断。
 - **`deploy_remote_process` 返回 `steps[]`**：`beforeLaunch` 每一步都有自己的 `logFile` / `exitCode`，
   最后一步是 deploy 本身。Before launch 的输出不在 `fullOutputPath` 的聚合日志里，以前只能去临时目录猜。
 - **`rerun_run_configuration` 直接带回 Before launch 的日志**：返回新增 `beforeRunTasks[]`，每条含
@@ -26,6 +33,11 @@
 
 ### Changed
 
+- **Remote Process 的启动输出改到 `<working directory>/process-output/<配置名>-<yyyyMMdd-HHmmss>.log`**：
+  它是**被启动命令的 stdout/stderr**（不是 run 的元数据，也不是应用自己写的日志）。
+  **一次运行一个文件**，不再往同一个文件追加 —— 追加会把上一次的输出混进来，排查时分不清哪次是哪次；
+  历史日志照旧保留。目录名也从 `.opencode` 改掉：那是插件的名字，和项目本身没有关系。
+  位置仍留在部署目录里 —— 这份输出属于这次部署的产物。
 - **`rerun_run_configuration` 不再接受一次性覆盖参数**：`programArguments` / `workingDirectory` / `envs`
   三个入口删除。只影响那一次、不落盘，运行时看不出来、事后也无法从 `history[]` 复现——想要别的参数就改
   配置本身，那样才可 review、可追溯。内置 `execute_run_configuration` 的同名参数只在实现了

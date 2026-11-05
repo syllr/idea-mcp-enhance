@@ -218,6 +218,13 @@ ExecutionEnvironmentBuilder
 需要额外标注的只有例外那一类（server），不写成 `..._JOB` 就不用每次读它时反着理解。
 判定实现见 `mcp/RunKind.kt` 的 KDoc（含"为什么不能塞自定义 `<option>`"的平台依据）。
 
+**server 只保证「触发」**：`ProgramRunnerUtil.executeConfigurationAsync` 的 `processStarted` 一到，
+平台就已经建好 Run 会话，但 `RemoteProcess` 的部署同步 / 上传 / SSH 拉起全在 `RemoteProcessHandler`
+的后台线程里，本地进程也还没起。所以 server 路径 `awaitUp = false`：不轮询进程、不采输出窗口、
+不收敛快照，直接返回 `triggered = true` + `started = null`。成功与否由调用方按 2s / 4s / 8s / 16s 退避
+查 `list_running_configurations`，启动日志读 `fullOutputPath`。真正的"起来了"信号是
+`REMOTE_PROCESS_STARTED`（远端同步 + 拉起完成后由 handler 自己置位），但 rerun 不再等它。
+
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
 
 **为什么不用 `ProcessAdapter` 挂监听**：它在 2026.2 已废弃，而 `ProcessListener` 的方法现在全都有默认实现，

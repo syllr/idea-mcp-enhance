@@ -63,6 +63,8 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
 
         // 和配置页里的 Deploy 按钮完全一致：标记 deployOnly，走 Run 框架打开一个 Run 标签页。
         // RemoteProcessRunProfileState.execute 读到这个标记后，Stop 只关闭日志，不 kill 远端。
+        // 这个标记在 `execute()` 里读取并清空，而 `execute()` 一定早于 `processStarted` ——
+        // 所以「触发即返回」不会让 Stop 误杀远端进程。
         configuration.remoteOptions.deployOnly = true
         configuration.remoteOptions.autoReplace = true
         // Before launch 跑的是**独立会话**，日志落在它自己那个键下；记下 deploy 起始时刻，
@@ -74,6 +76,8 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 environment = environment,
                 settings = settings,
                 startTimeoutMs = defaultStartTimeoutMs(),
+                // 发布同样是异步启动：同步 / 上传 / 拉起都在后台跑，这里只确认「触发」。
+                awaitUp = false,
             )
         } catch (t: Throwable) {
             configuration.remoteOptions.deployOnly = false
@@ -93,6 +97,7 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 "部署失败：${outcome.failure}",
                 buildJsonObject {
                     put("configurationName", configuration.name)
+                    put("triggered", false)
                     outcome.fullOutputPath?.let { put("fullOutputPath", it) }
                     putJsonArray("steps") { steps.forEach { add(it.toJson()) } }
                 },
@@ -100,8 +105,13 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
         }
 
         val summary = buildString {
-            append('[').append(configuration.name).append("] 已部署")
-            append(if (outcome.started) "，Run 标签页已打开" else "，启动结果未知")
+            append('[').append(configuration.name).append("] ")
+            if (outcome.triggered) {
+                append("已触发发布：远端同步与启动在后台进行，是否成功尚未确认；")
+                append("读 `fullOutputPath` 看启动日志，按 2s / 4s / 8s / 16s 退避查远端进程")
+            } else {
+                append("发布未触发（平台没接受启动请求）")
+            }
             outcome.pid?.let { append("，pid ").append(it) }
             outcome.fullOutputPath?.let { append("\n日志: ").append(it) }
             // 把 Before launch 那一步的日志直接点名：它在另一个文件里，
@@ -117,14 +127,18 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 put("configurationName", configuration.name)
                 put("server", server)
                 put("kind", kind)
-                put("started", outcome.started)
-                put("submittedOnly", outcome.submittedOnly)
+                put("triggered", outcome.triggered)
+                put("started", if (outcome.triggeredOnly) null else outcome.started)
                 outcome.sessionId?.let { put("sessionId", it) }
                 outcome.pid?.let { put("pid", it) }
                 options.container?.takeIf { it.isNotBlank() }?.let { put("container", it) }
                 options.workingDirectory?.takeIf { it.isNotBlank() }?.let { put("workingDirectory", it) }
                 outcome.fullOutputPath?.let { put("fullOutputPath", it) }
                 putJsonArray("steps") { steps.forEach { add(it.toJson()) } }
+                putJsonArray("beforeRunTasks") {
+                    beforeRunStepsWithLastRun(project, settings.name, includeLogOutput = true)
+                        .forEach { add(it.toJson()) }
+                }
                 put("output", outcome.output)
             },
         )

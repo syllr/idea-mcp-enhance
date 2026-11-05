@@ -37,7 +37,7 @@ enum class RunKind(val id: String) {
     /** 跑完就退：等到进程终止，回传 `exitCode` 与完整输出。 */
     JOB("job"),
 
-    /** 一直跑：进程一起来就返回。 */
+    /** 一直跑：只等启动被触发，进程起没起由调用方退避查询。 */
     SERVER("server"),
 }
 

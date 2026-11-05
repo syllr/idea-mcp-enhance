@@ -65,6 +65,12 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
     `console-web@testenv` is one environment); no prefix means macOS/Linux, no environment suffix
     means the configuration applies to every environment.
 
+    `beforeRunTasks[]` describes the before-launch steps (`taskKind`, `name`, `typeId`, `enabled`) and,
+    for each, `recentRuns[]` — that launched configuration's own recent runs, newest first, with
+    `exitCode` and `logFile`. A before-launch build runs as its own Run session, so its log never
+    appears in this configuration's `history[]`; this is the only place that chain is connected.
+    `recentRuns[]` is capped at 3 and is not affected by `historyLimit`.
+
     `instances[]` are live, with pid, state and log path. `history[]` is newest-first; read its log
     file for the output of an earlier run. History only covers runs captured by this plugin; a shell
     configuration executed in the IDE terminal has no captured log.
@@ -174,7 +180,8 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
                         ),
                         "recentRuns" to arrayOf(
                             HISTORY_ENTRY_SCHEMA,
-                            "Runs of the launched configuration, newest first. Read `logFile` for their output.",
+                            "Runs of the launched configuration, newest first — **at most 3, may be empty**. " +
+                                "The most recent run is `recentRuns[0]`; read its `logFile` for the output.",
                         ),
                     ))
                     put("required", buildJsonArray {

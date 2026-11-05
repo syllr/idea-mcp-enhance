@@ -197,12 +197,43 @@ private val LIST_INSTANCE_SCHEMA: JsonObject = buildJsonObject {
 }
 
 /**
+ * 「最近一次运行」的 schema。
+ *
+ * 四个工具共用：`list` / `rerun` / `deploy` 的 `beforeRunTasks[].lastRun`，以及 `inspect` 的
+ * `beforeRunTasks[].lastRun`。七个键即使从没跑过也保留、值为 null。
+ */
+internal val BEFORE_RUN_LAST_RUN_SCHEMA: JsonObject = buildJsonObject {
+    put("type", JsonPrimitive("object"))
+    put("description", JsonPrimitive(
+        "The step's most recent run; every field is null when it has never run.",
+    ))
+    put("properties", properties(
+        "startedAt" to nullableProperty("integer", "When that run started, in epoch milliseconds."),
+        "startedAtIso" to nullableProperty("string", "When that run started, in ISO-8601."),
+        "endedAt" to nullableProperty("integer", "When it exited, in epoch milliseconds."),
+        "durationMs" to nullableProperty("integer", "How long it ran, in milliseconds."),
+        "pid" to nullableProperty("integer", "Operating system process id."),
+        "exitCode" to nullableProperty("integer", "Exit code; null while it is still running."),
+        "logFile" to nullableProperty("string", "The log file that run produced."),
+    ))
+    put("required", buildJsonArray {
+        add(JsonPrimitive("startedAt"))
+        add(JsonPrimitive("startedAtIso"))
+        add(JsonPrimitive("endedAt"))
+        add(JsonPrimitive("durationMs"))
+        add(JsonPrimitive("pid"))
+        add(JsonPrimitive("exitCode"))
+        add(JsonPrimitive("logFile"))
+    })
+}
+
+/**
  * 一条 Before launch 步骤 + 它最近一次运行。
  *
  * `list_running_configurations` 与 `rerun_run_configuration` 共用：两处都在回答
  * 「构建到底跑了没」，形状必须一致。
  */
-private val BEFORE_RUN_STEP_SCHEMA: JsonObject = buildJsonObject {
+internal val BEFORE_RUN_STEP_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
     put("description", JsonPrimitive(
         "A before-launch step, with its most recent run.",
@@ -216,30 +247,7 @@ private val BEFORE_RUN_STEP_SCHEMA: JsonObject = buildJsonObject {
                 "`<truncated at the start>` when cut. null when there is no log to read, or when the " +
                 "tool does not read log content (the list tool leaves it null and gives `logFile`).",
         ),
-        "lastRun" to buildJsonObject {
-            put("type", JsonPrimitive("object"))
-            put("description", JsonPrimitive(
-                "The step's most recent run; every field is null when it has never run.",
-            ))
-            put("properties", properties(
-                "startedAt" to nullableProperty("integer", "When that run started, in epoch milliseconds."),
-                "startedAtIso" to nullableProperty("string", "When that run started, in ISO-8601."),
-                "endedAt" to nullableProperty("integer", "When it exited, in epoch milliseconds."),
-                "durationMs" to nullableProperty("integer", "How long it ran, in milliseconds."),
-                "pid" to nullableProperty("integer", "Operating system process id."),
-                "exitCode" to nullableProperty("integer", "Exit code; null while it is still running."),
-                "logFile" to nullableProperty("string", "The log file that run produced."),
-            ))
-            put("required", buildJsonArray {
-                add(JsonPrimitive("startedAt"))
-                add(JsonPrimitive("startedAtIso"))
-                add(JsonPrimitive("endedAt"))
-                add(JsonPrimitive("durationMs"))
-                add(JsonPrimitive("pid"))
-                add(JsonPrimitive("exitCode"))
-                add(JsonPrimitive("logFile"))
-            })
-        },
+        "lastRun" to BEFORE_RUN_LAST_RUN_SCHEMA,
     ))
     put("required", buildJsonArray {
         add(JsonPrimitive("name"))
@@ -282,7 +290,7 @@ private val RUN_TRANSITION_STEP_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
     put("description", JsonPrimitive("One observed step of the restart, in chronological order."))
     put("properties", properties(
-        "phase" to property("string", "STOPPED, STARTED, START_SUBMITTED or START_FAILED."),
+        "phase" to property("string", "STOPPED, STARTED, TRIGGERED, START_SUBMITTED or START_FAILED."),
         "detail" to property("string", "Human-readable detail for this step, e.g. instance count and exit codes."),
         "elapsedMs" to property("integer", "Milliseconds from issuing the rerun request to reaching this step."),
     ))
@@ -325,6 +333,11 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     This is an index of live sessions, not of definitions — `get_run_configurations` lists
     definitions. Templates never appear; several instances under one configuration mean it was
     started more than once.
+
+    A `running: true` instance means the Run session exists, **not** that the service has finished
+    starting. Right after `rerun_run_configuration` on a `server` the launch (and, for a `Remote
+    Process`, its deployment sync) is still in flight — poll with a growing backoff (2s, 4s, 8s, 16s)
+    instead of looping.
 
     For a `Remote Process` configuration the pid is the **remote** process id, and `logFile` is
     the local aggregated log of the session (progress plus the remote stdout/stderr) — not a file on
@@ -435,21 +448,32 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     """
     Restart a run configuration, like the IDE's Rerun button.
 
-    Running → stop then start (`RESTARTED`); not running → start (`STARTED`). Read `started`, not
-    `mode`: `false` has `startFailure`; `null` means the wait window ran out and the outcome is
-    unknown — poll `list_running_configurations`. It waits until the new process exists, and fails
-    fast if the configuration is stopping or starting, or old instances cannot be stopped.
+    Running → stop then start (`RESTARTED`); not running → start (`STARTED`). Read `triggered` and
+    `started`, not `mode`: `started: false` carries `startFailure`; `triggered: false,
+    started: null` means the request never reached the platform; `triggered: true, started: null`
+    is the normal `server` outcome (see below). It fails fast if the configuration is stopping or
+    starting, or old instances cannot be stopped.
 
-    `runKind` says how it was waited for. A `job` (a build script, a test, a migration) is waited
-    until the process exits, and then `exitCode` and the full output are returned; a `server` (a dev
-    server, a remote process) returns as soon as it is up, because it never exits. The kind comes
+    `runKind` says what is waited for. A `job` (a build script, a test, a migration — the archive calls
+    it `build`) is waited until the process exits, and then `exitCode` and the full output are
+    returned. A `server` (a dev server, a remote process) returns as soon as the start is
+    **triggered**, not when the service is up: for a `Remote Process` the deployment sync and the SSH
+    launch run in the background and can take tens of seconds. `triggered: true` with `started: null`
+    states exactly that. The kind comes
     from the configuration's own environment variable `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`: setting it
     (to anything but `false` / `0` / `no` / `off`) means server, leaving it out means job. A
     `Remote Process` configuration is always a server.
 
+    **Do not block on a server.** Read `fullOutputPath` for the startup log, and poll
+    `list_running_configurations` with a growing backoff — 2s, then 4s, 8s, 16s. A `running: true`
+    entry only means the Run session exists; it does not prove the service is serving.
+
     For a `Remote Process` configuration this starts the remote process / container over SSH, and
-    stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish
-    — its Stop leaves the remote process running.
+    stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish:
+    its Stop only closes the log follower and leaves the remote running. The project needs only one
+    rule — **publish with the remote `{app}@{env}` configuration (`deploy_remote_process`); debug or
+    restart with the application's own configuration (this tool)**. The configuration type decides,
+    not a per-call judgement.
 
     **Before-launch steps run first**, each as its own Run session with its own log file. Their
     output is never part of this call's `output` / `fullOutputPath` — those cover this configuration
@@ -461,8 +485,8 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     environment variables, edit the configuration in the IDE — there is no per-run override, so what
     ran stays visible in `.run/`.
 
-    This always starts a process. To only copy files to the remote host, use the file transfer
-    tools instead.
+    This always starts a process. To only copy files to the remote host, use `remote_upload` /
+    `remote_download` instead.
 
     Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),
@@ -482,18 +506,29 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
         properties = properties(
             "configurationName" to property("string", "Resolved run configuration name."),
             "mode" to property("string", "What was attempted: RESTARTED, STARTED or NO_OP."),
+            "triggered" to property(
+                "boolean",
+                "Whether the platform accepted the start request (a Run session exists). For a `server` this is " +
+                    "the normal success signal: `triggered: true` with `started: null` means the start was " +
+                    "triggered, not confirmed up.",
+            ),
             "started" to nullableProperty(
                 "boolean",
                 "Whether a new process really came up. Read this, not `mode`. `true`/`false` when the start was " +
-                    "awaited; `null` when the wait window ran out — then the outcome is unknown and " +
-                    "`list_running_configurations` has the real state.",
+                    "awaited; `null` for a `server` (only `triggered` is confirmed) or when the wait window ran " +
+                    "out — then the outcome is unknown and `list_running_configurations` has the real state.",
             ),
-            "startFailure" to nullableProperty("string", "Why the new process did not come up; null when `started` is true."),
+            "startFailure" to nullableProperty(
+                "string",
+                "Why the start failed; null when it did not fail — including a `server`, whose success is not " +
+                    "confirmed either way (`triggered: true`, `started: null`).",
+            ),
             "stoppedInstances" to property("integer", "Number of old instances a stop request was sent to."),
             "runningAfter" to nullableProperty(
                 "integer",
-                "Live instance count after the new process was up and registered; null when the wait window ran " +
-                    "out (outcome unknown), not 0.",
+                "Live instance count after the new process was confirmed up. `null` when the start was only " +
+                    "triggered (a `server`), was not awaited, or the wait window ran out — never 0 as a stand-in " +
+                    "for \"unknown\".",
             ),
             "sessionId" to nullableProperty(
                 "string",
@@ -502,8 +537,8 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             ),
             "runKind" to property(
                 "string",
-                "How this run was waited for: `job` (waited until the process exited) or `server` (returned " +
-                    "as soon as it was up).",
+                "What was waited for: `job` (waited until the process exited) or `server` (returned once the " +
+                    "start was triggered).",
             ),
             "exited" to nullableProperty(
                 "boolean",
@@ -521,8 +556,9 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             "beforeRunTasks" to arrayOf(
                 BEFORE_RUN_STEP_SCHEMA,
                 "Before-launch steps of this configuration with their most recent run. Empty when it " +
-                    "has none. Each step runs as its own Run session, so its output is not in " +
-                    "`fullOutputPath` — read `logFile` instead.",
+                    "has none. Each entry carries `output` (a tail preview of that step's own log, at most " +
+                    "10000 characters) plus `lastRun` — a before-launch build runs as its own Run session, so " +
+                    "its log is not in `fullOutputPath`.",
             ),
             "instances" to arrayOf(
                 RUN_INSTANCE_SCHEMA,
@@ -533,6 +569,7 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
         required = setOf(
             "configurationName",
             "mode",
+            "triggered",
             "started",
             "stoppedInstances",
             "runningAfter",

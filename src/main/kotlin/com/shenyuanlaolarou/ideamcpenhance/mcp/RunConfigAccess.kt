@@ -530,7 +530,9 @@ internal fun buildRunEnvironment(project: Project, settings: RunnerAndConfigurat
  * @param outputGraceMs 进程起来后再采集这么久的输出才返回。server 类配置永不退出，只能给它一个固定窗口；
  *   这段时间就是"启动日志"（`output` 内联预览）能拿到多少的代价。日志文件 [StartOutcome.fullOutputPath]
  *   不受这个窗口限制，会在进程整个生命周期里持续增长
- * @param exitTimeoutMs job 语义下等进程退出的预算；null = server 语义，启动即返回
+ * @param exitTimeoutMs job 语义下等进程退出的预算；null = server 语义，不等退出
+ * @param awaitUp server 语义下是否等进程真的起来。false = **只确认触发**（平台已接受启动请求），
+ *   同步 / 上传 / 拉起都还在后台跑，调用方自己退避查询。job 必须为 true。
  */
 internal suspend fun startRunAndAwait(
     project: Project,
@@ -539,6 +541,7 @@ internal suspend fun startRunAndAwait(
     startTimeoutMs: Int,
     outputGraceMs: Long = DEFAULT_OUTPUT_GRACE_MS,
     exitTimeoutMs: Long? = null,
+    awaitUp: Boolean = true,
 ): StartOutcome {
     val sessionName = settings.name
     val startedAtNanos = System.nanoTime()
@@ -649,7 +652,12 @@ internal suspend fun startRunAndAwait(
     var upElapsedMs = elapsedMsSince(startedAtNanos)
     var exited: Boolean? = null
     var exitCode: Int? = null
-    if (handler != null) {
+    if (handler != null && !awaitUp) {
+        // 只确认「触发」：平台已经接受启动请求并建了 Run 会话，但
+        // RemoteProcess 的同步 / 上传 / 拉起都在后台线程里，本地进程也还没起。
+        // 这里只拍一张快照，不轮询、不等输出窗口 —— 调用方自己退避查。
+        state = snapshotOf(project, settings)
+    } else if (handler != null) {
         // 1) 等进程真的被创建出来（pid 可读）或提前退出
         awaitProcessUp(handler, startTimeoutMs)
         // 记下"进程真的起来"的时刻：后面采集日志的固定窗口不该算进这个时间，
@@ -686,6 +694,7 @@ internal suspend fun startRunAndAwait(
         state = state,
         exitCode = exitCode,
         exited = exited,
+        triggeredOnly = !awaitUp,
     )
 }
 
@@ -713,9 +722,19 @@ internal data class StartOutcome(
     val exitCode: Int? = null,
     /** job 语义下进程是否真的退出了。false = 等满了预算还在跑（结果未知）。 */
     val exited: Boolean? = null,
+    /**
+     * `true` = 只确认了**触发**（平台已接受启动请求），没有等进程真的起来。
+     *
+     * 与 [submittedOnly] 的区别：那个连回调都没等到；这个拿到了 Run 会话，
+     * 只是后面的同步 / 上传 / 拉起还在后台跑。
+     */
+    val triggeredOnly: Boolean = false,
 ) {
-    /** 新进程是否真的起来了。 */
-    val started: Boolean get() = failure == null && executionId != null
+    /** 新进程是否真的起来了（[triggeredOnly] 时永远为 false —— "不知道"由调用方表达）。 */
+    val started: Boolean get() = failure == null && executionId != null && !triggeredOnly
+
+    /** 启动请求是否已被平台接受（拿到了 Run 会话）。 */
+    val triggered: Boolean get() = failure == null && executionId != null
 
     /** 启动了但**没等**：结果未知（与 [started] = false 是两回事）。 */
     val awaited: Boolean get() = !submittedOnly

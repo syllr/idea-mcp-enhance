@@ -320,21 +320,33 @@ diagnostics:
   `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`（非 `false` / `0` / `no` / `off`）为 server，缺省为 job。
   变量名只声明例外的那一边，和「缺省 job」的语义一致，不需要取反。判错的代价不对称 —— job 误判成 server
   只是少等一次；server 误判成 job 会白等满预算
-- job 等满预算仍未退出时 MUST 如实报 `exited: false` + `exitCode: null`，并指向 `fullOutputPath` /
-  `history[].exitCode`，MUST NOT 谎报成功或失败
+- **`job` MUST 同步等到进程退出**：返回 `exitCode` + 完整输出；等满预算仍未退出时 MUST 如实报
+  `exited: false` + `exitCode: null`，并指向 `fullOutputPath` / `history[].exitCode`，MUST NOT 谎报成功或失败
+- **`server` MUST 只等到「启动被触发」**（平台接受请求并产出 Run 会话），MUST NOT 等进程真的起来：
+  `RemoteProcess` 的部署同步 + SSH 拉起都在后台线程里，耗时可观。返回 MUST 用
+  `triggered = true` + `started = null` 表达"发出去了、成功未确认"，MUST NOT 用 `started = true` 冒充
+  "服务可用"；`runningAfter` MUST 为 `null`。工具描述 MUST 给出退避节奏（2s / 4s / 8s / 16s）
+  并指明 `fullOutputPath` 是启动日志的唯一来源
+- **`deploy_remote_process` 的等待语义 MUST 与 `rerun` 一致**（HARD CONTRACT）：发布同样只等到「启动被触发」，
+  返回 `triggered = true` + `started = null`，`beforeRunTasks[]` MUST 与 `rerun` 同形。
+  两条路径的实质差异**只有 Stop 语义**：deploy 的 Stop 只关日志跟随、不 kill 远端；rerun 的 Stop 会 kill。
+  两个工具的描述 MUST 写明固定分工 —— **发布用远端 `{应用}@{env}` 配置（`deploy_remote_process`），
+  调试 / 重启用应用自己的配置（`rerun_run_configuration`）**，由配置类型决定，调用方 MUST NOT 临场判断
 - `programArguments` / `workingDirectory` / `envs` MUST NOT 作为入参暴露：**只能改配置本身**。
   一次性覆盖只影响那一次、不落盘，运行时看不出来、事后也无法从 `history[]` 复现，
   正是"工具返回语义要能自解释"的反面
 - **MUST 在启动 Remote Process 配置时临时打开 `autoReplace`**：否则远端已有同名进程会走
   `Messages.showYesNoDialog`（`invokeAndWait` 的模态框），无头场景没人点它，调用会一直挂着
 
-- **MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；
+- **MUST 在「确认进程真的起来」这条路径上同步等到它被创建**（并采集一段固定窗口的启动输出）之后才返回；
   MUST NOT 发出启动请求后立刻做快照 —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"。
-  等窗口用完仍未创建时，结果 MUST **如实表达"不知道"**：`started = null`、`runningAfter = null`、
-  `startFailure = null`、`sessionId = null`、`output = ""`，`transition[]` 以 `START_SUBMITTED` 收尾，
-  `warnings[]` 说明结果未知、要用 `list_running_configurations` 轮询。MUST NOT 用 `started = false` 冒充
-  "不知道"——那会让 agent 去重试，反而可能起出第二个实例。这种情况的典型原因是 before-launch
-  （构建 / 另一个配置）还没跑完：平台在它跑完之前不会产出 Run 内容
+  这条约束只作用于 `job`：`server` 走的是「触发即返回」，用 `triggered` / `started` 两个字段如实区分
+  "发出去了" 与 "确认起来了"。
+  等窗口用完仍未创建时，结果 MUST **如实表达"不知道"**：`triggered = false`、`started = null`、
+  `runningAfter = null`、`startFailure = null`、`sessionId = null`、`output = ""`，`transition[]` 以
+  `START_SUBMITTED` 收尾，`warnings[]` 说明结果未知、要用 `list_running_configurations` 轮询。
+  MUST NOT 用 `started = false` 冒充"不知道"——那会让 agent 去重试，反而可能起出第二个实例。
+  这种情况的典型原因是 before-launch（构建 / 另一个配置）还没跑完：平台在它跑完之前不会产出 Run 内容
 - **启动前的三道判断的"时机" MUST 是：停旧实例之前先问一次，真正提交之前再问一次**（HARD CONTRACT）：
   ① 现在是否有模态对话框在等用户（扫 `Window.getWindows()` 里可见且带模态语义的 `Dialog`； **MUST NOT 用
   `DialogWrapper.findInstanceFromFocus()`**——它读 `getFocusOwner()`，IDE 窗口没被聚焦时是 null，
@@ -422,10 +434,11 @@ diagnostics:
 {
   "configurationName": "console > dev",
   "mode": "RESTARTED",
-  "started": true,
+  "triggered": true,
+  "started": null,
   "startFailure": null,
   "stoppedInstances": 1,
-  "runningAfter": 1,
+  "runningAfter": null,
   "runKind": "server",
   "exited": null,
   "exitCode": null,
@@ -446,7 +459,7 @@ diagnostics:
       }
     }
   ],
-  "output": "[node] listening on http://127.0.0.1:3201\n",
+  "output": "",
   "fullOutputPath": "/…/system/tmp/ij_rerun__console_dev_<uuid>.log",
   "transition": [
     {
@@ -455,9 +468,9 @@ diagnostics:
       "elapsedMs": 180
     },
     {
-      "phase": "STARTED",
-      "detail": "execution 3, pid 1003",
-      "elapsedMs": 640
+      "phase": "TRIGGERED",
+      "detail": "start triggered: execution 3, the process is not confirmed up",
+      "elapsedMs": 240
     }
   ],
   "instances": [
@@ -527,8 +540,9 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
   没有 sidecar 时后四个 MUST 为 `null`（保留键）
 - 历史条目 MUST NOT 带实例 ID、MUST NOT 带日志内容 / 尾巴 —— 日志是静态文件，agent 按 `logFile` 自己读
 - `beforeRunTasks[]` MUST 按**执行顺序**排列，每条给 `taskKind` / `name` / `typeId` / `enabled`，
-  外加 `recentRuns[]`（被挂配置自己的历史运行）。Before launch 跑的是**独立 Run 会话**，
-  它的日志永远不在父配置的 `history[]` 里，这条链 MUST 显式连上
+  外加 `recentRuns[]`（被挂配置自己的历史运行，**最多 3 条**，最近一次就是 `recentRuns[0]`）。
+  Before launch 跑的是**独立 Run 会话**，它的日志永远不在父配置的 `history[]` 里，这条链 MUST 显式连上。
+  MUST NOT 再单列一个 `lastRun` —— 它就是 `recentRuns[0]`，重复给只会让人怀疑哪个准
 - MUST NOT 输出派生计数
 - `warnings` 只在 **需要 agent 动手**时出现（终端形态的 Shell、非 `.run/` 存储、模板）；
   "元数据缺失 / 日志已清理" MUST 安静降级，不出 warning
