@@ -198,12 +198,24 @@ diagnostics:
 - MUST 按 `RunManager.allSettings` 的顺序输出（保证可复现）；筛选 MUST 是纯过滤（`onlyRunningInstances()`），MUST NOT 重排
 - 文本摘要 MUST 在"什么都没在跑"时直说（例如 `Nothing is running in this project.`），
   否则 MUST 同时给出配置数与实例数（`Found 2 running run configuration(s), 3 live instance(s).`）
+- **每条配置 MUST 带 Before launch 的两个方向**（HARD CONTRACT）：
+  - `beforeRunTasks[]`：它挂的前置步骤，每条给 `name` / `enabled` / `lastRun`（一条 `RunLogEntry`，
+    从没跑过时各字段为 `null` 但键保留）
+  - `beforeLaunchOf[]`：它本身是谁的 Before launch 步骤（非空 = 它此刻是在替那些配置跑，不是顶层运行）
+
+  > 为什么必须放在这里：Before launch 跑的是**独立 Run 会话**，构建通常几秒就结束，之后列表里只剩父配置。
+  > agent 只看到「什么都没在跑」时，最容易的误判就是「构建没执行」——而这恰恰是最贵的误判（会去重跑、
+  > 或者干脆改配置）。父配置在跑就说明前置步骤必然已经跑完，所以 `lastRun` 挂在父配置上是天然成立的。
+- 文本摘要 MUST 把 Before launch 的关系用一句话写出来（`before-launch: aidata-build@mbp (exit 0)` /
+  `this is a before-launch step of aidata@mbp`），MUST NOT 只放在 JSON 里
 
 > 与 `stop` / `rerun` 的区别是刻意的：那两个工具报告"它实际动过哪些实例"，所以保留已结束的记录
 > （退出码正是"停干净了没有"的证据）；list 回答的是"现在什么在跑"，所以整份返回里不含任何不在跑的东西，
 > 也不含恒为常量 / 不可信的字段（`isTemplate`、`running`、`exitCode`、`displayName`）。
 >
-> 列表是 **索引**：详情（定义、历史、日志内容）走 `inspect_run_configuration`。
+> 列表是 **索引**：定义、完整历史、日志内容走 `inspect_run_configuration`。
+> 例外只有 Before launch 的**关系与最近一次结果** —— 它必须在这里，因为「列表里没有构建」
+> 与「构建没执行」是两件事，而后者是代价很高的误判。
 
 输出 JSON：
 
@@ -213,6 +225,22 @@ diagnostics:
     {
       "name": "console-web",
       "type": "ShConfigurationType",
+      "beforeRunTasks": [
+        {
+          "name": "console-web-build",
+          "enabled": true,
+          "lastRun": {
+            "startedAt": 1792461973004,
+            "startedAtIso": "2026-10-20T02:06:13.004Z",
+            "endedAt": 1792461976921,
+            "durationMs": 3917,
+            "pid": 2087,
+            "exitCode": 0,
+            "logFile": "/…/tmp/ij_enhance_run__<key>_1792461973004_9f3c.log"
+          }
+        }
+      ],
+      "beforeLaunchOf": [],
       "instances": [
         {
           "executionId": 1832,
@@ -274,10 +302,9 @@ diagnostics:
 
 入参：
 
-| 参数                | 类型    | 必填 | 默认    |
-|---------------------|---------|------|---------|
-| `configurationName` | string  | 是   | —      |
-| `waitForStart`      | boolean | 否   | `true` |
+| 参数                 | 类型    | 必填 | 默认 |
+|----------------------|---------|------|------|
+| `configurationName`  | string  | 是   | —    |
 
 行为 —— MUST 与 IDE 的 Rerun 按钮有同样的可观察效果：
 
@@ -287,15 +314,25 @@ diagnostics:
 | 没有实例在跑       | 直接启动                                           | `STARTED`   |
 | IDE 造不出执行环境 | 什么都不做，`warnings[]` 说明原因                  | `NO_OP`     |
 
-- **`waitForStart = true`（默认）时 MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；
-  MUST NOT 发出启动请求后立刻做快照 —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"
-- **`waitForStart = false` 时 MUST 只提交、立刻返回**，且结果必须 **如实表达"不知道"**：
-  `started = null`、`runningAfter = null`、`startFailure = null`、`sessionId = null`、`output = ""`，
-  `transition[]` 以 `START_SUBMITTED` 收尾，`warnings[]` 带固定文案（说明结果未知、要用
-  `list_running_configurations` 轮询）。MUST NOT 用 `started = false` 冒充"不知道"——那会让 agent 去重试，
-  反而可能起出第二个实例。这个模式存在的唯一理由：before-launch（构建 / 另一个配置）比服务器会话耐心还长时，
-  任何等待都会把结果丢成空 404，只有"提交 + 自己轮询"可行。参数名 MUST 对齐原生 `execute_run_configuration` 的
-  `waitForExit`
+- **job / server MUST 分开等**（HARD CONTRACT）：`runKind` 为 `job` 时 MUST 等到进程终止并回传
+  `exitCode` + 完整输出；为 `server` 时 MUST 一启动就返回（它永不退出，等下去就是挂死）。
+  判定依据：`RemoteProcess` 类型恒为 server；其余读配置的 `<envs>`，`IDEA_MCP_ENHANCE_JOB=false` 为 server，
+  其余（含缺省）为 job。判错的代价不对称 —— job 误判成 server 只是少等一次；server 误判成 job 会白等满预算
+- job 等满预算仍未退出时 MUST 如实报 `exited: false` + `exitCode: null`，并指向 `fullOutputPath` /
+  `history[].exitCode`，MUST NOT 谎报成功或失败
+- `programArguments` / `workingDirectory` / `envs` MUST NOT 作为入参暴露：**只能改配置本身**。
+  一次性覆盖只影响那一次、不落盘，运行时看不出来、事后也无法从 `history[]` 复现，
+  正是"工具返回语义要能自解释"的反面
+- **MUST 在启动 Remote Process 配置时临时打开 `autoReplace`**：否则远端已有同名进程会走
+  `Messages.showYesNoDialog`（`invokeAndWait` 的模态框），无头场景没人点它，调用会一直挂着
+
+- **MUST 同步等到新进程真的被创建**（并采集一段固定窗口的启动输出）之后才返回；
+  MUST NOT 发出启动请求后立刻做快照 —— 那样 `runningAfter` 必然读到 0，调用方会把"启动成功"误读成"启动失败"。
+  等窗口用完仍未创建时，结果 MUST **如实表达"不知道"**：`started = null`、`runningAfter = null`、
+  `startFailure = null`、`sessionId = null`、`output = ""`，`transition[]` 以 `START_SUBMITTED` 收尾，
+  `warnings[]` 说明结果未知、要用 `list_running_configurations` 轮询。MUST NOT 用 `started = false` 冒充
+  "不知道"——那会让 agent 去重试，反而可能起出第二个实例。这种情况的典型原因是 before-launch
+  （构建 / 另一个配置）还没跑完：平台在它跑完之前不会产出 Run 内容
 - **启动前的三道判断的"时机" MUST 是：停旧实例之前先问一次，真正提交之前再问一次**（HARD CONTRACT）：
   ① 现在是否有模态对话框在等用户（扫 `Window.getWindows()` 里可见且带模态语义的 `Dialog`； **MUST NOT 用
   `DialogWrapper.findInstanceFromFocus()`**——它读 `getFocusOwner()`，IDE 窗口没被聚焦时是 null，
@@ -357,23 +394,26 @@ diagnostics:
   ③ 平台启动门。三者读的都是平台状态，MUST NOT 合并、也 MUST NOT 用其中一层声称覆盖了全部并发来源
 - **旧实例没停干净时 MUST NOT 启动新进程**：那正是"同一配置留两个实例"的病根。此时 MUST 照常返回结构化结果：
   `started = false`、`startFailure` 写明原因、`transition[]` 以 `START_FAILED` 收尾
-- **停止 / 启动的等待预算 MUST 固定为 300 秒，不开放参数 (HARD CONTRACT)**：与终端、部署那几组工具
+- **停止 / 启动 / 等 job 退出的预算是固定 300 秒，不开放参数 (HARD CONTRACT)**：与终端、部署那几组工具
   统一成同一套语义。5 秒对真实的优雅退出太短，10 秒对 before-launch 的构建也太短，两者都会把正常
-  情况误报成失败。等不起的调用方走异步模式（`waitForStart = false`）自己轮询
+  情况误报成失败。等不起的调用方自己轮询 `list_running_configurations`
 - **单次调用的时长 MUST 留在服务器的耐心之内 (HARD CONTRACT)**。前提是客户端**没有**挂
   `GET /stream` 的 SSE 流：这种客户端下，请求悬着超过约 **15 秒**，MCP Server 会把 pending
   transport 当超时清掉（`Pending StreamableHttp transport timed out` → `Removing session`），
   于是工具算完也送不回结果，客户端拿到的是 **HTTP 404 空响应**。实测边界：8 秒能正常送达、20 秒不能； **官方工具也一样**（
   `execute_run_configuration(waitForExit=true, timeout=30000)` 实测 30.1 秒后空 404）。
-  挂了流的客户端（OpenCode / 标准 streamable-http 客户端）不受这个 15 秒限制——实测同一工具
-  100 秒调用正常返回；但长调用会一直占着调用方，所以异步模式（`waitForStart = false`）依然是首选。
-  注意 `rerun` 的总时长是"停旧 + 等启动 + 输出窗口"三段相加，最坏会到 10 分钟量级；工具描述
-  MUST 提醒调用方这一点，并 MUST 给出唯一出路—— **改用异步模式**（`waitForStart = false`）
+  挂了流的客户端（OpenCode / 标准 streamable-http 客户端）不受这个 15 秒限制——实测 300 秒调用正常返回。
+  注意 `rerun` 的总时长是"停旧 + 等启动 + 输出窗口 + 等 job 退出"四段相加，job 配置最坏会到 10 分钟量级
 - **启动超时的文案 MUST 点明原因**：先用 `RunConfiguration.getBeforeRunTasks()` 查这个配置配了几个
-  before-launch 步骤；有就 MUST 说明"它们跑完之前平台不会产出 Run 内容，所以'还没启动'是正常现象"，
-  并给出"改用异步模式（`waitForStart = false`）+ 自己轮询"的建议；没有就 MUST 说明另一种可能
-  （启动被忽略 / 启动更慢）。
+  before-launch 步骤；有就 MUST 说明"它们跑完之前平台不会产出 Run 内容，所以'还没启动'是正常现象"；
+  没有就 MUST 说明另一种可能（启动被忽略 / 启动更慢）。
   文案 MUST 带上 **实际生效的毫秒数**（MUST NOT 写死）
+- **`beforeRunTasks[]` MUST 带回每条前置步骤最近一次运行，并直接给日志内容**（HARD CONTRACT）：
+  每条含 `name` / `enabled` / `output` / `lastRun`；`output` MUST 是该步骤最近一次日志的**尾部**
+  预览（上限 10000 字符，被截断时前缀 `<truncated at the start>`），读不到时为 `null`。
+  理由：前置构建的日志**不在**本次的 `output` / `fullOutputPath` 里（那两样只覆盖本配置），
+  只给路径等于让 agent 再去读文件——直接给内容才消掉这一步
+- 文本摘要 MUST 也带上 before-launch 的退出码与日志内容，MUST NOT 只放在 JSON 里
 - 输出 JSON：
 
 ```json
@@ -384,7 +424,26 @@ diagnostics:
   "startFailure": null,
   "stoppedInstances": 1,
   "runningAfter": 1,
+  "runKind": "server",
+  "exited": null,
+  "exitCode": null,
   "sessionId": "console > dev",
+  "beforeRunTasks": [
+    {
+      "name": "console-web-build",
+      "enabled": true,
+      "output": "> build\n✓ built in 3.9s\n",
+      "lastRun": {
+        "startedAt": 1792461973004,
+        "startedAtIso": "2026-10-20T02:06:13.004Z",
+        "endedAt": 1792461976921,
+        "durationMs": 3917,
+        "pid": 2087,
+        "exitCode": 0,
+        "logFile": "/…/tmp/ij_enhance_run__<key>_1792461973004_9f3c.log"
+      }
+    }
+  ],
   "output": "[node] listening on http://127.0.0.1:3201\n",
   "fullOutputPath": "/…/system/tmp/ij_rerun__console_dev_<uuid>.log",
   "transition": [
@@ -457,7 +516,7 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 
 `inspect_run_configuration`：
 
-- MUST 返回定义（`options` / `attributes` / `envs` / `beforeLaunchSteps` / `configurationXml`）、
+- MUST 返回定义（`options` / `attributes` / `envs` / `beforeRunTasks` / `configurationXml`）、
   命名解析（`naming`：`platform` / `base` / `env`）、活实例、历史、`warnings`
 - `instances[]` MUST 只含活实例，每个带 `executionId` / `state` / `pid` / `startedAt` / `startedAtIso` / `uptimeMs` /
   `logFile`
@@ -465,6 +524,9 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 - 历史条目 MUST 含 `startedAt` / `startedAtIso` / `endedAt` / `durationMs` / `pid` / `exitCode` / `logFile`；
   没有 sidecar 时后四个 MUST 为 `null`（保留键）
 - 历史条目 MUST NOT 带实例 ID、MUST NOT 带日志内容 / 尾巴 —— 日志是静态文件，agent 按 `logFile` 自己读
+- `beforeRunTasks[]` MUST 按**执行顺序**排列，每条给 `taskKind` / `name` / `typeId` / `enabled`，
+  外加 `recentRuns[]`（被挂配置自己的历史运行）。Before launch 跑的是**独立 Run 会话**，
+  它的日志永远不在父配置的 `history[]` 里，这条链 MUST 显式连上
 - MUST NOT 输出派生计数
 - `warnings` 只在 **需要 agent 动手**时出现（终端形态的 Shell、非 `.run/` 存储、模板）；
   "元数据缺失 / 日志已清理" MUST 安静降级，不出 warning

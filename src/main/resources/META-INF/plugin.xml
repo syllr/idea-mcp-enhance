@@ -17,7 +17,7 @@
             <li><b>Copy Diagnostics as Prompt</b> - copy the current file's errors and warnings as one clean list.</li>
             <li><b>Run Lifecycle MCP tools</b> - <code>list_running_configurations</code>,
                 <code>stop_run_configuration</code>, <code>rerun_run_configuration</code> and
-                <code>create_run_configuration</code>, driving the IDE's own process handlers:
+                <code>inspect_run_configuration</code>, driving the IDE's own process handlers:
                 no port guessing, no command-line matching, no changes to your start scripts.</li>
             <li><b>Project environment for native shells</b> - exposes <code>get_project_env</code> so an MCP client can
                 prepend the project's JDK / Node / Go / Maven / Python paths to its own shell instead of

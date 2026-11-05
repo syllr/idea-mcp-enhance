@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -184,7 +185,7 @@ class RunLogAndNamingTest {
     }
 
     @Test
-    fun `列表的配置形状只有名字 类型 实例`() {
+    fun `列表的配置形状带名字 类型 实例与 before-launch 关系`() {
         val state = RunConfigurationState(
             name = "console-web",
             typeId = "ShConfigurationType",
@@ -192,9 +193,90 @@ class RunLogAndNamingTest {
             uniqueId = "uid",
             instances = listOf(instance(1, logFile = "/tmp/a.log")),
         )
-        val json = state.toListJson()
-        assertEquals(setOf("name", "type", "instances"), json.keys)
+        val json = RunningConfiguration(
+            state = state,
+            beforeRunTasks = emptyList(),
+            beforeLaunchOf = emptyList(),
+        ).toJson()
+        assertEquals(
+            setOf("name", "type", "instances", "beforeRunTasks", "beforeLaunchOf"),
+            json.keys,
+        )
         assertFalse("派生计数不该出现在列表里", json.containsKey("runningInstanceCount"))
+    }
+
+    @Test
+    fun `列表带出 before-launch 的最近一次运行`() {
+        // 这是「父配置在跑 → 构建早已跑完」的直接证据，避免 agent 只看 list 就断定构建没执行。
+        val json = RunningConfiguration(
+            state = RunConfigurationState(
+                name = "aidata@mbp",
+                typeId = "RemoteProcess",
+                isTemplate = false,
+                uniqueId = "uid",
+                instances = listOf(instance(1, logFile = "/tmp/a.log")),
+            ),
+            beforeRunTasks = listOf(
+                RunningBeforeLaunchStep(
+                    name = "aidata-build@mbp",
+                    enabled = true,
+                    lastRun = RunLogEntry(1000, "/tmp/build.log", 2000, 42, 0),
+                ),
+            ),
+            beforeLaunchOf = emptyList(),
+        ).toJson()
+
+        val task = json["beforeRunTasks"]!!.jsonArray.single().jsonObject
+        assertEquals("aidata-build@mbp", task["name"]!!.jsonPrimitive.content)
+        assertEquals("true", task["enabled"]!!.jsonPrimitive.content)
+        val lastRun = task["lastRun"]!!.jsonObject
+        assertEquals(0, lastRun["exitCode"]!!.jsonPrimitive.int)
+        assertEquals("/tmp/build.log", lastRun["logFile"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `从没跑过的 before-launch 步骤 lastRun 的键保留但值为 null`() {
+        val json = RunningConfiguration(
+            state = RunConfigurationState(
+                name = "aidata@mbp",
+                typeId = "RemoteProcess",
+                isTemplate = false,
+                uniqueId = "uid",
+                instances = listOf(instance(1)),
+            ),
+            beforeRunTasks = listOf(
+                RunningBeforeLaunchStep(name = "aidata-build@mbp", enabled = true, lastRun = null),
+            ),
+            beforeLaunchOf = emptyList(),
+        ).toJson()
+
+        val lastRun = json["beforeRunTasks"]!!.jsonArray.single()
+            .jsonObject["lastRun"]!!.jsonObject
+        assertTrue("键要在，值可以是 null", lastRun.containsKey("exitCode"))
+        assertTrue(lastRun["exitCode"] is JsonNull)
+    }
+
+    @Test
+    fun `构建进行中时的归属写在 beforeLaunchOf 里`() {
+        val step = RunningConfiguration(
+            state = RunConfigurationState(
+                name = "aidata-build@mbp",
+                typeId = "NodeJSConfigurationType",
+                isTemplate = false,
+                uniqueId = "uid",
+                instances = listOf(instance(1)),
+            ),
+            beforeRunTasks = emptyList(),
+            beforeLaunchOf = listOf("aidata@mbp"),
+        )
+        assertEquals(
+            listOf("aidata@mbp"),
+            step.toJson()["beforeLaunchOf"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            "this is a before-launch step of aidata@mbp",
+            step.describeBeforeLaunch(),
+        )
     }
 
     @Test
@@ -233,7 +315,17 @@ class RunLogAndNamingTest {
             attributes = emptyMap(),
             options = mapOf("SCRIPT_TEXT" to "pnpm dev"),
             envs = mapOf("APP_ENV" to "testenv"),
-            beforeLaunchSteps = listOf(RunBeforeLaunchStep("RunConfigurationRunTask", "build")),
+            beforeRunTasks = listOf(
+                RunBeforeLaunchTask(
+                    step = RunBeforeLaunchStep(
+                        taskKind = "RunConfigurationTask",
+                        configurationName = "build",
+                        configurationType = "NodeJSConfigurationType",
+                        enabled = true,
+                    ),
+                    recentRuns = emptyList(),
+                ),
+            ),
             configurationXml = "<configuration />",
             instances = listOf(instance(1, logFile = "/tmp/a.log")),
             history = listOf(RunLogEntry(1000, "/tmp/old.log", 2000, 42, 0)),
@@ -244,7 +336,7 @@ class RunLogAndNamingTest {
         assertEquals(
             setOf(
                 "configurationName", "type", "typeDisplayName", "typeKnown", "storage", "isTemplate", "canRun",
-                "canRunBlockedReason", "naming", "attributes", "options", "envs", "beforeLaunchSteps",
+                "canRunBlockedReason", "naming", "attributes", "options", "envs", "beforeRunTasks",
                 "configurationXml", "instances", "history", "warnings",
             ),
             json.keys,

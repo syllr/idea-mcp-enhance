@@ -56,8 +56,8 @@
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RemoteProcessToolsProvider"/>
 
         <!--
-          定义态：看 / 建 / 改 / 删 Run Configuration。
-          见 mcp/RunConfigDefinitionToolsProvider.kt —— `.run/` 目录下 `*.run.xml` 的写入口只有这里。
+          定义态：查看一条 Run Configuration 的全貌（只读，不写盘）。
+          见 mcp/RunConfigDefinitionToolsProvider.kt。
         -->
         <mcpServer.mcpToolsProvider
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RunConfigDefinitionToolsProvider"/>

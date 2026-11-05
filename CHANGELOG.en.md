@@ -13,6 +13,35 @@
 
 # IDE MCP Enhance Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`rerun_run_configuration` tells jobs from servers**: a job (build script, test, migration — something that ends by itself) is now awaited until the process exits, and returns `exitCode` plus the full output; a server (dev server, long-lived process) still returns as soon as it is up. The configuration declares it with the `IDEA_MCP_ENHANCE_JOB` environment variable: `false` means server, anything else (including absent) means job. A `RemoteProcess` configuration is always a server — its Run session follows remote logs and never terminates. The result gains `runKind`, `exited` and `exitCode`.
+- **`inspect_run_configuration` links before-launch runs**: every entry in `beforeRunTasks[]` carries `recentRuns[]` — that configuration's own earlier runs, with `logFile` and `exitCode`. A before-launch step runs as a separate Run session, so its log never appears in the parent's `history[]`; that link used to be missing.
+- **`deploy_remote_process` returns `steps[]`**: each `beforeLaunch` step has its own `logFile` and `exitCode`, and the last step is the deploy itself. Before-launch output is not part of the aggregated `fullOutputPath` log, so it previously had to be guessed from the temporary directory.
+- **`rerun_run_configuration` returns the before-launch log itself**: the result gains `beforeRunTasks[]`, each with the step name, `enabled`, the most recent run's `exitCode` / `logFile`, and a tail preview of that log (at most 10000 characters). A before-launch build writes to its own log file, so it is never part of this call's `output` / `fullOutputPath` — handing back only a path would just make the caller read it again.
+- **`list_running_configurations` carries the before-launch links**: every entry gains `beforeRunTasks[]` (its steps plus each step's most recent `exitCode` / `logFile`) and `beforeLaunchOf[]` (whose step it is). A before-launch build runs as a separate Run session and usually ends in seconds, leaving only the parent in the list — an agent that saw "nothing is running" used to conclude the build never ran. The parent's entry now states the build's exit code.
+
+### Changed
+
+- **`rerun_run_configuration` no longer accepts one-time overrides**: the `programArguments` /
+  `workingDirectory` / `envs` inputs are gone. They affected only that single run, were never written
+  back, and could not be seen afterwards or reproduced from `history[]` — change the configuration
+  itself instead, so the change is reviewable and traceable. The built-in `execute_run_configuration`
+  has the same parameters, but they only work for types implementing
+  `CommonProgramRunConfigurationParameters` (NodeJS / npm / Shell do not).
+- **`beforeLaunchSteps` renamed to `beforeRunTasks`**, with fuller fields: `taskKind`, `name` (the launched configuration), `typeId` (its type, read from `run_configuration_type`) and `enabled` (read from `enabled`, defaulting to enabled). The old name disagreed with both `getBeforeRunTasks()` and the skill documentation.
+- **`rerun_run_configuration` replaces a running Remote Process without a dialog**: `autoReplace` is set for the duration of the start, so an existing remote process with the same name no longer triggers `Messages.showYesNoDialog` — an `invokeAndWait` modal that nobody clicks in an agent session, leaving the call hanging.
+
+### Fixed
+
+- **Stale write-tool wording**: comments and `plugin.xml` / `mcpserver.xml` still said "view / create / update / delete" and "the only write path into `.run/`", contradicting the read-only reality since 0.1.7. Wording only; no behaviour changed.
+
+### Note
+
+- **The built-in `execute_run_configuration` hangs on a Remote Process configuration**: it waits for the process to exit, and a remote session never exits, so the caller neither gets a result nor can tell that the remote side already succeeded. Use `deploy_remote_process` (publish) or `rerun_run_configuration` (restart / one-off) instead. This is a usage rule, enforced on the `opencode-idea` side by hiding that tool.
+
 ## [0.1.8] - 2026-11-03
 
 ### Added

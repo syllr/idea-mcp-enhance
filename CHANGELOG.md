@@ -2,6 +2,50 @@
 
 # IDE MCP Enhance Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`rerun_run_configuration` 区分 job / server**：job（构建脚本、测试、迁移，跑完就退）现在会**等到进程退出**
+  并返回 `exitCode` 与完整输出；server（dev server、长驻进程）仍是启动即返回。配置用环境变量
+  `IDEA_MCP_ENHANCE_JOB` 声明：`false` = server，其余（含缺省）= job。`RemoteProcess` 类型恒为 server
+  —— 它的 Run 会话跟随远端日志、永不终止。返回里新增 `runKind` / `exited` / `exitCode`。
+- **`inspect_run_configuration` 关联 Before launch 的运行**：`beforeRunTasks[]` 每条带 `recentRuns[]`
+  （被挂配置自己的历史运行，含 `logFile` / `exitCode`）。Before launch 跑的是独立 Run 会话，
+  它的日志不在父配置的 `history[]` 里，这条链以前是断的。
+- **`deploy_remote_process` 返回 `steps[]`**：`beforeLaunch` 每一步都有自己的 `logFile` / `exitCode`，
+  最后一步是 deploy 本身。Before launch 的输出不在 `fullOutputPath` 的聚合日志里，以前只能去临时目录猜。
+- **`rerun_run_configuration` 直接带回 Before launch 的日志**：返回新增 `beforeRunTasks[]`，每条含
+  步骤名、启用状态、最近一次运行的 `exitCode` / `logFile`，以及**日志尾部预览**（上限 10000 字符）。
+  前置构建的日志不在本次的 `output` / `fullOutputPath` 里，只给路径等于让 agent 再去读一次文件。
+- **`list_running_configurations` 带出 Before launch 的关系**：每条配置新增 `beforeRunTasks[]`
+  （前置步骤 + 它**最近一次**运行的 `exitCode` / `logFile`）与 `beforeLaunchOf[]`（它本身是谁的前置步骤）。
+  构建是独立 Run 会话、通常几秒就结束，之后列表里只剩父配置——以前 agent 只看到「什么都没在跑」，
+  很容易误判成「构建没执行」。现在父配置条目上直接写着构建的退出码。
+
+### Changed
+
+- **`rerun_run_configuration` 不再接受一次性覆盖参数**：`programArguments` / `workingDirectory` / `envs`
+  三个入口删除。只影响那一次、不落盘，运行时看不出来、事后也无法从 `history[]` 复现——想要别的参数就改
+  配置本身，那样才可 review、可追溯。内置 `execute_run_configuration` 的同名参数只在实现了
+  `CommonProgramRunConfigurationParameters` 的类型上有效（NodeJS / npm / Shell 都不实现）。
+- **`beforeLaunchSteps` 改名为 `beforeRunTasks`**，并补齐字段：`taskKind`（任务种类）、`name`
+  （被挂配置名）、`typeId`（被挂配置的类型 id，读自 `run_configuration_type`）、`enabled`
+  （读自 `enabled`，缺省为启用）。旧名字与 `getBeforeRunTasks()` 及 skill 文档对不上。
+- **`rerun_run_configuration` 对 Remote Process 自动替换**：启动期间置 `autoReplace`，避免远端已有同名
+  进程时弹 `Messages.showYesNoDialog` —— 那是 `invokeAndWait` 的模态框，MCP 场景没人点它，调用会挂死。
+
+### Fixed
+
+- **定义态写工具的残留说法**：注释与 `plugin.xml` / `mcpserver.xml` 里仍写着「看 / 建 / 改 / 删」和
+  「`.run/` 的写入口只有这里」，与 0.1.7 起只读的事实矛盾。只改文案，逻辑未动。
+
+### Note
+
+- **`execute_run_configuration`（IDE 内置）对 Remote Process 会挂死**：它等进程退出，而远端会话永不退出，
+  调用方既拿不到结果也判断不出「远端早已成功」。本插件对应的做法是 `deploy_remote_process`（发布）或
+  `rerun_run_configuration`（重启 / 单跑）。这一条属于使用约定，由 `opencode-idea` 侧隐藏该工具落实。
+
 ## [0.1.8] - 2026-11-03
 
 ### Added

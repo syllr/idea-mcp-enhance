@@ -31,7 +31,7 @@ JetBrains 2026.2 内置的 MCP Server（`com.intellij.mcpServer`）已经提供�
 | -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `list_running_configurations`    | 只读     | 只列**正在跑**的配置及其**活实例**（实例数、PID、executionId、是否正在终止）；没有在跑的就返回空                                                                                                                                                 |
 | `stop_run_configuration`         | 破坏性   | 停掉该配置的**所有**实例（修掉"起两个实例"的老问题），可等待其真正退出                                                                                                                                                                           |
-| `rerun_run_configuration`        | 破坏性   | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**；默认同步等到新进程真的起来，并回传启动日志、会话标识与状态流转（`waitForStart = false` 则只提交、立刻返回，之后用 `list_running_configurations` 轮询）                                   |
+| `rerun_run_configuration`        | 破坏性   | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**；同步等到新进程真的起来，并回传启动日志、会话标识与状态流转。job 类配置（构建 / 测试，跑完就退）会继续等到进程退出并返回 `exitCode`；server 类一启动就返回。参数只有配置名 —— 要改参数就改配置本身 |
 | `create_shell_run_configuration` | 非破坏性 | 直接写 `.run/` 文件新建一个 **Shell Script 项目级** run configuration（让 agent 用项目环境跑命令，IDE 会实时加载）：`scriptPath` / `scriptText` / `cloneFrom` 三选一，另可配参数、工作目录、解释器、环境变量（落点固定 `.run/<配置名>.run.xml`） |
 
 MCP 客户端配置（与 IDE 官方文档一致）：

@@ -9,7 +9,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * 定义态工具（`inspect` / `create` / `update` / `delete`）的描述符。
+ * 定义态工具的描述符。
  *
  * 描述文案是**对外契约**（agent 靠它决定怎么调），与 [RunLifecycleSchemas] 里的描述符同规格：
  * 根级 `type: object` + `required` 数组 + 逐字照抄内置的 `projectPath` 描述。
@@ -17,6 +17,29 @@ import kotlinx.serialization.json.put
  * schema 拼装用的公共片段（`schema` / `properties` / `property` / …）来自 [RunLifecycleSchemas]，
  * 两处共用一份，避免定义漂移。
  */
+
+/** 一次历史运行的形状。`inspect` 的 `history[]` 与 `beforeRunTasks[].recentRuns[]` 共用。 */
+internal val HISTORY_ENTRY_SCHEMA: JsonObject = buildJsonObject {
+    put("type", JsonPrimitive("object"))
+    put("properties", properties(
+        "startedAt" to property("integer", "When the run started, in epoch milliseconds."),
+        "startedAtIso" to property("string", "When the run started, in ISO-8601."),
+        "endedAt" to nullableProperty("integer", "When the process exited, in epoch milliseconds."),
+        "durationMs" to nullableProperty("integer", "How long it ran, in milliseconds."),
+        "pid" to nullableProperty("integer", "Operating system process id."),
+        "exitCode" to nullableProperty("integer", "Process exit code."),
+        "logFile" to property("string", "The log file that run produced."),
+    ))
+    put("required", buildJsonArray {
+        add(JsonPrimitive("startedAt"))
+        add(JsonPrimitive("startedAtIso"))
+        add(JsonPrimitive("endedAt"))
+        add(JsonPrimitive("durationMs"))
+        add(JsonPrimitive("pid"))
+        add(JsonPrimitive("exitCode"))
+        add(JsonPrimitive("logFile"))
+    })
+}
 
 /** 定义态工具的分类。 */
 internal val RUN_CONFIG_DEFINITION_CATEGORY = McpToolCategory(
@@ -124,22 +147,45 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
                     "in `configurationXml`, not here.",
             ),
             "envs" to property("object", "The environment variables this configuration sets."),
-            "beforeLaunchSteps" to arrayOf(
+            "beforeRunTasks" to arrayOf(
                 buildJsonObject {
                     put("type", JsonPrimitive("object"))
+                    put("description", JsonPrimitive(
+                        "A before-launch step: another run configuration this one launches first, " +
+                            "with that configuration's own recent runs.",
+                    ))
                     put("properties", properties(
-                        "type" to nullableProperty("string", "Kind of the before-launch step."),
-                        "referencedConfiguration" to nullableProperty(
+                        "taskKind" to nullableProperty(
                             "string",
-                            "The run configuration this step runs, when it runs another configuration.",
+                            "Kind of the before-launch task, e.g. `RunConfigurationTask` (runs another " +
+                                "configuration) or `MakeBeforeRunTask`.",
+                        ),
+                        "name" to nullableProperty(
+                            "string",
+                            "The run configuration this step launches; null for steps that do not run one.",
+                        ),
+                        "typeId" to nullableProperty(
+                            "string",
+                            "Type id of the launched configuration, e.g. `NodeJSConfigurationType`.",
+                        ),
+                        "enabled" to property(
+                            "boolean",
+                            "false when the step is switched off in the IDE; a disabled step does not run.",
+                        ),
+                        "recentRuns" to arrayOf(
+                            HISTORY_ENTRY_SCHEMA,
+                            "Runs of the launched configuration, newest first. Read `logFile` for their output.",
                         ),
                     ))
                     put("required", buildJsonArray {
-                        add(JsonPrimitive("type"))
-                        add(JsonPrimitive("referencedConfiguration"))
+                        add(JsonPrimitive("taskKind"))
+                        add(JsonPrimitive("name"))
+                        add(JsonPrimitive("typeId"))
+                        add(JsonPrimitive("enabled"))
+                        add(JsonPrimitive("recentRuns"))
                     })
                 },
-                "Before-launch steps of this configuration.",
+                "Before-launch steps of this configuration, in execution order. Empty when it has none.",
             ),
             "configurationXml" to nullableProperty(
                 "string",
@@ -170,27 +216,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
                 "The live instances of this configuration.",
             ),
             "history" to arrayOf(
-                buildJsonObject {
-                    put("type", JsonPrimitive("object"))
-                    put("properties", properties(
-                        "startedAt" to property("integer", "When the run started, in epoch milliseconds."),
-                        "startedAtIso" to property("string", "When the run started, in ISO-8601."),
-                        "endedAt" to nullableProperty("integer", "When the process exited, in epoch milliseconds."),
-                        "durationMs" to nullableProperty("integer", "How long it ran, in milliseconds."),
-                        "pid" to nullableProperty("integer", "Operating system process id."),
-                        "exitCode" to nullableProperty("integer", "Process exit code."),
-                        "logFile" to property("string", "The log file that run produced."),
-                    ))
-                    put("required", buildJsonArray {
-                        add(JsonPrimitive("startedAt"))
-                        add(JsonPrimitive("startedAtIso"))
-                        add(JsonPrimitive("endedAt"))
-                        add(JsonPrimitive("durationMs"))
-                        add(JsonPrimitive("pid"))
-                        add(JsonPrimitive("exitCode"))
-                        add(JsonPrimitive("logFile"))
-                    })
-                },
+                HISTORY_ENTRY_SCHEMA,
                 "Earlier runs of this configuration, newest first.",
             ),
             "warnings" to WARNINGS_SCHEMA,
@@ -208,7 +234,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
             "attributes",
             "options",
             "envs",
-            "beforeLaunchSteps",
+            "beforeRunTasks",
             "configurationXml",
             "instances",
             "history",
@@ -217,6 +243,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
     ),
     annotations(readOnly = true, destructive = false, idempotent = true),
 )
+
 
 /** 定义态工具的公共片段。 */
 internal val DEFINITION_WARNINGS_SCHEMA: JsonObject = WARNINGS_SCHEMA

@@ -39,7 +39,7 @@ internal data class RunConfigurationInspection(
     val attributes: Map<String, String>,
     val options: Map<String, String>,
     val envs: Map<String, String>,
-    val beforeLaunchSteps: List<RunBeforeLaunchStep>,
+    val beforeRunTasks: List<RunBeforeLaunchTask>,
     val configurationXml: String?,
     val instances: List<RunInstanceState>,
     val history: List<RunLogEntry>,
@@ -57,10 +57,20 @@ internal fun RunInstanceState.toInspectionJson(nowMillis: Long): JsonObject = bu
     put("logFile", logFile)
 }
 
+/** 前置任务在 `inspect` 里的形状：定义 + 它自己的历史运行。 */
+internal data class RunBeforeLaunchTask(
+    val step: RunBeforeLaunchStep,
+    /** 被挂配置最近的运行（按开始时间倒序）；被挂配置没有历史时为空。 */
+    val recentRuns: List<RunLogEntry>,
+)
+
 /** 前置任务的形状。 */
-internal fun RunBeforeLaunchStep.toJson(): JsonObject = buildJsonObject {
-    put("type", type)
-    put("referencedConfiguration", referencedConfiguration)
+internal fun RunBeforeLaunchTask.toJson(): JsonObject = buildJsonObject {
+    put("taskKind", step.taskKind)
+    put("name", step.configurationName)
+    put("typeId", step.configurationType)
+    put("enabled", step.enabled)
+    putJsonArray("recentRuns") { recentRuns.forEach { add(it.toJson()) } }
 }
 
 /** `inspect` 的完整 JSON。 */
@@ -92,7 +102,7 @@ internal fun RunConfigurationInspection.toJson(): JsonObject = buildJsonObject {
     putJsonObject("attributes") { attributes.forEach { (key, value) -> put(key, value) } }
     putJsonObject("options") { options.forEach { (key, value) -> put(key, value) } }
     putJsonObject("envs") { envs.forEach { (key, value) -> put(key, value) } }
-    putJsonArray("beforeLaunchSteps") { beforeLaunchSteps.forEach { add(it.toJson()) } }
+    putJsonArray("beforeRunTasks") { beforeRunTasks.forEach { add(it.toJson()) } }
     put("configurationXml", configurationXml)
     putJsonArray("instances") {
         val now = System.currentTimeMillis()

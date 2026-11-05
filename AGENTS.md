@@ -61,6 +61,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │   ├── RunLogModels.kt            纯：日志键 / 文件名 / 历史条目 JSON
 │   ├── RunLogAccess.kt            平台：启动即采集输出、写 sidecar、扫历史、清理
 │   ├── RunConfigNaming.kt         纯：`[os@]base[@env]` 解析
+│   ├── RunKind.kt                 纯：job / server 判定（读 `IDEA_MCP_ENHANCE_JOB`）
 │   ├── RunConfigDefinitionModels.kt   纯：inspect 的全貌 → JSON
 │   ├── RunConfigDefinitionAccess.kt   平台：读 `.run.xml`、解析 options/envs/method
 │   ├── RunConfigDefinitionSchemas.kt  `inspect` 的描述符
@@ -272,15 +273,19 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **定义态工具只读** —— 配置的新增 / 修改 / 删除回 IDE 界面；可重复的流程走 job skill（opencode-idea 侧 `run-job-manager`），不由 agent 代写 `.run/` 下的 xml
 - **取进程号别用 `getNativePid()`**（`@ApiStatus.Experimental`）—— 用 `BaseProcessHandler.getProcess().pid()`
 - **MCP Server 只认 header `IJ_MCP_SERVER_PROJECT_PATH` 或入参 `projectPath` 决定项目** —— 每个工具的 schema 都要声明 `projectPath`（可空、不进 `required`）
-- **单次工具调用能否超长，取决于客户端有没有挂 `GET /stream` 的 SSE 流** —— 挂了流（OpenCode 这类标准 streamable-http 客户端）会话一直活着，实测 100 秒调用正常返回；只发 POST 不挂流会被 IDE 当 pending transport，`PENDING_TRANSPORT_TIMEOUT = 15s` 后清掉会话（日志 `Pending StreamableHttp transport timed out`），工具算完也送不回，客户端拿到空 404
+- **单次工具调用能否超长，取决于客户端有没有挂 `GET /stream` 的 SSE 流** —— 挂了流（OpenCode 这类标准 streamable-http 客户端）会话一直活着，实测 300 秒调用正常返回；只发 POST 不挂流会被 IDE 当 pending transport，`PENDING_TRANSPORT_TIMEOUT = 15s` 后清掉会话（日志 `Pending StreamableHttp transport timed out`），工具算完也送不回，客户端拿到空 404
 - **`rerun` 的三道前置判定别删**：中间态拒绝 / 旧实例没停干净不启动 / 平台启动门
+- **job / server 由配置自己在 `<envs>` 里声明**（`IDEA_MCP_ENHANCE_JOB=false` 表示 server，缺省 job）：平台没有任何 API 能区分二者。**别往 `.run.xml` 塞自定义 `<option>`** —— `RunnerAndConfigurationSettingsImpl.writeScheme()` 每次从 `Element("configuration")` 重拼，未知标签会在用户下次保存该配置时静默消失；`<envs>` 是配置类型自己序列化的字段，不会丢
+- **`list_running_configurations` 只报活会话，Before launch 跑完就消失** —— 看不到构建 ≠ 没执行：父配置在跑就说明前置步骤早跑完了。所以列表条目带 `beforeRunTasks[].lastRun`（含退出码与日志路径）与 `beforeLaunchOf`，文本摘要也点明关系
+- **`RemoteProcess` 恒为 server** —— 它的 Run 会话跟随远端日志、永不终止，等退出就是等死（内置 `execute_run_configuration` 正是因此挂死）
+- **启动 Remote Process 时临时打开 `autoReplace`** —— 否则远端已有同名进程会走 `Messages.showYesNoDialog`（`invokeAndWait` 模态框），无头场景没人点，调用一直挂着
 - **`ProcessAdapter` 在 2026.2 已废弃** —— 直接实现 `ProcessListener`，只覆写 `onTextAvailable`
 - **错误结果里没有 `structuredContent`**（只有 `isError == false` 且注册表开关打开才有）⇒ 错误的关键信息一律写进 text
 - **沙箱里的 `config/disabled_plugins.txt` 基本都是陈旧残留** —— 插件加载失败先看它
 - **`pluginUntilBuild=262.*`** —— 内置 MCP Server 的 API 在 263 变了，钉住上限，别让 Marketplace 把它发给 263 用户
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性** —— 调用写 `.getTools()`
 - **平台可能为「这个配置能不能跑」弹模态框，永久卡死 EDT** ⇒ 工具侧必须主动判断「现在是不是有模态对话框在等用户」
-- **`rerun` 的异步模式 `waitForStart = false`**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来
+- **`rerun` 的"结果未知"**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来
 - **`stop` 必须处理「启动在飞」**（`rerun` 异步提交后进程可能还没挂上）—— 报「没在跑」是假话
 - **克隆 = 读源文件改名** —— 只换 `<configuration>` 里的 `name`，不动 `run_configuration_name`；源不在 `.run/` 必须拒绝
 - **Marketplace 新插件 id 的首个版本必须网页手动上传**，之后 `publishPlugin` 才能推新版本

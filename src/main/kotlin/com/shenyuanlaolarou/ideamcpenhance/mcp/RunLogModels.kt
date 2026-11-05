@@ -119,7 +119,7 @@ internal fun parseRunLogFileName(fileName: String): ParsedRunLogFileName? {
  * @param pid 进程号；sidecar 缺失时为 null
  * @param exitCode 退出码；sidecar 缺失时为 null
  */
-internal data class RunLogEntry(
+data class RunLogEntry(
     val startedAtMillis: Long,
     val logFile: String,
     val endedAtMillis: Long? = null,

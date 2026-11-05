@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -227,6 +228,14 @@ data class RerunReport(
     val fullOutputPath: String? = null,
     /** 这次 rerun 的状态流转，见 [RunTransitionStep]。 */
     val transition: List<RunTransitionStep> = emptyList(),
+    /** 这条配置被当作 job 还是 server 跑，见 [RunKind]。 */
+    val runKind: RunKind = RunKind.JOB,
+    /** job 语义下进程退出后的退出码；server 语义、或没等到退出时为 null。 */
+    val exitCode: Int? = null,
+    /** job 语义下进程是否真的退出了；server 语义时为 null。 */
+    val exited: Boolean? = null,
+    /** 这条配置挂的 Before launch 步骤，每条带最近一次运行；没有步骤时为空。 */
+    val beforeRunTasks: List<RunningBeforeLaunchStep> = emptyList(),
 )
 
 /**
@@ -359,6 +368,7 @@ internal fun RunConfigurationState.toJson(): JsonObject = buildJsonObject {
  * - `displayName` —— Run 标签页的 UI 文本，多实例会带后缀，不能当标识
  * - 各种**派生计数** —— 数组长度就是计数，不重复给
  */
+/** 列表工具的实例形状。 */
 internal fun RunInstanceState.toListJson(): JsonObject = buildJsonObject {
     put("executionId", executionId)
     put("state", state)
@@ -366,13 +376,98 @@ internal fun RunInstanceState.toListJson(): JsonObject = buildJsonObject {
     put("logFile", logFile)
 }
 
-/** 列表工具的配置级形状。见 [toListJson]。 */
-internal fun RunConfigurationState.toListJson(): JsonObject = buildJsonObject {
-    put("name", name)
-    put("type", typeId)
-    putJsonArray("instances") {
-        for (instance in instances) {
-            add(instance.toListJson())
+/** `lastRun` 为空时要保留的键。见 [RunningBeforeLaunchStep.toJson]。 */
+private val LAST_RUN_NULL_KEYS = listOf(
+    "startedAt", "startedAtIso", "endedAt", "durationMs", "pid", "exitCode", "logFile",
+)
+
+/**
+ * 列表里的一条 Before launch 步骤。
+ *
+ * `lastRun` 让「构建到底跑了没」在不查任何其他工具的情况下就能回答 ——
+ * 父配置在跑，就说明它的前置步骤必然已经跑完了。
+ */
+data class RunningBeforeLaunchStep(
+    /** 被挂配置名。 */
+    val name: String,
+    val enabled: Boolean,
+    /** 最近一次运行（含 `exitCode` / `logFile`）；从没跑过时为 null。 */
+    val lastRun: RunLogEntry?,
+    /** 最近一次运行的日志尾部预览；读不到或没要求时为 null。 */
+    val output: String? = null,
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("name", name)
+        put("enabled", enabled)
+        put("output", output)
+        putJsonObject("lastRun") {
+            val run = lastRun
+            if (run == null) {
+                // 键必须保留（见仓库约定）：agent 要能区分"键不存在"（工具出错）与"值为 null"（从没跑过）。
+                for (key in LAST_RUN_NULL_KEYS) put(key, JsonNull)
+            } else {
+                put("startedAt", run.startedAtMillis)
+                put("startedAtIso", isoTimestamp(run.startedAtMillis))
+                put("endedAt", run.endedAtMillis)
+                put("durationMs", run.durationMillis)
+                put("pid", run.pid)
+                put("exitCode", run.exitCode)
+                put("logFile", run.logFile)
+            }
+        }
+    }
+}
+
+/**
+ * 列表工具的一条：配置本身 + 它与 Before launch 的关系（两个方向）。
+ *
+ * 为什么列表要带这些：Before launch 跑的是**独立 Run 会话**，构建通常几秒就结束，
+ * 之后 `list_running_configurations` 里只剩父配置。agent 只能看到「什么都没在跑」，
+ * 很容易得出「构建没执行」的错误结论。这里把关系直接摆出来，不要求 agent 先去读别处。
+ */
+internal data class RunningConfiguration(
+    val state: RunConfigurationState,
+    /** 这条配置挂的 Before launch 步骤（父 → 子）。 */
+    val beforeRunTasks: List<RunningBeforeLaunchStep>,
+    /** 这条配置本身是谁的 Before launch 步骤（子 → 父）；不是别人的步骤时为空。 */
+    val beforeLaunchOf: List<String>,
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("name", state.name)
+        put("type", state.typeId)
+        putJsonArray("instances") {
+            for (instance in state.instances) {
+                add(instance.toListJson())
+            }
+        }
+        putJsonArray("beforeRunTasks") {
+            for (step in beforeRunTasks) {
+                add(step.toJson())
+            }
+        }
+        putJsonArray("beforeLaunchOf") {
+            for (parent in beforeLaunchOf) {
+                add(JsonPrimitive(parent))
+            }
+        }
+    }
+
+    /** 一句话讲清这条配置与 Before launch 的关系；没有关系时返回 null。 */
+    fun describeBeforeLaunch(): String? {
+        val parents = beforeLaunchOf.joinToString(", ")
+        val own = beforeRunTasks.joinToString(", ") { step ->
+            val last = step.lastRun
+            val status = when {
+                last == null -> "never ran"
+                last.exitCode == null -> "exit unknown"
+                else -> "exit ${last.exitCode}"
+            }
+            "${step.name} ($status)"
+        }
+        return when {
+            beforeLaunchOf.isNotEmpty() -> "this is a before-launch step of $parents"
+            beforeRunTasks.isNotEmpty() -> "before-launch: $own"
+            else -> null
         }
     }
 }
@@ -410,6 +505,14 @@ internal fun RerunReport.toJson(): JsonObject = buildJsonObject {
     put("stoppedInstances", stoppedInstances)
     put("runningAfter", runningAfter)
     put("sessionId", sessionId)
+    put("runKind", runKind.id)
+    put("exited", exited)
+    put("exitCode", exitCode)
+    putJsonArray("beforeRunTasks") {
+        for (step in beforeRunTasks) {
+            add(step.toJson())
+        }
+    }
     put("output", output)
     put("fullOutputPath", fullOutputPath)
     putJsonArray("transition") {

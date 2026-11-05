@@ -7,7 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Run Configuration **定义态**的平台接线：配置存在哪、里面写了什么、怎么写回去。
+ * Run Configuration **定义态**的平台接线：配置存在哪、里面写了什么。
  *
  * ## 为什么读盘上的文件，而不是问平台要 XML
  *
@@ -18,14 +18,10 @@ import java.nio.file.Path
  * 而盘上的文件是完整的：IDE 自己写出来的形状（`<option>` / `<envs>` / `<method>` 全在）。
  * 所以**读**走盘上的文件；只有拿不到文件时才退回到平台序列化（至少有 `<option>`）。
  *
- * ## 为什么写回时自己拼 XML
- *
- * IDE 写出来的 `.run/` 目录下的 `*.run.xml` 有固定格式：两格缩进、自闭合标签是 `<tag … />`（斜杠前有空格）。
- * 用 JDOM 默认的输出器会写成 `<tag/>`、且不缩进 —— 与 IDE 自己写的文件长得不一样，
- * 于是每次改动都产生一堆 diff 噪音。所以这里自己拼，格式与 IDE 一致。
+ * 这里**只读**：配置的新建 / 修改 / 删除回到 IDE 界面做。
  */
 
-/** 配置存在哪。决定我们能不能改它。 */
+/** 配置存在哪、是否共享。 */
 internal enum class RunConfigurationStorage(val id: String) {
     /** 项目级共享配置：`<project>/.run/<name>.run.xml`。**我们管理的就这一种。** */
     RUN_FILE("runFile"),
@@ -45,10 +41,14 @@ internal enum class RunConfigurationStorage(val id: String) {
 
 /** 一个前置任务（before-launch step）。 */
 internal data class RunBeforeLaunchStep(
-    /** 任务类型，比如 `RunConfigurationRunTask`、`MakeBeforeRunTask`。认不出来时为 null。 */
-    val type: String?,
+    /** 任务种类，即 `<option name="…">` 上的 name（`RunConfigurationTask`、`MakeBeforeRunTask` 等）。 */
+    val taskKind: String?,
     /** 这个任务指向哪个 run configuration（"跑另一个配置"时才有）。 */
-    val referencedConfiguration: String?,
+    val configurationName: String?,
+    /** 被挂配置自己的类型 id（`run_configuration_type`），例如 `NodeJSConfigurationType`。 */
+    val configurationType: String?,
+    /** 这一条是否启用。缺省按启用处理（平台写文件时只在需要时写 `enabled`）。 */
+    val enabled: Boolean,
 )
 
 /** 从 XML 里解析出来的配置定义。 */
@@ -59,8 +59,8 @@ internal data class RunConfigurationDefinition(
     val options: Map<String, String>,
     /** `<envs>` 里的环境变量。 */
     val envs: Map<String, String>,
-    /** `<method>` 里的前置任务。 */
-    val beforeLaunchSteps: List<RunBeforeLaunchStep>,
+    /** `<method>` 里的前置任务，按执行顺序排列。 */
+    val beforeRunTasks: List<RunBeforeLaunchStep>,
 )
 
 /** 这个配置存在哪。 */
@@ -147,11 +147,14 @@ internal fun parseRunConfigurationDefinition(configuration: Element): RunConfigu
         }
     }
 
-    val beforeLaunch = configuration.getChild("method")?.let { method ->
-        method.children.map { child ->
+    val beforeRunTasks = configuration.getChild("method")?.let { method ->
+        method.getChildren("option").map { child ->
             RunBeforeLaunchStep(
-                type = child.getAttributeValue("name"),
-                referencedConfiguration = child.getAttributeValue("run_configuration_name"),
+                taskKind = child.getAttributeValue("name"),
+                configurationName = child.getAttributeValue("run_configuration_name"),
+                configurationType = child.getAttributeValue("run_configuration_type"),
+                // 平台写文件时只在需要时才写 enabled，缺省即启用。
+                enabled = child.getAttributeValue("enabled")?.toBooleanStrictOrNull() ?: true,
             )
         }
     } ?: emptyList()
@@ -160,7 +163,7 @@ internal fun parseRunConfigurationDefinition(configuration: Element): RunConfigu
         attributes = attributes,
         options = options,
         envs = envs,
-        beforeLaunchSteps = beforeLaunch,
+        beforeRunTasks = beforeRunTasks,
     )
 }
 

@@ -34,6 +34,11 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
     application's own logs are in the configured Application log directory — `list_remote_processes`
     reports it as `logDir`.
 
+    `steps[]` names every phase of this deploy. Before-launch builds run as **separate Run sessions**
+    with their own log files, so their output never appears in `fullOutputPath` — each step carries a
+    tail preview in `output` plus its `exitCode` and `logFile`. A step that has not run yet has
+    `logFile`, `output` and `exitCode` as null.
+
     `configurationName` must name a Remote Process configuration in this project.
     """.trimIndent(),
     RUN_LIFECYCLE_CATEGORY,
@@ -61,8 +66,42 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
                 "Local aggregated log: progress lines plus the remote stdout/stderr; same field and format as `rerun_run_configuration`.",
             ),
             "output" to property("string", "Inline preview of this start's output."),
+            "steps" to arrayOf(
+                buildJsonObject {
+                    put("type", JsonPrimitive("object"))
+                    put("description", JsonPrimitive(
+                        "One step of this deploy: a before-launch build, or the deploy itself.",
+                    ))
+                    put("properties", properties(
+                        "kind" to property("string", "`beforeLaunch` or `deploy`."),
+                        "name" to property("string", "Step name: the launched configuration, or this one."),
+                        "logFile" to nullableProperty(
+                            "string",
+                            "Absolute path of this step's own log. Before-launch steps write to a separate " +
+                                "file from the deploy itself; read it for the build output.",
+                        ),
+                        "exitCode" to nullableProperty("integer", "Exit code of the step, when it has finished."),
+                        "enabled" to property("boolean", "false when the step is switched off in the IDE."),
+                        "output" to nullableProperty(
+                            "string",
+                            "Tail preview of this step's log (at most 10000 characters), prefixed with " +
+                                "`<truncated at the start>` when cut. Only before-launch steps carry it; " +
+                                "the deploy step's own output is `fullOutputPath`.",
+                        ),
+                    ))
+                    put("required", buildJsonArray {
+                        add(JsonPrimitive("kind"))
+                        add(JsonPrimitive("name"))
+                        add(JsonPrimitive("logFile"))
+                        add(JsonPrimitive("exitCode"))
+                        add(JsonPrimitive("enabled"))
+                        add(JsonPrimitive("output"))
+                    })
+                },
+                "Steps of this deploy in execution order. Before-launch steps come first.",
+            ),
         ),
-        required = setOf("configurationName", "server", "kind", "started", "output"),
+        required = setOf("configurationName", "server", "kind", "started", "output", "steps"),
     ),
     annotations(readOnly = false, destructive = false, idempotent = false),
 )

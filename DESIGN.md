@@ -207,11 +207,15 @@ ExecutionEnvironmentBuilder
    "这需要用户去 IDE 处理"。留着一层固定的启动等待预算（300 秒）作为最后的网：完全不留的话工具永远
    返回不了任何东西，AI 拿到空 404，就没法把"请用户去 IDE 处理"转告出去——而那正是这类卡点唯一的出路。
 
-**`waitForStart = false`（异步提交）**：只走第 1、2 道门 + `executeConfigurationAsync`，不等回调就返回。
-它存在的理由是 before-launch 可能比调用方的耐心还长——同步等下去会把结果拖成一次空 404（对**不挂
-`GET /stream` 的客户端**尤其如此，15 秒就丢会话）；挂流的客户端（OpenCode）没有这个限制，但异步提交
-依然能少占调用方一个等待窗口。此时 `started` / `runningAfter` 必须是 `null`（"不知道"），
-绝不能拿提交瞬间的快照冒充结果（那正是上面那个 P1 的病根）。
+**"结果未知"的语义**：等窗口用完还没确认进程创建时返回 `started = null` / `runningAfter = null`
+（"不知道"），绝不能拿提交瞬间的快照冒充结果（那正是上面那个 P1 的病根）。
+最常见的成因是 before-launch 还没跑完——平台在它跑完之前不会产出 Run 内容。
+
+**job / server 决定等到哪一步**：`RemoteProcess` 的反向代理会话跟随远端日志、永不终止，等退出就是等死；
+而一个构建脚本跑完就该拿到 `exitCode`。平台没有任何 API 能区分两者（`console-dev` 与
+`aidata-build@mbp` 类型相同），所以由配置自己在 `<envs>` 里声明 `IDEA_MCP_ENHANCE_JOB`：
+`false` = server，其余（含缺省）= job。判定实现见 `mcp/RunKind.kt` 的 KDoc
+（含"为什么不能塞自定义 `<option>`"的平台依据）。
 
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
 

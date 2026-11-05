@@ -70,7 +70,7 @@ class RunLifecycleToolsProvider : McpToolsProvider {
 /**
  * 工具共用的骨架：兜住异常 → 跑具体逻辑。
  *
- * 包内可见：定义态工具（`inspect` / `create` / `update` / `delete`）也复用它，
+ * 包内可见：定义态工具（`inspect`）也复用它，
  * 所以"异常一律转成 `McpToolCallResult.error`"这条规矩只有一处实现。
  */
 internal abstract class BaseRunTool : McpTool {
@@ -125,25 +125,50 @@ private class ListRunConfigurationsTool : BaseRunTool() {
         val project = currentProject() ?: return noProjectResult(LIST_TOOL_NAME)
         // 没有模板开关：模板不是实例、永远不会在跑，"只返回在跑的"天然把它排除掉。
         // 也顺手把每个配置的 instances[] 收成只剩活实例，于是整份返回里不含任何"不在跑"的东西。
+        val parentsByChild = beforeLaunchParents(project)
         val running = allConfigurationStates(project)
             .filter { it.running }
             .map { it.onlyRunningInstances() }
+            .map { state ->
+                RunningConfiguration(
+                    state = state,
+                    beforeRunTasks = beforeRunStepsWithLastRun(project, state.name),
+                    beforeLaunchOf = parentsByChild[state.name].orEmpty(),
+                )
+            }
 
-        val instanceCount = running.sumOf { it.instances.size }
+        val instanceCount = running.sumOf { it.state.instances.size }
         return McpToolCallResult.text(
             if (running.isEmpty()) {
                 "Nothing is running in this project."
             } else {
-                "Found ${running.size} running run configuration(s), $instanceCount live instance(s)."
+                "Found ${running.size} running run configuration(s), $instanceCount live instance(s)." +
+                    beforeLaunchSummary(running)
             },
             buildJsonObject {
                 putJsonArray("configurations") {
-                    for (state in running) {
-                        add(state.toListJson())
+                    for (item in running) {
+                        add(item.toJson())
                     }
                 }
             },
         )
+    }
+
+    /**
+     * 把 Before launch 的关系写进摘要文本。
+     *
+     * 这一段是刻意加在文本里的：agent 最容易的误判是「列表里没有构建 → 构建没执行」，
+     * 而实际上 Before launch 是独立会话、几秒就结束。把「父配置在跑就说明构建早已跑完」
+     * 直接说出来，比让它自己去读 JSON 或另一个工具可靠得多。
+     */
+    private fun beforeLaunchSummary(running: List<RunningConfiguration>): String {
+        val lines = running.mapNotNull { item ->
+            val detail = item.describeBeforeLaunch() ?: return@mapNotNull null
+            "- ${item.state.name}: $detail"
+        }
+        if (lines.isEmpty()) return ""
+        return "\n" + lines.joinToString("\n")
     }
 }
 
@@ -344,7 +369,21 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         // 关键：默认同步等到新进程真的被创建、并且状态收敛成"确实在跑"才返回，
         // 否则紧接着做快照必然读到 0 个在跑，调用方会误判成"启动失败"。
         // 同步等到新进程真的被创建；窗口内没等到就返回"结果未知"，由调用方轮询。
-        val start = startRunAndAwait(project, environment, settings, startTimeoutMs)
+        //
+        // job / server 决定要不要继续等进程退出：
+        // - job   → 等到退出，把 exitCode 与完整输出带回去
+        // - server→ 启动即返回（远端进程会一直跟随日志，等下去只会挂死）
+        val runKind = runKindOfConfiguration(project, settings)
+        val exitTimeoutMs = if (runKind == RunKind.JOB) defaultWaitTimeoutMs().toLong() else null
+        val start = withRemoteAutoReplace(settings) {
+            startRunAndAwait(
+                project = project,
+                environment = environment,
+                settings = settings,
+                startTimeoutMs = startTimeoutMs,
+                exitTimeoutMs = exitTimeoutMs,
+            )
+        }
         transition += RunTransitionStep(
             phase = when {
                 !start.awaited -> TransitionPhase.START_SUBMITTED
@@ -365,6 +404,11 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         } else if (!start.started) {
             warnings += "The new process did not come up: ${start.failure}"
         }
+        if (runKind == RunKind.JOB && start.exited == false) {
+            warnings +=
+                "The job was still running when the wait window ended; its exit code is not known yet. " +
+                    "Read `fullOutputPath`, or call `inspect_run_configuration` later for `history[].exitCode`."
+        }
 
         // 直接用启动过程收敛出的快照：再自己拍一次会读到中间态（见 awaitLiveState 的 KDoc）
         val after = start.state
@@ -382,6 +426,10 @@ private class RerunRunConfigurationTool : BaseRunTool() {
             output = start.output,
             fullOutputPath = start.fullOutputPath,
             transition = transition,
+            runKind = runKind,
+            exitCode = start.exitCode,
+            exited = start.exited,
+            beforeRunTasks = beforeRunStepsWithLastRun(project, settings.name, includeLogOutput = true),
         )
         return McpToolCallResult.text(summaryOf(report), report.toJson())
     }
@@ -397,9 +445,30 @@ private class RerunRunConfigurationTool : BaseRunTool() {
         when (report.started) {
             true -> {
                 val startStep = report.transition.lastOrNull { it.phase == TransitionPhase.STARTED }
-                append("new process is up")
-                if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
-                append(" — ").append(report.runningAfter).append(" live instance(s).")
+                when (report.runKind) {
+                    // job：真正的结果是退出码，不是"进程还在"。别写 "0 live instance(s)" 让人以为出事了。
+                    RunKind.JOB -> when (report.exited) {
+                        true -> {
+                            append("finished with exit code ").append(report.exitCode)
+                            if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
+                            append("; read `fullOutputPath` for the output.")
+                        }
+
+                        false -> append(
+                            "still running when the wait window ended, so its exit code is not known yet; " +
+                                "read `fullOutputPath`, or call `inspect_run_configuration` later.",
+                        )
+
+                        // 没等启动（submittedOnly）不会走到这里，但显式给一条可读文案，别留空洞。
+                        null -> append("is running; its exit code is not known.")
+                    }
+
+                    RunKind.SERVER -> {
+                        append("new process is up")
+                        if (startStep != null) append(" after ").append(startStep.elapsedMs).append("ms")
+                        append(" — ").append(report.runningAfter).append(" live instance(s).")
+                    }
+                }
             }
             // 失败原因本身就是完整句子（通常已带句点），这里统一收口，避免出现 ".."
             false -> append("the new process did not come up — ").append(report.startFailure.orEmpty().trimEnd('.')).append('.')
@@ -409,6 +478,37 @@ private class RerunRunConfigurationTool : BaseRunTool() {
                     "poll `list_running_configurations` to see when the process is up.",
             )
         }
+        beforeLaunchSummary(report.beforeRunTasks)?.let { append('\n').append(it) }
+    }
+
+    /**
+     * Before launch 的关系写进摘要。
+     *
+     * 这一段是刻意加在文本里的：前置构建的日志**不在**本次的 `fullOutputPath` 里，
+     * 只留在它自己那个文件。不写出来，agent 会以为「这次运行没有构建输出」，
+     * 然后去临时目录按时间猜。
+     */
+    private fun beforeLaunchSummary(steps: List<RunningBeforeLaunchStep>): String? {
+        if (steps.isEmpty()) return null
+        val parts = steps.joinToString(", ") { step ->
+            val run = step.lastRun
+            val status = when {
+                run == null -> "never ran"
+                run.exitCode == null -> "exit unknown"
+                else -> "exit ${run.exitCode}"
+            }
+            "${step.name} ($status)"
+        }
+        val logs = steps.mapNotNull { it.lastRun?.logFile }
+        val logLine = if (logs.isEmpty()) "" else " → " + logs.joinToString(", ")
+        // 日志内容直接贴在摘要里：这是"构建到底干了什么"的唯一一手材料，
+        // 不贴出来 agent 还是得自己去读文件。
+        val bodies = steps.mapNotNull { step ->
+            val body = step.output?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            "[${step.name}]\n$body"
+        }
+        val bodyText = if (bodies.isEmpty()) "" else "\n" + bodies.joinToString("\n")
+        return "before-launch: $parts$logLine$bodyText"
     }
 }
 
@@ -431,3 +531,36 @@ private fun describeStoppedInstances(requested: Int, forcedKills: Int, instances
 
 /** 从 rerun 请求发出算起的毫秒数。 */
 private fun elapsedSince(fromNanos: Long): Long = (System.nanoTime() - fromNanos) / 1_000_000
+
+/**
+ * 这条配置该当 job 还是 server 跑。
+ *
+ * `RemoteProcess` 恒为 server：它的 Run 会话是「跟随远端日志」的处理器，进程永远不会
+ * 自行终止，等退出就是等死（这正是内置 `execute_run_configuration` 在远端配置上挂死的根因）。
+ * 其余类型看配置自己声明的 [RUN_KIND_ENV]，缺省当 job。
+ */
+internal fun runKindOfConfiguration(project: Project, settings: RunnerAndConfigurationSettings): RunKind {
+    if (settings.type.id == REMOTE_PROCESS_TYPE_ID) return RunKind.SERVER
+    val envs = readRunConfigurationDefinition(project, settings)?.envs.orEmpty()
+    return runKindOf(envs)
+}
+
+/**
+ * 启动 RemoteProcess 配置时临时打开「自动替换」。
+ *
+ * 不设这个标记的话，远端已有同名进程时会走 `confirmRestart` → `Messages.showYesNoDialog`，
+ * 那是 `invokeAndWait` 的模态框；MCP 场景没人点它，调用会一直挂着。
+ * 用完立刻还原，避免污染用户下一次在 IDE 里手动点的 Run。
+ */
+private suspend fun <T> withRemoteAutoReplace(
+    settings: RunnerAndConfigurationSettings,
+    block: suspend () -> T,
+): T {
+    val options = (settings.configuration as? RemoteProcessRunConfiguration)?.remoteOptions ?: return block()
+    options.autoReplace = true
+    return try {
+        block()
+    } finally {
+        options.autoReplace = false
+    }
+}

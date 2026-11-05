@@ -313,6 +313,54 @@ internal fun allConfigurationStates(project: Project): List<RunConfigurationStat
     RunManager.getInstance(project).allSettings.map { snapshotOf(project, it) }
 
 /**
+ * 反向索引：**被挂配置名 → 把它挂成 Before launch 的父配置名**。
+ *
+ * Before launch 跑的是独立的 Run 会话，会话上只有它自己的名字。没有这张表，
+ * `list_running_configurations` 只能给出一串互不相干的配置名，agent 无从知道
+ * `aidata-build@mbp` 正在为 `aidata@mbp` 构建。
+ *
+ * 只读 `.run.xml` 的定义（不经平台 API）：`RunnerAndConfigurationSettings` 不暴露
+ * "谁引用了我"，而遍历 `RunConfigurationBeforeRunProvider` 的内部类是本仓库禁止的。
+ */
+internal fun beforeLaunchParents(project: Project): Map<String, List<String>> {
+    val result = mutableMapOf<String, MutableList<String>>()
+    for (settings in RunManager.getInstance(project).allSettings) {
+        if (settings.isTemplate) continue
+        for (task in readRunConfigurationDefinition(project, settings)?.beforeRunTasks.orEmpty()) {
+            val child = task.configurationName?.takeIf { it.isNotBlank() } ?: continue
+            result.getOrPut(child) { mutableListOf() } += settings.name
+        }
+    }
+    return result
+}
+
+/**
+ * 一条配置挂的 Before launch 步骤，每步带上它**最近一次**运行。
+ *
+ * 父配置在跑就说明前置步骤必然已经跑完，所以这里给最近一条就够了；
+ * 要给完整历史的是 `inspect_run_configuration`。
+ */
+internal fun beforeRunStepsWithLastRun(
+    project: Project,
+    configurationName: String,
+    /** true = 顺带把最近一次运行的日志尾部读出来（`rerun` 要这个，`list` 不要）。 */
+    includeLogOutput: Boolean = false,
+): List<RunningBeforeLaunchStep> {
+    val settings = findSettingsByName(project, configurationName) ?: return emptyList()
+    val tasks = readRunConfigurationDefinition(project, settings)?.beforeRunTasks.orEmpty()
+    return tasks.mapNotNull { task ->
+        val name = task.configurationName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val lastRun = listRunLogs(project, name).firstOrNull()
+        RunningBeforeLaunchStep(
+            name = name,
+            enabled = task.enabled,
+            lastRun = lastRun,
+            output = if (includeLogOutput) lastRun?.logFile?.let(::readRunLogTail) else null,
+        )
+    }
+}
+
+/**
  * `RunContentDescriptor` → [RunInstanceState]。
  *
  * `processHandler` 为 null 时返回 null：没有 handler 就没有"进程"可言，
@@ -482,6 +530,7 @@ internal fun buildRunEnvironment(project: Project, settings: RunnerAndConfigurat
  * @param outputGraceMs 进程起来后再采集这么久的输出才返回。server 类配置永不退出，只能给它一个固定窗口；
  *   这段时间就是"启动日志"（`output` 内联预览）能拿到多少的代价。日志文件 [StartOutcome.fullOutputPath]
  *   不受这个窗口限制，会在进程整个生命周期里持续增长
+ * @param exitTimeoutMs job 语义下等进程退出的预算；null = server 语义，启动即返回
  */
 internal suspend fun startRunAndAwait(
     project: Project,
@@ -489,6 +538,7 @@ internal suspend fun startRunAndAwait(
     settings: RunnerAndConfigurationSettings,
     startTimeoutMs: Int,
     outputGraceMs: Long = DEFAULT_OUTPUT_GRACE_MS,
+    exitTimeoutMs: Long? = null,
 ): StartOutcome {
     val sessionName = settings.name
     val startedAtNanos = System.nanoTime()
@@ -597,6 +647,8 @@ internal suspend fun startRunAndAwait(
     val handler = descriptor.processHandler
     var state = snapshotOf(project, settings)
     var upElapsedMs = elapsedMsSince(startedAtNanos)
+    var exited: Boolean? = null
+    var exitCode: Int? = null
     if (handler != null) {
         // 1) 等进程真的被创建出来（pid 可读）或提前退出
         awaitProcessUp(handler, startTimeoutMs)
@@ -606,10 +658,20 @@ internal suspend fun startRunAndAwait(
         // 2) 再采一整个窗口的输出。这里**不**在"拿到第一段输出"时就返回：
         //    第一段往往只是 IDE 回显的启动命令行，真正的启动横幅（"listening on ..."）还在后面
         awaitOutputWindow(handler, outputGraceMs)
-        // 3) 最后等一个"新实例确实在跑"的快照。这一步不能省，也不能用"executionId 出现"代替——
+        // 3) job 语义：等到进程真的退出，把退出码带回去。server 语义（exitTimeoutMs == null）跳过。
+        if (exitTimeoutMs != null) {
+            exited = awaitProcessExit(handler, exitTimeoutMs)
+            if (exited) exitCode = handler.exitCode
+        }
+        // 4) 最后等一个"新实例确实在跑"的快照。这一步不能省，也不能用"executionId 出现"代替——
         //    IDEA 会复用 tab 的 RunContentDescriptor，executionId 先出现时它带的 ProcessHandler
         //    可能还是上一次那个（实测读到过 running=false + 上一次的 pid，而端口已被新进程占着）
-        state = awaitLiveState(project, settings, descriptor.executionId, LIVE_STATE_TIMEOUT_MS)
+        //    已经退出的 job 等不到 running=true，直接跳过，省掉整个等待窗口。
+        state = if (exited == true) {
+            snapshotOf(project, settings)
+        } else {
+            awaitLiveState(project, settings, descriptor.executionId, LIVE_STATE_TIMEOUT_MS)
+        }
     }
 
     val live = state.instances.firstOrNull { it.executionId == descriptor.executionId }
@@ -622,6 +684,8 @@ internal suspend fun startRunAndAwait(
         startElapsedMs = upElapsedMs,
         failure = null,
         state = state,
+        exitCode = exitCode,
+        exited = exited,
     )
 }
 
@@ -645,6 +709,10 @@ internal data class StartOutcome(
     val failure: String?,
     val state: RunConfigurationState,
     val submittedOnly: Boolean = false,
+    /** job 语义下等到进程退出后的退出码；server 语义或没等到时为 null。 */
+    val exitCode: Int? = null,
+    /** job 语义下进程是否真的退出了。false = 等满了预算还在跑（结果未知）。 */
+    val exited: Boolean? = null,
 ) {
     /** 新进程是否真的起来了。 */
     val started: Boolean get() = failure == null && executionId != null
@@ -807,6 +875,53 @@ private fun createRunOutputFile(sessionName: String): Path? = runCatching {
     val safeName = sessionName.map { if (it.isLetterOrDigit() || it == '-' || it == '_') it else '_' }.joinToString("")
     Files.createFile(directory.resolve("$RUN_OUTPUT_FILE_PREFIX${safeName}_${UUID.randomUUID()}.log"))
 }.getOrNull()
+
+/**
+ * 读一份**历史运行日志**的尾部预览。
+ *
+ * 为什么取尾部而不是头部：一次构建的结论（报错、`done`、退出前的最后几行）在最末尾，
+ * 头部通常只是命令行回显。超长时截断并显式标注，让 agent 知道"这不是全文"。
+ *
+ * 读不到（文件被清理 / 权限问题）返回 null：日志缺失不该让工具失败。
+ */
+internal fun readRunLogTail(logFile: String, limit: Int = BEFORE_LAUNCH_LOG_PREVIEW_LIMIT): String? {
+    val path = runCatching { Path.of(logFile) }.getOrNull() ?: return null
+    val size = runCatching { Files.size(path) }.getOrNull() ?: return null
+    if (size == 0L) return ""
+    val start = (size - limit).coerceAtLeast(0)
+    val bytes = runCatching {
+        Files.newByteChannel(path).use { channel ->
+            channel.position(start)
+            val buffer = java.nio.ByteBuffer.allocate((size - start).toInt())
+            while (buffer.hasRemaining() && channel.read(buffer) > 0) Unit
+            buffer.flip()
+            ByteArray(buffer.remaining()).also { buffer.get(it) }
+        }
+    }.getOrNull() ?: return null
+    val text = String(bytes, Charsets.UTF_8)
+    return if (start > 0) "<truncated at the start>\n$text" else text
+}
+
+/** Before launch 日志预览的字符上限。 */
+internal const val BEFORE_LAUNCH_LOG_PREVIEW_LIMIT = 10_000
+
+/**
+ * 等到进程终止（job 语义），最多等 [timeoutMs]。
+ *
+ * 返回 `true` = 已经退出（[ProcessHandler.exitCode] 可读）；`false` = 等满了还在跑。
+ *
+ * 用轮询而不是 `waitFor`：后者会把线程占满整个等待窗口，且不响应取消。
+ */
+internal suspend fun awaitProcessExit(handler: ProcessHandler, timeoutMs: Long): Boolean {
+    if (handler.isProcessTerminated) return true
+    val deadline = deadlineNanos(timeoutMs)
+    var attempt = 0
+    while (System.nanoTime() < deadline) {
+        if (handler.isProcessTerminated) return true
+        delay(retryBackoffMs(attempt++))
+    }
+    return handler.isProcessTerminated
+}
 
 /** 轮询间隔：等进程起来、等输出、等 Run 内容注册都用它。 */
 

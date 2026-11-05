@@ -8,7 +8,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -197,19 +196,84 @@ private val LIST_INSTANCE_SCHEMA: JsonObject = buildJsonObject {
     })
 }
 
+/**
+ * 一条 Before launch 步骤 + 它最近一次运行。
+ *
+ * `list_running_configurations` 与 `rerun_run_configuration` 共用：两处都在回答
+ * 「构建到底跑了没」，形状必须一致。
+ */
+private val BEFORE_RUN_STEP_SCHEMA: JsonObject = buildJsonObject {
+    put("type", JsonPrimitive("object"))
+    put("description", JsonPrimitive(
+        "A before-launch step, with its most recent run.",
+    ))
+    put("properties", properties(
+        "name" to property("string", "The configuration this step launches."),
+        "enabled" to property("boolean", "false when the step is switched off in the IDE."),
+        "output" to nullableProperty(
+            "string",
+            "Tail preview of the step's most recent log (at most 10000 characters), prefixed with " +
+                "`<truncated at the start>` when cut. null when there is no log to read, or when the " +
+                "tool does not read log content (the list tool leaves it null and gives `logFile`).",
+        ),
+        "lastRun" to buildJsonObject {
+            put("type", JsonPrimitive("object"))
+            put("description", JsonPrimitive(
+                "The step's most recent run; every field is null when it has never run.",
+            ))
+            put("properties", properties(
+                "startedAt" to nullableProperty("integer", "When that run started, in epoch milliseconds."),
+                "startedAtIso" to nullableProperty("string", "When that run started, in ISO-8601."),
+                "endedAt" to nullableProperty("integer", "When it exited, in epoch milliseconds."),
+                "durationMs" to nullableProperty("integer", "How long it ran, in milliseconds."),
+                "pid" to nullableProperty("integer", "Operating system process id."),
+                "exitCode" to nullableProperty("integer", "Exit code; null while it is still running."),
+                "logFile" to nullableProperty("string", "The log file that run produced."),
+            ))
+            put("required", buildJsonArray {
+                add(JsonPrimitive("startedAt"))
+                add(JsonPrimitive("startedAtIso"))
+                add(JsonPrimitive("endedAt"))
+                add(JsonPrimitive("durationMs"))
+                add(JsonPrimitive("pid"))
+                add(JsonPrimitive("exitCode"))
+                add(JsonPrimitive("logFile"))
+            })
+        },
+    ))
+    put("required", buildJsonArray {
+        add(JsonPrimitive("name"))
+        add(JsonPrimitive("enabled"))
+        add(JsonPrimitive("output"))
+        add(JsonPrimitive("lastRun"))
+    })
+}
+
 /** 列表工具用的配置级形状：名字、类型、活着的实例。 */
 private val LIST_CONFIGURATION_SCHEMA: JsonObject = buildJsonObject {
     put("type", JsonPrimitive("object"))
-    put("description", JsonPrimitive("One run configuration together with its live instances."))
+    put("description", JsonPrimitive("One run configuration together with its live instances and its before-launch links."))
     put("properties", properties(
         "name" to property("string", "Run configuration name."),
         "type" to property("string", "Run configuration type id, e.g. ShConfigurationType or MavenRunConfiguration."),
         "instances" to arrayOf(LIST_INSTANCE_SCHEMA, "Live instances of this configuration."),
+        "beforeRunTasks" to arrayOf(
+            BEFORE_RUN_STEP_SCHEMA,
+            "Before-launch steps of this configuration; entry 0 runs first. Empty when it has none.",
+        ),
+        "beforeLaunchOf" to arrayOf(
+            property("string", "Name of a run configuration."),
+            "Configurations that launch this one as a before-launch step. Non-empty means this " +
+                "configuration is currently running **on behalf of** those; empty means it is a " +
+                "top-level run.",
+        ),
     ))
     put("required", buildJsonArray {
         add(JsonPrimitive("name"))
         add(JsonPrimitive("type"))
         add(JsonPrimitive("instances"))
+        add(JsonPrimitive("beforeRunTasks"))
+        add(JsonPrimitive("beforeLaunchOf"))
     })
 }
 
@@ -247,6 +311,16 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
     """
     Report what is running right now in the IDE: one entry per configuration that has a live Run
     session, with its live instances (pid, state, `logFile`).
+
+    This lists **live sessions only**. That matters for before-launch steps: a step runs as its own
+    run configuration, usually finishes in seconds, and disappears from this list the moment it
+    ends — so an empty result, or a list without the build, does **not** mean before-launch did not
+    run. Read `beforeRunTasks[].lastRun` here for whether it ran and how it ended, or
+    `inspect_run_configuration` for its full history.
+
+    Each entry also carries `beforeLaunchOf`: when it is non-empty, this configuration is currently
+    running **on behalf of** those configurations (it is their before-launch step), not as a
+    top-level run.
 
     This is an index of live sessions, not of definitions — `get_run_configurations` lists
     definitions. Templates never appear; several instances under one configuration mean it was
@@ -366,9 +440,25 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     unknown — poll `list_running_configurations`. It waits until the new process exists, and fails
     fast if the configuration is stopping or starting, or old instances cannot be stopped.
 
+    `runKind` says how it was waited for. A `job` (a build script, a test, a migration) is waited
+    until the process exits, and then `exitCode` and the full output are returned; a `server` (a dev
+    server, a remote process) returns as soon as it is up, because it never exits. The kind comes
+    from the configuration's own environment variable `IDEA_MCP_ENHANCE_JOB`: `false` means server,
+    anything else (including absent) means job. A `Remote Process` configuration is always a server.
+
     For a `Remote Process` configuration this starts the remote process / container over SSH, and
     stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish
     — its Stop leaves the remote process running.
+
+    **Before-launch steps run first**, each as its own Run session with its own log file. Their
+    output is never part of this call's `output` / `fullOutputPath` — those cover this configuration
+    only. `beforeRunTasks[]` in the result carries each step's most recent run, including `exitCode`
+    and `logFile`, so a build that already finished is visible without calling anything else. When a
+    step never ran, `lastRun` is null.
+
+    It always uses the configuration as it is stored. To change arguments, the working directory or
+    environment variables, edit the configuration in the IDE — there is no per-run override, so what
+    ran stays visible in `.run/`.
 
     This always starts a process. To only copy files to the remote host, use the file transfer
     tools instead.
@@ -409,9 +499,30 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
                 "Run session identifier of the new process: the configuration name, or `<name>#<executionId>` " +
                     "when several live instances share that name.",
             ),
+            "runKind" to property(
+                "string",
+                "How this run was waited for: `job` (waited until the process exited) or `server` (returned " +
+                    "as soon as it was up).",
+            ),
+            "exited" to nullableProperty(
+                "boolean",
+                "For a `job`: whether the process really exited within the wait window. `false` means it was " +
+                    "still running, so `exitCode` is unknown. `null` for a `server`, or when the start was not awaited.",
+            ),
+            "exitCode" to nullableProperty(
+                "integer",
+                "For a `job` that exited: its exit code. null when it did not exit within the wait window, or " +
+                    "for a `server`.",
+            ),
             "output" to property("string", "Inline preview of the new process output, at most 10000 characters."),
             "fullOutputPath" to nullableProperty("string", "Path of the full raw output log; it keeps growing while the process is alive."),
             "transition" to arrayOf(RUN_TRANSITION_STEP_SCHEMA, "Steps of this restart, in chronological order."),
+            "beforeRunTasks" to arrayOf(
+                BEFORE_RUN_STEP_SCHEMA,
+                "Before-launch steps of this configuration with their most recent run. Empty when it " +
+                    "has none. Each step runs as its own Run session, so its output is not in " +
+                    "`fullOutputPath` — read `logFile` instead.",
+            ),
             "instances" to arrayOf(
                 RUN_INSTANCE_SCHEMA,
                 "All Run contents of this configuration after the restart, finished ones included.",
@@ -424,6 +535,10 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
             "started",
             "stoppedInstances",
             "runningAfter",
+            "runKind",
+            "exited",
+            "exitCode",
+            "beforeRunTasks",
             "output",
             "transition",
             "instances",
@@ -463,15 +578,3 @@ internal fun JsonObject.stringOrNull(key: String): String? =
 internal fun JsonObject.boolOrNull(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
 
-internal fun JsonObject.obj(key: String): JsonObject? = this[key]?.jsonObject
-
-/**
- * 取一个"字符串到字符串"的 JSON 对象（环境变量用）。
- *
- * 非字符串的值直接跳过（不报错）：agent 传数字 `{"PORT": 3201}` 是常见写法，
- * 为这种小事拒绝整个调用不值；真有问题 `checkSettings` 那边会拦。
- */
-internal fun JsonObject.stringMap(key: String): Map<String, String> =
-    obj(key)?.entries?.mapNotNull { (k, v) ->
-        (v as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { k to it }
-    }?.toMap().orEmpty()

@@ -1,6 +1,7 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
 import com.intellij.execution.RunManager
+import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.McpToolsProvider
@@ -64,6 +65,9 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
         // RemoteProcessRunProfileState.execute 读到这个标记后，Stop 只关闭日志，不 kill 远端。
         configuration.remoteOptions.deployOnly = true
         configuration.remoteOptions.autoReplace = true
+        // Before launch 跑的是**独立会话**，日志落在它自己那个键下；记下 deploy 起始时刻，
+        // 之后用它把「这次运行的那一条构建日志」从被挂配置的历史里挑出来。
+        val deployStartedAtMillis = System.currentTimeMillis()
         val outcome = try {
             startRunAndAwait(
                 project = project,
@@ -82,12 +86,15 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
             configuration.remoteOptions.autoReplace = false
         }
 
+        val steps = deploySteps(project, settings, deployStartedAtMillis, outcome.fullOutputPath)
+
         if (outcome.failure != null) {
             return McpToolCallResult.error(
                 "部署失败：${outcome.failure}",
                 buildJsonObject {
                     put("configurationName", configuration.name)
                     outcome.fullOutputPath?.let { put("fullOutputPath", it) }
+                    putJsonArray("steps") { steps.forEach { add(it.toJson()) } }
                 },
             )
         }
@@ -97,6 +104,12 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
             append(if (outcome.started) "，Run 标签页已打开" else "，启动结果未知")
             outcome.pid?.let { append("，pid ").append(it) }
             outcome.fullOutputPath?.let { append("\n日志: ").append(it) }
+            // 把 Before launch 那一步的日志直接点名：它在另一个文件里，
+            // 不写出来 agent 只能去临时目录按时间猜。
+            steps.filter { it.kind == "beforeLaunch" }.forEach { step ->
+                val code = step.exitCode?.let { " (exit $it)" }.orEmpty()
+                append("\n构建: ").append(step.name).append(code).append(" — ").append(step.logFile ?: "无日志")
+            }
         }
         return McpToolCallResult.text(
             summary,
@@ -111,9 +124,51 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 options.container?.takeIf { it.isNotBlank() }?.let { put("container", it) }
                 options.workingDirectory?.takeIf { it.isNotBlank() }?.let { put("workingDirectory", it) }
                 outcome.fullOutputPath?.let { put("fullOutputPath", it) }
+                putJsonArray("steps") { steps.forEach { add(it.toJson()) } }
                 put("output", outcome.output)
             },
         )
+    }
+
+    /**
+     * 一次 deploy 由哪几步组成：Before launch 的每一条构建，加上 deploy 自己。
+     *
+     * Before launch 是**独立的 Run 会话**（自己的 `ProcessHandler`、自己的日志文件），
+     * deploy 的聚合日志里永远不会有它的输出。所以这里把它按「deploy 起始时刻之后的最新一条
+     * 被挂配置日志」关联进来，调用方拿到路径就能直接读。
+     */
+    private fun deploySteps(
+        project: Project,
+        settings: RunnerAndConfigurationSettings,
+        deployStartedAtMillis: Long,
+        deployLogFile: String?,
+    ): List<DeployStep> {
+        val steps = mutableListOf<DeployStep>()
+        val beforeRunTasks = readRunConfigurationDefinition(project, settings)?.beforeRunTasks.orEmpty()
+        for (task in beforeRunTasks) {
+            val name = task.configurationName ?: continue
+            // 只认这次 deploy 开始之后的那一条：更早的属于上一次发布。
+            val run = listRunLogs(project, name)
+                .firstOrNull { it.startedAtMillis >= deployStartedAtMillis }
+            steps += DeployStep(
+                kind = "beforeLaunch",
+                name = name,
+                logFile = run?.logFile,
+                exitCode = run?.exitCode,
+                enabled = task.enabled,
+                output = run?.logFile?.let(::readRunLogTail),
+            )
+        }
+        if (deployLogFile != null) {
+            steps += DeployStep(
+                kind = "deploy",
+                name = settings.name,
+                logFile = deployLogFile,
+                exitCode = null,
+                enabled = true,
+            )
+        }
+        return steps
     }
 }
 
@@ -233,6 +288,28 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
 
             else -> invalid("kind 只能是 process 或 docker。")
         }
+    }
+}
+
+/** deploy 过程中的一步：Before launch 的构建，或 deploy 自己。 */
+private data class DeployStep(
+    /** `beforeLaunch` 或 `deploy`。 */
+    val kind: String,
+    val name: String,
+    /** 这一步自己的日志文件（绝对路径）；还没产出时为 null。 */
+    val logFile: String?,
+    val exitCode: Int?,
+    val enabled: Boolean,
+    /** 日志尾部预览（只有 Before launch 步骤读；deploy 自己的日志走 `fullOutputPath`）。 */
+    val output: String? = null,
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("kind", kind)
+        put("name", name)
+        put("logFile", logFile)
+        put("exitCode", exitCode)
+        put("enabled", enabled)
+        put("output", output)
     }
 }
 

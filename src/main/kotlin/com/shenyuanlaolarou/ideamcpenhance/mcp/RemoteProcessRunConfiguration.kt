@@ -43,8 +43,16 @@ import javax.swing.JPanel
  * Start / Rerun 会先做一次 IDE deployment 同步（差量、overwrite），再 `nohup` 启动；
  * Stop 先 TERM 再 KILL。Attach / Unattach 不在这里 —— 它们不启动进程，走 MCP 侧。
  */
+/**
+ * `Remote Process` 配置类型的 id。
+ *
+ * 这个类型的 Run 会话是「跟随远端日志」的处理器，进程不会自行终止 ——
+ * 所以它恒按 server 语义跑（见 `runKindOfConfiguration`）。
+ */
+internal const val REMOTE_PROCESS_TYPE_ID = "RemoteProcess"
+
 class RemoteProcessConfigurationType : ConfigurationTypeBase(
-    "RemoteProcess",
+    REMOTE_PROCESS_TYPE_ID,
     "Remote Process",
     "Run a command on a remote SSH server and track its PID.",
     AllIcons.RunConfigurations.Application,
@@ -59,7 +67,7 @@ class RemoteProcessConfigurationType : ConfigurationTypeBase(
 
 private class RemoteProcessConfigurationFactory(type: ConfigurationType) : ConfigurationFactory(type) {
     /** 必须是稳定的、非本地化的 id；平台的 default 实现已废弃。 */
-    override fun getId(): String = "RemoteProcess"
+    override fun getId(): String = REMOTE_PROCESS_TYPE_ID
 
     override fun createTemplateConfiguration(project: Project): RunConfiguration =
         RemoteProcessRunConfiguration(project, this)

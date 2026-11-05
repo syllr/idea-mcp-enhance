@@ -236,6 +236,16 @@ class RunLifecycleSchemaTest {
         assertEquals(setOf("configurationName", "projectPath"), schema.propertiesSchema.keys)
     }
 
+    @Test
+    fun `rerun 不开放一次性覆盖参数`() {
+        // 覆盖参数只影响这一次、不落盘 —— 运行时看不出来，事后也无法复现。
+        // 要改参数就改配置本身，那样 `history[]` 才对得上。
+        val schema = toolByName(RERUN_TOOL_NAME).descriptor.inputSchema
+        assertFalse(schema.propertiesSchema.containsKey("programArguments"))
+        assertFalse(schema.propertiesSchema.containsKey("workingDirectory"))
+        assertFalse(schema.propertiesSchema.containsKey("envs"))
+    }
+
     // ---------- 参数解析 ----------
 
     @Test
@@ -505,6 +515,33 @@ class RunLifecycleSchemaTest {
     fun `stop 报告全部终止时 allTerminated 为 true`() {
         val json = StopReport("Main", 1, 1, 0, false, listOf(instance(1, running = false)), emptyList()).toJson()
         assertTrue(json["allTerminated"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `rerun 报告带回 before-launch 的退出码与日志内容`() {
+        // 前置构建的日志不在本次的 output / fullOutputPath 里，只给路径等于让 agent 再读一次文件。
+        val json = RerunReport(
+            configurationName = "aidata@mbp",
+            mode = RerunMode.STARTED,
+            stoppedInstances = 0,
+            runningAfter = 1,
+            instances = emptyList(),
+            warnings = emptyList(),
+            started = true,
+            beforeRunTasks = listOf(
+                RunningBeforeLaunchStep(
+                    name = "aidata-build@mbp",
+                    enabled = true,
+                    lastRun = RunLogEntry(1000, "/tmp/build.log", 2000, 42, 0),
+                    output = "> build\nbuilt in 3.9s\n",
+                ),
+            ),
+        ).toJson()
+
+        val task = json["beforeRunTasks"]!!.jsonArray.single().jsonObject
+        assertEquals("aidata-build@mbp", task["name"]!!.jsonPrimitive.content)
+        assertEquals("> build\nbuilt in 3.9s\n", task["output"]!!.jsonPrimitive.content)
+        assertEquals(0, task["lastRun"]!!.jsonObject["exitCode"]!!.jsonPrimitive.int)
     }
 
     @Test

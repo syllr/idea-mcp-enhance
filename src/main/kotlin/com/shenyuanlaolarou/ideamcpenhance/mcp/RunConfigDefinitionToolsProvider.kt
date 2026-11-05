@@ -5,6 +5,7 @@ import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.McpToolDescriptor
 import com.intellij.mcpserver.McpToolsProvider
+import com.intellij.openapi.project.Project
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 
@@ -29,6 +30,9 @@ private const val UNKNOWN_CONFIGURATION_TYPE_ID = "Unknown"
 
 /** `history[]` 默认返回多少条。 */
 internal const val DEFAULT_HISTORY_LIMIT = 20
+
+/** 每条前置任务默认挂多少条自己的历史运行。 */
+internal const val BEFORE_RUN_TASK_HISTORY_LIMIT = 5
 
 // ---------------------------------------------------------------------------
 // inspect_run_configuration
@@ -55,6 +59,10 @@ private class InspectRunConfigurationTool : BaseRunTool() {
         // 真正声明的类型（别的机器上装了插件就能跑）。所以这里优先用文件里的值。
         val declaredType = readRunConfigurationElement(project, settings)?.getAttributeValue("type")
         val typeKnown = settings.type.id != UNKNOWN_CONFIGURATION_TYPE_ID
+        val ownLogs = listRunLogs(project, settings.name)
+        // 父配置最近一次运行的开始时刻：Before launch 只可能发生在这之后，
+        // 更早的那些属于上一次运行，混进来只会误导。
+        val parentStartedAt = ownLogs.maxOfOrNull { it.startedAtMillis }
         val inspection = RunConfigurationInspection(
             configurationName = settings.name,
             typeId = if (typeKnown) settings.type.id else declaredType ?: settings.type.id,
@@ -70,15 +78,43 @@ private class InspectRunConfigurationTool : BaseRunTool() {
             attributes = definition?.attributes.orEmpty(),
             options = definition?.options.orEmpty(),
             envs = definition?.envs.orEmpty(),
-            beforeLaunchSteps = definition?.beforeLaunchSteps.orEmpty(),
+            beforeRunTasks = beforeRunTasksWithHistory(
+                project = project,
+                steps = definition?.beforeRunTasks.orEmpty(),
+                parentStartedAt = parentStartedAt,
+            ),
             configurationXml = readRunConfigurationElement(project, settings)?.let(::writeConfigurationXml),
             instances = liveInstances,
-            history = listRunLogs(project, settings.name)
+            history = ownLogs
                 .filterNot { it.logFile in liveLogs }
                 .take(historyLimit),
             warnings = warningsFor(settings, storage, definition),
         )
         return McpToolCallResult.text(summaryOf(inspection), inspection.toJson())
+    }
+
+    /**
+     * 给每条前置任务挂上「被挂配置最近的运行」。
+     *
+     * Before launch 跑的是一条**独立的** Run Configuration，它有自己的日志键与历史；
+     * 父配置的 `history[]` 里永远看不到它。不把这条链显式连起来，agent 就只能去翻临时目录猜。
+     *
+     * @param parentStartedAt 父配置最近一次运行的开始时刻；null（从没跑过）时不做时间过滤
+     */
+    private fun beforeRunTasksWithHistory(
+        project: Project,
+        steps: List<RunBeforeLaunchStep>,
+        parentStartedAt: Long?,
+    ): List<RunBeforeLaunchTask> = steps.map { step ->
+        val name = step.configurationName
+        val runs = if (name.isNullOrBlank()) {
+            emptyList()
+        } else {
+            listRunLogs(project, name)
+                .filter { parentStartedAt == null || it.startedAtMillis >= parentStartedAt }
+                .take(BEFORE_RUN_TASK_HISTORY_LIMIT)
+        }
+        RunBeforeLaunchTask(step = step, recentRuns = runs)
     }
 
     /**
@@ -120,7 +156,14 @@ private class InspectRunConfigurationTool : BaseRunTool() {
             RunConfigurationStorage.UNKNOWN -> "storage unknown"
         }
         val runnable = if (inspection.canRun) "can run" else "cannot run yet"
+        val beforeRun = inspection.beforeRunTasks
+        val beforeRunText = if (beforeRun.isEmpty()) {
+            ""
+        } else {
+            val names = beforeRun.joinToString(", ") { it.step.configurationName ?: it.step.taskKind ?: "?" }
+            ", ${beforeRun.size} before-launch step(s) [$names]"
+        }
         return "${inspection.configurationName} (${inspection.typeDisplayName}): $storage, $runnable, " +
-            "${inspection.instances.size} live instance(s), ${inspection.history.size} earlier run(s)."
+            "${inspection.instances.size} live instance(s), ${inspection.history.size} earlier run(s)$beforeRunText."
     }
 }
