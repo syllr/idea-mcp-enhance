@@ -129,6 +129,8 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 put("kind", kind)
                 put("triggered", outcome.triggered)
                 put("started", if (outcome.triggeredOnly) null else outcome.started)
+                put("triggeredAt", deployStartedAtMillis)
+                put("triggeredAtIso", isoTimestamp(deployStartedAtMillis))
                 outcome.sessionId?.let { put("sessionId", it) }
                 outcome.pid?.let { put("pid", it) }
                 options.container?.takeIf { it.isNotBlank() }?.let { put("container", it) }
@@ -254,12 +256,13 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
 
         return when (kind) {
             "docker" -> {
+                val docker = RemoteProcessHosts.serverDockerCommand(project, server)
                 val container = options.container?.takeIf { it.isNotBlank() }
                     ?: return invalid("docker 需要 Container 名。")
-                val running = runCatching {
-                    val docker = RemoteProcessHosts.serverDockerCommand(project, server)
-                    RemoteSshClient.run(project, server, "$docker ps -q -f name=^$container$").trim().isNotEmpty()
+                val id = runCatching {
+                    RemoteSshClient.run(project, server, "$docker ps -q -f name=^$container$").trim()
                 }.getOrElse { return invalid(it.message ?: "查询容器状态失败。") }
+                val running = id.isNotEmpty()
                 RemoteProcessItem(
                     configurationName = configuration.name,
                     server = server,
@@ -271,6 +274,7 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
                     workingDirectory = null,
                     logDir = resolveAppLogDir(options.logDir, null),
                     error = null,
+                    startedAt = if (running) containerStartedAt(project, server, docker, id) else null,
                 )
             }
 
@@ -303,6 +307,16 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
             else -> invalid("kind 只能是 process 或 docker。")
         }
     }
+}
+
+/** 一组容器 id 里最新的 `StartedAt`（ISO-8601 UTC）。 */
+private fun containerStartedAt(project: Project, server: String, docker: String, ids: String): String? {
+    val list = ids.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.joinToString(" ")
+    if (list.isEmpty()) return null
+    return runCatching {
+        RemoteSshClient.run(project, server, "$docker inspect -f '{{.State.StartedAt}}' $list")
+            .lineSequence().map { it.trim() }.filter { it.isNotBlank() }.maxOrNull()
+    }.getOrNull()
 }
 
 /** deploy 过程中的一步：Before launch 的构建，或 deploy 自己。 */
@@ -338,6 +352,8 @@ private data class RemoteProcessItem(
     val workingDirectory: String?,
     val logDir: String?,
     val error: String?,
+    /** 容器 / 进程的启动时刻（ISO-8601，UTC）；查不到时为 null。 */
+    val startedAt: String? = null,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("configurationName", configurationName)
@@ -349,6 +365,7 @@ private data class RemoteProcessItem(
         container?.let { put("container", it) }
         workingDirectory?.let { put("workingDirectory", it) }
         logDir?.let { put("logDir", it) }
+        startedAt?.let { put("startedAt", it) }
         error?.let { put("error", it) }
     }
 }

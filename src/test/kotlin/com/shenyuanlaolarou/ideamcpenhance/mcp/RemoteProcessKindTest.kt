@@ -12,6 +12,7 @@ class RemoteProcessKindTest {
         assertEquals("docker", inferKind("docker run -d --name aidata redis:7-alpine"))
         assertEquals("docker", inferKind("sudo docker run -d redis"))
         assertEquals("process", inferKind("java -jar app.jar"))
+        assertEquals("process", inferKind("docker compose up -d"))
         assertEquals("process", inferKind(""))
     }
 

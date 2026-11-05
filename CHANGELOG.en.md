@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- **`list_remote_processes` gains `startedAt`, `deploy_remote_process` gains `triggeredAt`**: a `startedAt` at or after `triggeredAt` means this deploy's process is the one running; otherwise you are still looking at the previous instance — no more "wait a few seconds and check again".
 - **Stale write-tool wording**: comments and `plugin.xml` / `mcpserver.xml` still said "view / create / update / delete" and "the only write path into `.run/`", contradicting the read-only reality since 0.1.7. Wording only; no behaviour changed.
 
 ### Note

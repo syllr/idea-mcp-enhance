@@ -50,6 +50,9 @@
 
 ### Fixed
 
+- **`list_remote_processes` 新增 `startedAt`，`deploy_remote_process` 新增 `triggeredAt`**：
+  `startedAt` 晚于 `triggeredAt` 就说明这次部署的新进程已经在跑，否则看到的还是上一个实例 ——
+  不再靠「等几秒再查」判断。
 - **定义态写工具的残留说法**：注释与 `plugin.xml` / `mcpserver.xml` 里仍写着「看 / 建 / 改 / 删」和
   「`.run/` 的写入口只有这里」，与 0.1.7 起只读的事实矛盾。只改文案，逻辑未动。
 

@@ -33,8 +33,10 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
 
     **It returns as soon as the start is triggered**, not when the deployment finished: the sync, the
     upload and the launch keep running in the background. `triggered: true` with `started: null` says
-    exactly that. Read `fullOutputPath` for the progress and startup log, and poll
-    `list_remote_processes` with a growing backoff — 2s, then 4s, 8s, 16s.
+    exactly that. Read `fullOutputPath` for the progress and startup log. To tell whether this deploy
+    has actually replaced the remote process, compare `triggeredAt` with `list_remote_processes`'
+    `startedAt` — a `startedAt` at or after `triggeredAt` means the new one is running; until then
+    you are looking at the previous instance. Poll with a growing backoff (2s, 4s, 8s, 16s).
 
     `beforeRunTasks[]` carries the same shape as `rerun_run_configuration`: one entry per before-launch
     step, with `name`, `enabled`, `output` (a tail preview of that step's own log) and `lastRun`
@@ -63,6 +65,12 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
                 "Whether the platform accepted the start request (a Run session exists). This is the " +
                     "normal success signal for a deploy; `triggered: false` means it never reached the platform.",
             ),
+            "triggeredAt" to property(
+                "integer",
+                "When this deploy was triggered, in epoch milliseconds. Pass it to `list_remote_processes` by " +
+                    "eye: a `startedAt` at or after this moment means the new process is the one running.",
+            ),
+            "triggeredAtIso" to property("string", "When this deploy was triggered, in ISO-8601."),
             "started" to nullableProperty(
                 "boolean",
                 "Whether the new process was confirmed up. Always `null` here: a deploy returns once the start " +
@@ -131,6 +139,8 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
             "server",
             "kind",
             "triggered",
+            "triggeredAt",
+            "triggeredAtIso",
             "started",
             "output",
             "steps",
@@ -160,6 +170,12 @@ private val REMOTE_PROCESS_ITEM_SCHEMA = buildJsonObject {
             "pid" to property("integer", "Remote pid while the process is running."),
             "container" to property("string", "Docker container name."),
             "workingDirectory" to property("string", "Working directory of the process."),
+            "startedAt" to nullableProperty(
+                "string",
+                "When the container / process currently running was started (ISO-8601, UTC). Compare it with " +
+                    "a deploy's `triggeredAt`: a value at or after that moment means this deploy's process is " +
+                    "the one now running. null when stopped or not queryable.",
+            ),
             "logDir" to property("string", "Directory the application writes its own logs to; a host path for process, a container path for docker."),
             "error" to property("string", "Why `status` is invalid."),
         ),
