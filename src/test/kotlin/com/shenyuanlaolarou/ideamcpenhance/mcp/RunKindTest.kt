@@ -23,31 +23,40 @@ class RunKindTest {
     }
 
     @Test
-    fun `显式 false 是 server`() {
-        assertEquals(RunKind.SERVER, runKindOf(mapOf(RUN_KIND_ENV to "false")))
+    fun `写了 true 是 server`() {
+        assertEquals(RunKind.SERVER, runKindOf(mapOf(SERVER_RUN_ENV to "true")))
     }
 
     @Test
-    fun `显式 true 是 job`() {
-        assertEquals(RunKind.JOB, runKindOf(mapOf(RUN_KIND_ENV to "true")))
+    fun `写了假值是 job`() {
+        // 允许显式关掉：把标记留在配置里、临时按 job 跑。
+        for (value in listOf("false", "0", "no", "off")) {
+            assertEquals(value, RunKind.JOB, runKindOf(mapOf(SERVER_RUN_ENV to value)))
+        }
     }
 
     @Test
     fun `值的大小写与空格不影响判定`() {
-        assertEquals(RunKind.SERVER, runKindOf(mapOf(RUN_KIND_ENV to " FALSE ")))
-        assertEquals(RunKind.SERVER, runKindOf(mapOf(RUN_KIND_ENV to "False")))
+        assertEquals(RunKind.SERVER, runKindOf(mapOf(SERVER_RUN_ENV to " TRUE ")))
+        assertEquals(RunKind.SERVER, runKindOf(mapOf(SERVER_RUN_ENV to "True")))
+        assertEquals(RunKind.JOB, runKindOf(mapOf(SERVER_RUN_ENV to " FALSE ")))
     }
 
     @Test
     fun `变量名大小写不敏感`() {
-        assertEquals(RunKind.SERVER, runKindOf(mapOf("idea_mcp_enhance_job" to "false")))
+        assertEquals(RunKind.SERVER, runKindOf(mapOf("idea_mcp_enhance_server_run_config" to "true")))
     }
 
     @Test
-    fun `认不出来的值当 job 而不是当 server`() {
-        // 猜错方向要往"多等一会儿"偏，不能往"提前返回"偏。
-        assertEquals(RunKind.JOB, runKindOf(mapOf(RUN_KIND_ENV to "maybe")))
-        assertEquals(RunKind.JOB, runKindOf(mapOf(RUN_KIND_ENV to "")))
+    fun `写了标记但值是空的时候按 job`() {
+        // 空值等于没写：`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG=` 不该被读成 server。
+        assertEquals(RunKind.JOB, runKindOf(mapOf(SERVER_RUN_ENV to "")))
+    }
+
+    @Test
+    fun `写了标记但值认不出来时按 server`() {
+        // server 是"提前返回"的一边，判错方向不会白等；job 才是需要保守的那一边。
+        assertEquals(RunKind.SERVER, runKindOf(mapOf(SERVER_RUN_ENV to "maybe")))
     }
 
     @Test
@@ -126,14 +135,14 @@ class RunConfigurationDefinitionParseTest {
             """
             <configuration name="x" type="NodeJSConfigurationType">
               <envs>
-                <env name="IDEA_MCP_ENHANCE_JOB" value="false" />
+                <env name="IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG" value="true" />
                 <env name="APP_ENV" value="testenv" />
               </envs>
             </configuration>
             """.trimIndent(),
         )
 
-        assertEquals("false", definition.envs[RUN_KIND_ENV])
+        assertEquals("true", definition.envs[SERVER_RUN_ENV])
         assertEquals("testenv", definition.envs["APP_ENV"])
     }
 

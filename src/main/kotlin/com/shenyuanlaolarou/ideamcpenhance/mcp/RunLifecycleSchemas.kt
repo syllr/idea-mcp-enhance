@@ -443,8 +443,9 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
     `runKind` says how it was waited for. A `job` (a build script, a test, a migration) is waited
     until the process exits, and then `exitCode` and the full output are returned; a `server` (a dev
     server, a remote process) returns as soon as it is up, because it never exits. The kind comes
-    from the configuration's own environment variable `IDEA_MCP_ENHANCE_JOB`: `false` means server,
-    anything else (including absent) means job. A `Remote Process` configuration is always a server.
+    from the configuration's own environment variable `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`: setting it
+    (to anything but `false` / `0` / `no` / `off`) means server, leaving it out means job. A
+    `Remote Process` configuration is always a server.
 
     For a `Remote Process` configuration this starts the remote process / container over SSH, and
     stopping it later kills the remote one. Use `deploy_remote_process` when the goal is to publish

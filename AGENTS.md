@@ -61,7 +61,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │   ├── RunLogModels.kt            纯：日志键 / 文件名 / 历史条目 JSON
 │   ├── RunLogAccess.kt            平台：启动即采集输出、写 sidecar、扫历史、清理
 │   ├── RunConfigNaming.kt         纯：`[os@]base[@env]` 解析
-│   ├── RunKind.kt                 纯：job / server 判定（读 `IDEA_MCP_ENHANCE_JOB`）
+│   ├── RunKind.kt                 纯：job / server 判定（读 `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`）
 │   ├── RunConfigDefinitionModels.kt   纯：inspect 的全貌 → JSON
 │   ├── RunConfigDefinitionAccess.kt   平台：读 `.run.xml`、解析 options/envs/method
 │   ├── RunConfigDefinitionSchemas.kt  `inspect` 的描述符
@@ -275,7 +275,7 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **MCP Server 只认 header `IJ_MCP_SERVER_PROJECT_PATH` 或入参 `projectPath` 决定项目** —— 每个工具的 schema 都要声明 `projectPath`（可空、不进 `required`）
 - **单次工具调用能否超长，取决于客户端有没有挂 `GET /stream` 的 SSE 流** —— 挂了流（OpenCode 这类标准 streamable-http 客户端）会话一直活着，实测 300 秒调用正常返回；只发 POST 不挂流会被 IDE 当 pending transport，`PENDING_TRANSPORT_TIMEOUT = 15s` 后清掉会话（日志 `Pending StreamableHttp transport timed out`），工具算完也送不回，客户端拿到空 404
 - **`rerun` 的三道前置判定别删**：中间态拒绝 / 旧实例没停干净不启动 / 平台启动门
-- **job / server 由配置自己在 `<envs>` 里声明**（`IDEA_MCP_ENHANCE_JOB=false` 表示 server，缺省 job）：平台没有任何 API 能区分二者。**别往 `.run.xml` 塞自定义 `<option>`** —— `RunnerAndConfigurationSettingsImpl.writeScheme()` 每次从 `Element("configuration")` 重拼，未知标签会在用户下次保存该配置时静默消失；`<envs>` 是配置类型自己序列化的字段，不会丢
+- **job / server 由配置自己在 `<envs>` 里声明**（缺省 job；`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG=true` 表示 server，变量名与缺省一致，不用在脑子里取反）：平台没有任何 API 能区分二者。**别往 `.run.xml` 塞自定义 `<option>`** —— `RunnerAndConfigurationSettingsImpl.writeScheme()` 每次从 `Element("configuration")` 重拼，未知标签会在用户下次保存该配置时静默消失；`<envs>` 是配置类型自己序列化的字段，不会丢
 - **`list_running_configurations` 只报活会话，Before launch 跑完就消失** —— 看不到构建 ≠ 没执行：父配置在跑就说明前置步骤早跑完了。所以列表条目带 `beforeRunTasks[].lastRun`（含退出码与日志路径）与 `beforeLaunchOf`，文本摘要也点明关系
 - **`RemoteProcess` 恒为 server** —— 它的 Run 会话跟随远端日志、永不终止，等退出就是等死（内置 `execute_run_configuration` 正是因此挂死）
 - **启动 Remote Process 时临时打开 `autoReplace`** —— 否则远端已有同名进程会走 `Messages.showYesNoDialog`（`invokeAndWait` 模态框），无头场景没人点，调用一直挂着

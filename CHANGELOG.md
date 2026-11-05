@@ -8,7 +8,8 @@
 
 - **`rerun_run_configuration` 区分 job / server**：job（构建脚本、测试、迁移，跑完就退）现在会**等到进程退出**
   并返回 `exitCode` 与完整输出；server（dev server、长驻进程）仍是启动即返回。配置用环境变量
-  `IDEA_MCP_ENHANCE_JOB` 声明：`false` = server，其余（含缺省）= job。`RemoteProcess` 类型恒为 server
+  `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG` 声明：写了（非 `false` / `0` / `no` / `off`）= server，
+  缺省 = job —— 变量名只标注例外的那一类，和缺省语义同向。`RemoteProcess` 类型恒为 server
   —— 它的 Run 会话跟随远端日志、永不终止。返回里新增 `runKind` / `exited` / `exitCode`。
 - **`inspect_run_configuration` 关联 Before launch 的运行**：`beforeRunTasks[]` 每条带 `recentRuns[]`
   （被挂配置自己的历史运行，含 `logFile` / `exitCode`）。Before launch 跑的是独立 Run 会话，

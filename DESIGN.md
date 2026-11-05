@@ -213,9 +213,10 @@ ExecutionEnvironmentBuilder
 
 **job / server 决定等到哪一步**：`RemoteProcess` 的反向代理会话跟随远端日志、永不终止，等退出就是等死；
 而一个构建脚本跑完就该拿到 `exitCode`。平台没有任何 API 能区分两者（`console-dev` 与
-`aidata-build@mbp` 类型相同），所以由配置自己在 `<envs>` 里声明 `IDEA_MCP_ENHANCE_JOB`：
-`false` = server，其余（含缺省）= job。判定实现见 `mcp/RunKind.kt` 的 KDoc
-（含"为什么不能塞自定义 `<option>`"的平台依据）。
+`aidata-build@mbp` 类型相同），所以由配置自己在 `<envs>` 里声明
+`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`：写了是 server，缺省是 job。变量名刻意和缺省同向 ——
+需要额外标注的只有例外那一类（server），不写成 `..._JOB` 就不用每次读它时反着理解。
+判定实现见 `mcp/RunKind.kt` 的 KDoc（含"为什么不能塞自定义 `<option>`"的平台依据）。
 
 `createOrNull` 返回 null 时如实报 `mode = NO_OP` 并说明原因，而不是硬启一个大概率失败的东西。
 

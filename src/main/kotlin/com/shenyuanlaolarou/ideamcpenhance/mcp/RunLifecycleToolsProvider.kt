@@ -537,7 +537,7 @@ private fun elapsedSince(fromNanos: Long): Long = (System.nanoTime() - fromNanos
  *
  * `RemoteProcess` 恒为 server：它的 Run 会话是「跟随远端日志」的处理器，进程永远不会
  * 自行终止，等退出就是等死（这正是内置 `execute_run_configuration` 在远端配置上挂死的根因）。
- * 其余类型看配置自己声明的 [RUN_KIND_ENV]，缺省当 job。
+ * 其余类型看配置自己声明的 [SERVER_RUN_ENV]，缺省当 job。
  */
 internal fun runKindOfConfiguration(project: Project, settings: RunnerAndConfigurationSettings): RunKind {
     if (settings.type.id == REMOTE_PROCESS_TYPE_ID) return RunKind.SERVER

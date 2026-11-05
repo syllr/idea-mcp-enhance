@@ -316,8 +316,10 @@ diagnostics:
 
 - **job / server MUST 分开等**（HARD CONTRACT）：`runKind` 为 `job` 时 MUST 等到进程终止并回传
   `exitCode` + 完整输出；为 `server` 时 MUST 一启动就返回（它永不退出，等下去就是挂死）。
-  判定依据：`RemoteProcess` 类型恒为 server；其余读配置的 `<envs>`，`IDEA_MCP_ENHANCE_JOB=false` 为 server，
-  其余（含缺省）为 job。判错的代价不对称 —— job 误判成 server 只是少等一次；server 误判成 job 会白等满预算
+  判定依据：`RemoteProcess` 类型恒为 server；其余读配置的 `<envs>`，有
+  `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`（非 `false` / `0` / `no` / `off`）为 server，缺省为 job。
+  变量名只声明例外的那一边，和「缺省 job」的语义一致，不需要取反。判错的代价不对称 —— job 误判成 server
+  只是少等一次；server 误判成 job 会白等满预算
 - job 等满预算仍未退出时 MUST 如实报 `exited: false` + `exitCode: null`，并指向 `fullOutputPath` /
   `history[].exitCode`，MUST NOT 谎报成功或失败
 - `programArguments` / `workingDirectory` / `envs` MUST NOT 作为入参暴露：**只能改配置本身**。

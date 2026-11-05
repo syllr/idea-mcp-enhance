@@ -24,11 +24,14 @@ package com.shenyuanlaolarou.ideamcpenhance.mcp
  * IDE 改配置、点 OK 都不会丢。代价是这个变量会真的注入进进程环境 —— 但它同时出现在
  * IDE 的 Environment variables 字段里，可见、可编辑，不是黑盒。
  *
- * ## 缺省是 job
+ * ## 缺省是 job，需要标记的是 server
  *
  * 忘标记的代价不对称：job 误判成 server 只是少等一次（agent 再查 `inspect` 的
  * `history[].exitCode` 即可）；server 误判成 job 则会白等满 300 秒预算。
  * 两者都会返回，但「默认 job」让「要结果」这个主诉求永远成立。
+ *
+ * 所以变量本身也只声明**例外的那一边**：`IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`。
+ * 不写 = job，写了 = server —— 变量名和缺省语义一致，不需要在脑子里做一次取反。
  */
 enum class RunKind(val id: String) {
     /** 跑完就退：等到进程终止，回传 `exitCode` 与完整输出。 */
@@ -38,23 +41,31 @@ enum class RunKind(val id: String) {
     SERVER("server"),
 }
 
-/** 声明 run kind 的环境变量名。 */
-internal const val RUN_KIND_ENV = "IDEA_MCP_ENHANCE_JOB"
+/**
+ * 声明「这条配置是 server」的环境变量名。
+ *
+ * 只声明例外的那一边：不写就是 job，写了就是 server。
+ */
+internal const val SERVER_RUN_ENV = "IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG"
+
+/** 明确表达「不是 server」的取值；其余非空值一律当 server。 */
+private val FALSY_VALUES = setOf("false", "0", "no", "off")
 
 /**
  * 从配置的环境变量里读 run kind。
  *
- * 只认 [RUN_KIND_ENV] 这一个键：
- * - `true` → [RunKind.JOB]
- * - `false` → [RunKind.SERVER]
- * - 缺省 / 认不出来 → [RunKind.JOB]（见枚举上的说明）
+ * 只认 [SERVER_RUN_ENV] 这一个键：
+ * - 写了且不是假值（`true` / `1` / `yes` / 任意其它值）→ [RunKind.SERVER]
+ * - 写了假值（`false` / `0` / `no` / `off`）→ [RunKind.JOB]
+ * - 缺省 → [RunKind.JOB]（见枚举上的说明）
  */
 internal fun runKindOf(envs: Map<String, String>): RunKind {
     val raw = envs.entries
-        .firstOrNull { it.key.equals(RUN_KIND_ENV, ignoreCase = true) }
+        .firstOrNull { it.key.equals(SERVER_RUN_ENV, ignoreCase = true) }
         ?.value
         ?.trim()
         ?.lowercase()
         ?: return RunKind.JOB
-    return if (raw == "false") RunKind.SERVER else RunKind.JOB
+    if (raw.isEmpty() || raw in FALSY_VALUES) return RunKind.JOB
+    return RunKind.SERVER
 }
