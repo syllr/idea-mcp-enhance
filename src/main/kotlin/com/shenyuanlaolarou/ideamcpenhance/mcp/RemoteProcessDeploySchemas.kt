@@ -46,6 +46,7 @@ internal val deployRemoteProcessDescriptor = McpToolDescriptor(
 
     `configurationName` must name a Remote Process configuration in this project.
     """.trimIndent(),
+    "Deploy files and start a remote process.",
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.deploy_remote_process",
     schema(
@@ -212,6 +213,7 @@ internal val listRemoteProcessesDescriptor = McpToolDescriptor(
 
     Optional filters: `server` and `configurationName`.
     """.trimIndent(),
+    "List processes running on a remote host.",
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_remote_processes",
     schema(

@@ -3,6 +3,7 @@ package com.shenyuanlaolarou.ideamcpenhance.mcp
 import com.intellij.openapi.components.service
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.startup.ProjectActivity
@@ -49,8 +50,14 @@ private object PythonTerminalEnvProvider : ProjectTerminalEnvProvider {
         // 用注册在项目目录下的 Python SDK 兜底。
         project.basePath?.let { basePath ->
             val prefix = basePath.trimEnd(File.separatorChar) + File.separator
-            PythonSdkUtil.getAllSdks()
-                .firstOrNull { !PythonSdkUtil.isRemote(it) && it.homePath?.startsWith(prefix) == true }
+            // 等价于 PythonSdkUtil.getAllSdks()（它在 2026.3 被标了 @PyInternalExecApi）：
+            // 直接读 ProjectJdkTable，再用同一个 isPythonSdk 过滤。
+            ProjectJdkTable.getInstance().allJdks
+                .firstOrNull {
+                    PythonSdkUtil.isPythonSdk(it) &&
+                        !PythonSdkUtil.isRemote(it) &&
+                        it.homePath?.startsWith(prefix) == true
+                }
                 ?.let { return it }
         }
         return null

@@ -28,6 +28,7 @@
 
 ### Changed
 
+- **IntelliJ IDEA 2026.3 support**: the target platform is now 2026.3 (build 263), with `sinceBuild=263` and `untilBuild=263.*`. The bundled MCP Server changed the `McpToolDescriptor` / `McpToolCategory` constructors in 263 in a way that is binary-incompatible with 262, so this release no longer supports 2026.2 (2026.2 users stay on 0.1.8). MCP tools now show a short human-facing description in the IDE's MCP Server settings page instead of the long model-facing one.
 - **Remote Process startup output moved to `<working directory>/process-output/<name>-<yyyyMMdd-HHmmss>.log`**: it holds the **stdout/stderr of the launched command** — not run metadata, and not the application's own log file. One file **per run**, instead of appending to a single file — appending mixes the previous run's output into the current one and makes it impossible to tell where a run starts; older files are kept. The directory is no longer called `.opencode` either: that is the plugin's name and has nothing to do with the project. It stays under the deployment directory on purpose — this output is part of what the deploy produced.
 - **`rerun_run_configuration` no longer accepts one-time overrides**: the `programArguments` /
   `workingDirectory` / `envs` inputs are gone. They affected only that single run, were never written

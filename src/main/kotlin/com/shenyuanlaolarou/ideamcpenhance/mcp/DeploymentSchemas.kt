@@ -25,6 +25,8 @@ internal val DEPLOYMENT_CATEGORY = McpToolCategory(
     "com.shenyuanlaolarou.ideamcpenhance.mcp.Deployment",
     false,
     false,
+    null,
+    "SSH credentials and deployment sync.",
 )
 
 // ---------------------------------------------------------------------------
@@ -86,6 +88,7 @@ internal val getSshServersDescriptor = McpToolDescriptor(
 
     Never print the credential fields anywhere they could reach a model or a log.
     """.trimIndent(),
+    "Return SSH configurations and their credentials.",
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.get_ssh_servers",
     schema(properties = properties("projectPath" to projectPathProperty())),
@@ -142,6 +145,7 @@ internal val syncDeploymentsDescriptor = McpToolDescriptor(
 
     `exclude` accepts path prefixes and exact file paths only; patterns with `*` or `?` are rejected.
     """.trimIndent(),
+    "Apply the client's deployment settings to the IDE.",
     DEPLOYMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.sync_deployments",
     schema(

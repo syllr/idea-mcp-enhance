@@ -4,6 +4,26 @@
 
 ---
 
+## 0. 2026.2 → 2026.3 的 API 变化（MCP Server）
+
+内置 MCP Server 的类搬到了 `plugins/mcpserver-plugin/lib/intellij.mcpserver.jar`（262 是
+`plugins/mcpserver/lib/mcpserver.jar`）。两个构造器加了字段，**与 262 二进制不兼容**：
+
+```kotlin
+// 262
+McpToolDescriptor(name, title, description, category, fullyQualifiedName, inputSchema, outputSchema, annotations)
+// 263：第 4 个参数插入 displayDescription（可空，默认 null）
+McpToolDescriptor(name, title, description, displayDescription, category, fullyQualifiedName, inputSchema, outputSchema, annotations)
+
+// 262
+McpToolCategory(shortName, fullyQualifiedName, isExperimental, alwaysIncluded)
+// 263：末尾追加两个可空参数（都有默认值）
+McpToolCategory(shortName, fullyQualifiedName, isExperimental, alwaysIncluded, displayName, displayDescription)
+```
+
+`displayDescription` 只给 IDE 设置页用；MCP 协议发给模型的仍是 `description`。设置页读取的是
+`McpToolDescriptorKt.getPresentableDescription()`，实现为 `displayDescription ?: description`。
+
 ## 1. 2026.1 → 2026.2 的 API 变化（踩过的坑）
 
 ### `RunContentDescriptor`：既没有 `getRunProfile()`，也没有公开的"配置归属"
@@ -34,7 +54,7 @@ Stop 按钮走 `ExecutionManagerImpl.stopProcess`（`impl` 包）。公开可用
 
 ```bash
 # 本地已缓存的 IDE 发行版（首次构建后才有）
-D=$(ls -d ~/.gradle/caches/9.3.1/transforms/*/transformed/idea-2026.2.3-aarch64)
+D=$(ls -d ~/.gradle/caches/9.3.1/transforms/*/transformed/idea-2026.3)
 
 javap -p -cp "$D/lib/intellij.platform.execution.jar" com.intellij.execution.ui.RunContentDescriptor
 javap -p -cp "$D/lib/util-8.jar"                      com.intellij.execution.process.ProcessHandler
@@ -56,7 +76,7 @@ unzip -p <...>/idea-<版本>-sources.jar com/intellij/execution/ExecutionManager
 `com.intellij.mcpServer` 没上 Marketplace，只能反编译本机安装的那份。
 
 ```bash
-M="$HOME/Library/Application Support/JetBrains/IntelliJIdea2026.2/plugins/mcpserver/lib/mcpserver.jar"
+M="$HOME/Applications/IntelliJ IDEA.app/Contents/plugins/mcpserver-plugin/lib/intellij.mcpserver.jar"
 
 # 扩展点清单（在 <extensionPoints> 里）
 unzip -p "$M" META-INF/plugin.xml
@@ -64,7 +84,7 @@ unzip -p "$M" META-INF/plugin.xml
 # 核心接口
 javap -p -cp "$M" com.intellij.mcpserver.McpToolsProvider   # getTools(): List<McpTool>
 javap -p -cp "$M" com.intellij.mcpserver.McpTool            # descriptor + call(args)
-javap -p -cp "$M" com.intellij.mcpserver.McpToolset         # 只有 3 个 default 方法
+javap -p -cp "$M" com.intellij.mcpserver.McpToolset         # 默认方法（isEnabled / displayName 等）
 javap -p -cp "$M" com.intellij.mcpserver.McpCallInfoKt      # coroutineContext.project 等扩展
 
 # 工具是怎么被收集的（决定了你注册的东西会不会被看见）

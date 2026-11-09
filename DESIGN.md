@@ -507,7 +507,7 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 
 | 项                              | 现状                      | 说明 / 未来                                                                       |
 |---------------------------------|---------------------------|-----------------------------------------------------------------------------------|
-| 目标平台 262+                   | 不可降                    | MCP Server 是 2026.2 内置插件且未上 Marketplace，编译它的 API 会抬高低限          |
+| 目标平台 263+                   | 不可降                    | MCP Server 是 2026.3 内置插件且未上 Marketplace，编译它的 API 会抬高低限；263 的构造器与 262 二进制不兼容，所以下限就是 263 |
 | `rerun` 不支持 `file:line`      | 只按配置名                | 内置 MCP 的 `get_run_configurations(filePath=...)` 已能给出可执行点，组合使用即可 |
 | MCP 无自动化启停测试            | 靠 `runIde` 手工验证      | 当前 `BasePlatformTestCase` 在 2026.2.3 上不可用；恢复后应补                      |
 | `stop` 的等待是同步阻塞         | 默认 5s 上限              | 事件循环友好的做法是挂 `ProcessListener` + suspend；当前调用量下同步更简单可靠    |
@@ -523,6 +523,9 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 - **`writeExternal` 不带 `<envs>` / `<method>`**：`RunConfigurationBase.writeExternal` 只序列化类型自己的
   `options`。所以 **读**定义要走盘上的 `.run.xml`（完整），不要指望平台序列化能拼回整份文件；
   round-trip 对比只对 `<option>` 的字段名有效
+- **2026.2 → 2026.3 的 MCP 变化**：`McpToolDescriptor` 第 4 个参数插入 `displayDescription`（可空，默认
+  null），`McpToolCategory` 末尾追加 `displayName` / `displayDescription`。前者只给 IDE 设置页用，设置页读
+  `presentableDescription`（= `displayDescription ?: description`）；模型拿到的仍是 `description`
 - **2026.1 → 2026.2 的 API 变化**：`RunContentDescriptor` **没有** `getRunProfile()` 了；而接替它的
   `getRunConfigurationName()` / `getRunConfigurationTypeId()`，以及 `ExecutionManager.getRunningDescriptors(...)` /
   `getExecutors(descriptor)` —— **全都是 `@ApiStatus.Internal`**，本插件一个都不用（实例归属见下面那条"事件盖章"）

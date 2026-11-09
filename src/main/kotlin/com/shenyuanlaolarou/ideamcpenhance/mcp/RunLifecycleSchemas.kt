@@ -29,6 +29,8 @@ internal val RUN_LIFECYCLE_CATEGORY = McpToolCategory(
     "com.shenyuanlaolarou.ideamcpenhance.mcp.RunLifecycle",
     false,
     false,
+    null,
+    "Start, stop and inspect run configurations.",
 )
 
 // ---------------------------------------------------------------------------
@@ -346,6 +348,7 @@ internal val listRunConfigurationsDescriptor = McpToolDescriptor(
 
     Names match exactly first, then case-insensitively.
     """.trimIndent(),
+    "List configurations with live Run sessions.",
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.list_running_configurations",
     schema(
@@ -391,6 +394,7 @@ internal val stopRunConfigurationDescriptor = McpToolDescriptor(
 
     Names match exactly first, then case-insensitively; errors list the existing names.
     """.trimIndent(),
+    "Stop all running instances of a configuration.",
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.stop_run_configuration",
     schema(
@@ -490,6 +494,7 @@ internal val rerunRunConfigurationDescriptor = McpToolDescriptor(
 
     Names match exactly first, then case-insensitively; errors list existing names.
     """.trimIndent(),
+    "Restart a configuration through the IDE.",
     RUN_LIFECYCLE_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.rerun_run_configuration",
     schema(

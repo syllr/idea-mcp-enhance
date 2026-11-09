@@ -35,6 +35,10 @@
 
 ### Changed
 
+- **兼容 IntelliJ IDEA 2026.3**：目标平台升到 2026.3（build 263），`sinceBuild=263`、`untilBuild=263.*`。
+  内置 MCP Server 的 `McpToolDescriptor` / `McpToolCategory` 构造器在 263 增加了字段，与 262 二进制不兼容，
+  所以本版本不再支持 2026.2（2026.2 用户继续使用 0.1.8）。MCP 工具在 IDE 的 MCP Server 设置页
+  现在显示一句给用户看的短说明，不再直接铺开给模型看的长描述。
 - **Remote Process 的启动输出改到 `<working directory>/process-output/<配置名>-<yyyyMMdd-HHmmss>.log`**：
   它是**被启动命令的 stdout/stderr**（不是 run 的元数据，也不是应用自己写的日志）。
   **一次运行一个文件**，不再往同一个文件追加 —— 追加会把上一次的输出混进来，排查时分不清哪次是哪次；

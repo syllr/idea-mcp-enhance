@@ -17,7 +17,9 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 - Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin **2.19.0**（不能退回 2.14.0：它解析不了
   2026.2 的 `module-descriptors.jar`，连 `:test` 的依赖都算不出来）
-- 目标平台 **2026.2.3**：`pluginSinceBuild=262`、`pluginUntilBuild=262.*`（内置 MCP Server 的 API 在 263 变了）
+- 目标平台 **2026.3**（build 263.7307.200）：`pluginSinceBuild=263`、`pluginUntilBuild=263.*`。
+  内置 MCP Server 的 `McpToolDescriptor` / `McpToolCategory` 构造器在 263 加了字段，与 262 二进制不兼容，
+  所以这一版只支持 2026.3；2026.2 用户留在 0.1.8
 - **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate
 - 运行时依赖：**无第三方库** —— 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` + 平台自带的
   `kotlinx-serialization-json`
@@ -190,8 +192,9 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 ## MCP 扩展点的真实形状（别照着记忆写）
 
-`com.intellij.mcpServer` 是 **IDEA 2026.2 的内置插件**，没发布到 Marketplace，只能靠 `bundledPlugins` 引用。它的公开扩展点有三个，全部
-`dynamic="true"`：
+`com.intellij.mcpServer` 是 **IDEA 2026.3 的内置插件**（安装目录从 262 的 `plugins/mcpserver` 改成
+`plugins/mcpserver-plugin`，类在 `lib/intellij.mcpserver.jar`），没发布到 Marketplace，只能靠 `bundledPlugins` 引用。
+下面三个扩展点与本插件相关，全部 `dynamic="true"`：
 
 | 扩展点全名                                     | 接口                    | 工具怎么来                                                                                                                    |
 |------------------------------------------------|-------------------------|-------------------------------------------------------------------------------------------------------------------------------|
@@ -282,7 +285,11 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **`ProcessAdapter` 在 2026.2 已废弃** —— 直接实现 `ProcessListener`，只覆写 `onTextAvailable`
 - **错误结果里没有 `structuredContent`**（只有 `isError == false` 且注册表开关打开才有）⇒ 错误的关键信息一律写进 text
 - **沙箱里的 `config/disabled_plugins.txt` 基本都是陈旧残留** —— 插件加载失败先看它
-- **`pluginUntilBuild=262.*`** —— 内置 MCP Server 的 API 在 263 变了，钉住上限，别让 Marketplace 把它发给 263 用户
+- **`pluginUntilBuild=263.*`** —— 目标就是 263；`McpToolDescriptor` / `McpToolCategory` 的构造器签名与 262 不同，
+  一个 jar 不能同时跑 2026.2 和 2026.3，别再改回 262
+- **`McpToolDescriptor` 的第 4 个参数是 `displayDescription`（2026.3 新增）** —— 只给 IDE 设置页的人看，
+  模型拿到的仍是 `description`；传 null 时回退到 `description`
+- **`McpToolCategory` 的 `displayName` / `displayDescription`（2026.3 新增）** —— 都有默认值，按需补
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性** —— 调用写 `.getTools()`
 - **平台可能为「这个配置能不能跑」弹模态框，永久卡死 EDT** ⇒ 工具侧必须主动判断「现在是不是有模态对话框在等用户」
 - **`rerun` 的"结果未知"**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来。
@@ -306,12 +313,12 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - 官方开发指南: https://plugins.jetbrains.com/docs/intellij/
 - **核对平台 API 签名最可靠的来源**（本机已缓存）：
   ```bash
-  D=~/.gradle/caches/9.3.1/transforms/*/transformed/idea-2026.2.3-aarch64
+  D=~/.gradle/caches/9.3.1/transforms/*/transformed/idea-2026.3
   javap -p -cp "$D/lib/intellij.platform.execution.jar" com.intellij.execution.ui.RunContentDescriptor
   ```
-- **反编译内置 MCP Server**（本机已安装）：
+- **反编译内置 MCP Server**（本机已安装的 2026.3）：
   ```bash
-  M="$HOME/Library/Application Support/JetBrains/IntelliJIdea2026.2/plugins/mcpserver/lib/mcpserver.jar"
+  M="$HOME/Applications/IntelliJ IDEA.app/Contents/plugins/mcpserver-plugin/lib/intellij.mcpserver.jar"
   unzip -p "$M" META-INF/plugin.xml          # 扩展点清单
   javap -p -cp "$M" com.intellij.mcpserver.McpTool
   javap -v -cp "$M" com.intellij.mcpserver.impl.ReflectionCallableMcpTool  # 看工具是怎么被收集的

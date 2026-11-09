@@ -47,6 +47,8 @@ internal val RUN_CONFIG_DEFINITION_CATEGORY = McpToolCategory(
     "com.shenyuanlaolarou.ideamcpenhance.mcp.RunConfiguration",
     false,
     false,
+    null,
+    "Inspect run configuration definitions.",
 )
 
 internal const val INSPECT_TOOL_NAME = "inspect_run_configuration"
@@ -75,6 +77,7 @@ internal val inspectRunConfigurationDescriptor = McpToolDescriptor(
     file for the output of an earlier run. History only covers runs captured by this plugin; a shell
     configuration executed in the IDE terminal has no captured log.
     """.trimIndent(),
+    "Show a configuration's settings, state and recent logs.",
     RUN_CONFIG_DEFINITION_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.inspect_run_configuration",
     schema(

@@ -23,7 +23,7 @@
                 prepend the project's JDK / Node / Go / Maven / Python paths to its own shell instead of
                 opening a separate IDE terminal.</li>
         </ul>
-        <p>Requires IntelliJ IDEA 2026.2 with the bundled MCP Server plugin enabled.</p>
+        <p>Requires IntelliJ IDEA 2026.3 with the bundled MCP Server plugin enabled.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

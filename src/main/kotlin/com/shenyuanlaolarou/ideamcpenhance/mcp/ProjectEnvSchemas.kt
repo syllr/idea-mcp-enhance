@@ -21,6 +21,8 @@ internal val ENVIRONMENT_CATEGORY = McpToolCategory(
     "com.shenyuanlaolarou.ideamcpenhance.mcp.Environment",
     false,
     false,
+    null,
+    "Project SDK paths and environment variables.",
 )
 
 internal const val GET_PROJECT_ENV_TOOL_NAME = "get_project_env"
@@ -65,6 +67,7 @@ internal val getProjectEnvDescriptor = McpToolDescriptor(
 
     A missing provider simply contributes nothing; the call still succeeds with what is left.
     """.trimIndent(),
+    "Return the project's SDK paths and environment variables.",
     ENVIRONMENT_CATEGORY,
     "com.shenyuanlaolarou.ideamcpenhance.mcp.get_project_env",
     schema(properties = properties("projectPath" to projectPathProperty())),

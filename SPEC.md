@@ -619,12 +619,12 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 | Kotlin                           | 2.3.20            | —                                                    |
 | Gradle                           | 9.3.1             | —                                                    |
 | JDK                              | 21                | 编译/运行（`jvmToolchain(21)`）                      |
-| IntelliJ Platform                | 2026.2.3          | `pluginSinceBuild=262`，`pluginUntilBuild=262.*`     |
+| IntelliJ Platform                | 2026.3            | `pluginSinceBuild=263`，`pluginUntilBuild=263.*`     |
 | IntelliJ Platform Gradle Plugin  | **2.19.0**        | 2.14.0 解析不了 2026.2 的 module 描述符              |
 | JUnit                            | 4.13.2            | 测试                                                 |
 | opentest4j                       | 1.3.0             | 测试断言                                             |
-| IntelliJ Platform TestFramework  | 2026.2.3          | 平台集成测试（当前不可用，见 AGENTS.md「已知阻塞」） |
-| `com.intellij.mcpServer`（内置） | 262.x             | **可选依赖**：MCP 工具的唯一来源                     |
+| IntelliJ Platform TestFramework  | 2026.3            | 平台集成测试（当前不可用，见 AGENTS.md「已知阻塞」） |
+| `com.intellij.mcpServer`（内置） | 263.x             | **可选依赖**：MCP 工具的唯一来源                     |
 | `com.intellij.java`（内置）      | —                 | **仅测试**；不进 `plugin.xml`                        |
 | Qodana（linter / Gradle plugin） | 2024.3 / 2025.3.1 | 静态分析                                             |
 | Kover                            | 0.9.5             | 覆盖率                                               |
@@ -636,7 +636,7 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 | 项       | 约束                                                                                                 |
 |----------|------------------------------------------------------------------------------------------------------|
 | 操作系统 | 无平台限制（纯平台 API + AWT）                                                                       |
-| 目标 IDE | **2026.2（build 262）及以上**；`platformBundledPlugins` 里的 `com.intellij.mcpServer` 决定了这一下限 |
+| 目标 IDE | **2026.3（build 263）**；`platformBundledPlugins` 里的 `com.intellij.mcpServer` 决定了这一下限 |
 | 外部命令 | 无                                                                                                   |
 | 用户配置 | 无（不读写任何配置文件）                                                                             |
 

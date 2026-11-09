@@ -60,7 +60,7 @@ internal object RemoteProcessSync {
                 }
             }
 
-            override fun onBytesTransferred(bytes: Long) = Unit
+            override fun onBytesTransferred(count: Long) = Unit
         }
 
         // 同 RemoteSshClient.run：sshj 会检查调用线程，整个 SFTP 过程放到固定线程。
