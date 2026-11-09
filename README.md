@@ -1,12 +1,14 @@
 # IDE MCP Enhance
 
-把 IDE 里的信息变成 prompt 文本，并给 JetBrains 内置的 MCP Server 补上 Run Configuration 的生命周期能力。
+把 IDE 里的信息变成 prompt 文本，并给 JetBrains 内置的 MCP Server 补上 Run Configuration 生命周期、远端进程部署与项目环境变量这些能力。
 
-| 能力                           | 入口                | 作用                                                                            |
-| ------------------------------ | ------------------- | ------------------------------------------------------------------------------- |
-| **Copy as Prompt**             | 编辑器右键          | 把选中的代码带上文件路径与行号复制到剪贴板                                      |
-| **Copy Diagnostics as Prompt** | 编辑器右键          | 把当前文件的编译错误 / 警告整理成清单复制到剪贴板                               |
-| **Run Lifecycle MCP 工具**     | MCP（Open Code 等） | 列出 / 查询 / 停止 / 重启 Run Configuration——补齐内置 MCP Server 缺的那部分能力 |
+| 能力                           | 入口                | 作用                                                                              |
+| ------------------------------ | ------------------- | --------------------------------------------------------------------------------- |
+| **Copy as Prompt**             | 编辑器右键          | 把选中的代码带上文件路径与行号复制到剪贴板                                        |
+| **Copy Diagnostics as Prompt** | 编辑器右键          | 把当前文件的编译错误 / 警告整理成清单复制到剪贴板                                 |
+| **Run Lifecycle MCP 工具**     | MCP（Open Code 等） | 列出 / 查询 / 停止 / 重启 Run Configuration——补齐内置 MCP Server 缺的那部分能力   |
+| **Remote Process MCP 工具**    | MCP（Open Code 等） | 部署并查看远端进程（`deploy_remote_process` / `list_remote_processes`）           |
+| **数据通道**                   | opencode-idea 插件  | 提供 SSH 凭据、部署同步、项目 SDK 环境变量，不进入模型可见的工具表                |
 
 ## 为什么不只是 Copy as Prompt
 
@@ -23,16 +25,32 @@ JetBrains 2026.3 内置的 MCP Server（`com.intellij.mcpServer`）已经提供�
 
 本插件把 `ProcessHandler` 这层拿到手之后，"停"和"重启"就是 IDE 内部本来就有的两个动作，不需要猜端口、不需要匹配命令行、不需要改项目的启动命令。
 
-## Run Lifecycle MCP 工具
+## MCP 工具
 
-前提：目标 IDE 为 2026.3，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件的四个工具不会出现在工具列表里，prompt 功能不受影响。
+前提：目标 IDE 为 2026.3，且内置的 **MCP Server** 插件已启用（Settings → Tools → MCP Server）。没启用时本插件不会注册任何 MCP 工具，prompt 功能不受影响。
 
-| 工具                             | 类型     | 作用                                                                                                                                                                                                                                             |
-| -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `list_running_configurations`    | 只读     | 只列**正在跑**的配置及其**活实例**（实例数、PID、executionId、是否正在终止）；没有在跑的就返回空                                                                                                                                                 |
-| `stop_run_configuration`         | 破坏性   | 停掉该配置的**所有**实例（修掉"起两个实例"的老问题），可等待其真正退出                                                                                                                                                                           |
-| `rerun_run_configuration`        | 破坏性   | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**；同步等到新进程真的起来，并回传启动日志、会话标识与状态流转。job 类配置（构建 / 测试，跑完就退）会继续等到进程退出并返回 `exitCode`；server 类一启动就返回。参数只有配置名 —— 要改参数就改配置本身 |
-| `create_shell_run_configuration` | 非破坏性 | 直接写 `.run/` 文件新建一个 **Shell Script 项目级** run configuration（让 agent 用项目环境跑命令，IDE 会实时加载）：`scriptPath` / `scriptText` / `cloneFrom` 三选一，另可配参数、工作目录、解释器、环境变量（落点固定 `.run/<配置名>.run.xml`） |
+### 模型可见的工具
+
+| 工具                          | 类型   | 作用                                                                                                                                                                                                                                             |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list_running_configurations` | 只读   | 只列**正在跑**的配置及其**活实例**（实例数、PID、executionId、是否正在终止）；没有在跑的就返回空                                                                                                                                                 |
+| `stop_run_configuration`      | 破坏性 | 停掉该配置的**所有**实例（修掉"起两个实例"的老问题），可等待其真正退出                                                                                                                                                                           |
+| `rerun_run_configuration`     | 破坏性 | 等价于 IDE 的 Rerun 按钮：**在跑就重启，没在跑就启动**；同步等到新进程真的起来，并回传启动日志、会话标识与状态流转。job 类配置（构建 / 测试，跑完就退）会继续等到进程退出并返回 `exitCode`；server 类一启动就返回。参数只有配置名 —— 要改参数就改配置本身 |
+| `inspect_run_configuration`   | 只读   | 查看一条配置的全貌：options / attributes / envs / `beforeRunTasks` / 活实例 / 历史运行 / 可运行性 / 原始 XML                                                                                                                                    |
+| `deploy_remote_process`       | 破坏性 | 触发一次 Remote Process 部署（差量同步 + Before launch + 远端拉起），**触发即返回**；这个会话的 Stop 只关日志、不杀远端进程                                                                                                                      |
+| `list_remote_processes`       | 只读   | 列出项目里的 Remote Process 配置及远端的真实状态（`ps` / `docker ps`），包括没在跑的                                                                                                                                                             |
+
+### 隐藏的数据通道（不进模型工具表）
+
+由 `opencode-idea` 直接调用，用来给本地 shell / 远端执行 / 部署同步提供数据：
+
+| 工具               | 调用方                       | 作用                                                              |
+| ------------------ | ---------------------------- | ----------------------------------------------------------------- |
+| `get_ssh_servers`  | `remote_exec`                | 返回 IDE 的 SSH 配置与凭据                                        |
+| `sync_deployments` | 部署同步                     | 按 `hosts.json` 创建 / 更新 IDE 的 Deployment 条目                |
+| `get_project_env`  | `shell.hook("create.before")` | 返回项目 SDK / runtime 拼出的 `PATH` 与变量                       |
+
+> `get_ssh_servers` / `sync_deployments` 需要 IDE 的 FTP/SFTP/WebDAV 支持（**仅 Ultimate**）。缺失时其余工具照常工作。
 
 MCP 客户端配置（与 IDE 官方文档一致）：
 
@@ -45,7 +63,7 @@ MCP 客户端配置（与 IDE 官方文档一致）：
 ```
 
 这个 header 不能省：MCP Server 在派发工具之前要先解析"针对哪个项目"，它只认这个 header 或调用参数 `projectPath`
-（**只打开一个项目是不够的**）。四个工具都声明了可选的 `projectPath`，所以没配 header 的客户端也能用，
+（**只打开一个项目是不够的**）。模型可见的工具都声明了可选的 `projectPath`，所以没配 header 的客户端也能用，
 但每次调用都得带上它。
 
 设计约束：
@@ -107,11 +125,13 @@ diagnostics:
 - 确认插件已启用（Settings/Preferences → Plugins）
 - 确认焦点在**编辑器**内（这两个 action 只出现在编辑器右键菜单）
 
-**问题：MCP 工具列表里看不到 Run Lifecycle 那四个**
+**问题：MCP 工具列表里看不到本插件的工具**
 
 - 确认 IDE 是 2026.3（本插件 `sinceBuild=263`，因为要编译内置 MCP Server 的 API）
 - 确认内置的 **MCP Server** 插件已安装并启用
 - 打开 MCP Server 的工具面板，确认没有在 Allowed tools 里把它们过滤掉
+- `get_ssh_servers` / `sync_deployments` / `get_project_env` 是隐藏的数据通道，本来就不会出现在模型工具表里
+- Deployment 两个工具需要 Ultimate 的 FTP/SFTP 支持
 
 **问题：`stop_run_configuration` 报"找不到运行中的实例"**
 

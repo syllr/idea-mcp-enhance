@@ -331,7 +331,7 @@ for (handler in handlers) { handler.waitFor(剩余时间) }
 
 ### 平台集成测试的已知阻塞
 
-`BasePlatformTestCase` 在 **2026.2.3 上必然失败**：
+`BasePlatformTestCase` 在 **2026.2.3 上必然失败**（2026.3 尚未重新验证，`@Ignore` 仍在）：
 
 ```
 Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]
@@ -366,11 +366,27 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 | `mcp/RunConfigDefinitionSchemas.kt`                  | 纯   | `inspect` 描述符                                                                                                                      |
 | `mcp/RunConfigDefinitionToolsProvider.kt`            | 编排 | `inspect_run_configuration`                                                                                                           |
 | `mcp/RunLifecycleToolsProvider.kt`                   | 编排 | `RunLifecycleToolsProvider` + `BaseRunTool` + 三个工具                                                                                |
+| `mcp/RunConfigurationStamping.kt`                    | 平台 | 用 `ExecutionListener` 给 `ProcessHandler` 盖配置名                                                                                   |
+| `mcp/RemoteProcessRunConfiguration.kt`               | 平台 | `RemoteProcess` 配置类型 + SettingsEditor                                                                                             |
+| `mcp/RemoteProcessRunProfileState.kt`                | 平台 | 部署同步 + SSH 启动                                                                                                                   |
+| `mcp/RemoteProcessFinder.kt` / `RemoteProcessHosts.kt` | 平台 | 找配置 / `hosts.json` 三级合并                                                                                                        |
+| `mcp/RemoteProcessSync.kt` / `RemoteSshClient.kt`    | 平台 | SFTP 差量同步 / SSH 执行                                                                                                              |
+| `mcp/RemoteProcessToolsProvider.kt`                  | 编排 | `deploy_remote_process` / `list_remote_processes`                                                                                     |
+| `mcp/RemoteProcessDeploySchemas.kt`                  | 纯   | 两个 Remote Process 工具的描述符 / 输出 schema                                                                                        |
+| `mcp/DeploymentModels.kt` / `DeploymentSchemas.kt`   | 纯   | SFTP server + 凭据 + 路径映射 → JSON；数据通道 schema                                                                                 |
+| `mcp/DeploymentAccess.kt`                            | 平台 | **全插件唯一** import webDeployment 的文件                                                                                            |
+| `mcp/DeploymentToolsProvider.kt`                     | 编排 | `get_ssh_servers` / `sync_deployments`                                                                                                |
+| `mcp/TerminalEnv.kt` + `*TerminalEnv.kt`             | 纯/平台 | 5 个 provider 按固定顺序拼 `PATH`                                                                                                     |
+| `mcp/ProjectEnvSchemas.kt` / `ProjectEnvToolsProvider.kt` | 纯/编排 | `get_project_env`                                                                                                                     |
+| `mcp/McpToolBase.kt` / `LocalPath.kt`                | 编排/纯 | 异常兜底、项目解析；路径规范化                                                                                                        |
 | `resources/META-INF/plugin.xml`                      | —    | 插件描述 + 2 个 action + 可选依赖声明                                                                                                 |
 | `resources/META-INF/mcpserver.xml`                   | —    | 可选依赖专属：`mcpServer.mcpToolsProvider` 注册                                                                                       |
 | `resources/META-INF/EULA.txt` / `PRIVACY_POLICY.txt` | —    | Marketplace 法务文本                                                                                                                  |
 | `test/.../format/PromptFormatTest.kt`                | 纯   | prompt 格式契约                                                                                                                       |
 | `test/.../mcp/RunLifecycleSchemaTest.kt`             | 纯   | MCP 契约                                                                                                                              |
+| `test/.../mcp/RunLogAndNamingTest.kt` / `RunLogTailTest.kt` | 纯 | 命名 / 日志条目 / 尾部预览                                                                                                       |
+| `test/.../mcp/RunKindTest.kt` / `RemoteProcessKindTest.kt` | 纯 | job / server 判定                                                                                                                 |
+| `test/.../mcp/DeploymentSchemaTest.kt` / `LocalPathTest.kt` / `ProjectEnvTest.kt` | 纯 | 数据通道 schema / 路径 / 环境                                                                                       |
 | `test/.../actions/EditorDiagnosticsTest.kt`          | 平台 | 诊断采集（当前 `@Ignore`）                                                                                                            |
 | `.github/workflows/build.yml`                        | —    | CI：test / build / verify / publish(tag)                                                                                              |
 
@@ -509,7 +525,7 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 |---------------------------------|---------------------------|-----------------------------------------------------------------------------------|
 | 目标平台 263+                   | 不可降                    | MCP Server 是 2026.3 内置插件且未上 Marketplace，编译它的 API 会抬高低限；263 的构造器与 262 二进制不兼容，所以下限就是 263 |
 | `rerun` 不支持 `file:line`      | 只按配置名                | 内置 MCP 的 `get_run_configurations(filePath=...)` 已能给出可执行点，组合使用即可 |
-| MCP 无自动化启停测试            | 靠 `runIde` 手工验证      | 当前 `BasePlatformTestCase` 在 2026.2.3 上不可用；恢复后应补                      |
+| MCP 无自动化启停测试            | 靠 `runIde` 手工验证      | `BasePlatformTestCase` 在 2026.2.3 上阻塞；2026.3 仍 `@Ignore`，恢复后应补        |
 | `stop` 的等待是同步阻塞         | 默认 5s 上限              | 事件循环友好的做法是挂 `ProcessListener` + suspend；当前调用量下同步更简单可靠    |
 | executor 信息不在输出里         | 不返回                    | `ExecutionManager.getExecutors(descriptor)` 是 `@ApiStatus.Internal`，本插件不用  |
 | 诊断的 quick-fix 建议           | 只输出消息 + 出错行       | `HighlightInfo` 有 quick fix 列表，但 API 偏 internal                             |

@@ -122,7 +122,7 @@ javap -v -p -cp "$M" com.intellij.mcpserver.impl.ReflectionToolsProvider
 
 ---
 
-## 5. 平台集成测试在 2026.2.3 上不可用
+## 5. 平台集成测试在 2026.2.3 上不可用（2026.3 未重新验证）
 
 ```
 Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]
@@ -136,6 +136,7 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - 试过且**无效**的手段：去掉 `com.intellij.java` bundled plugin、加
   `systemProperty("idea.force.use.core.classloader", "true")`、换 `intellijIdeaCommunity`
   （2026.2 已停发 `ideaIC`，根本下不到）
+- **2026.3 尚未重新启用验证**：`EditorDiagnosticsTest` 仍带 `@Ignore`；`./gradlew test` 会跳过它
 
 ---
 
@@ -143,7 +144,8 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 
 ### IntelliJ Platform Gradle Plugin 必须 ≥ 2.19.0
 
-2.14.0 解析不了 2026.2 发行版 `modules/module-descriptors.jar` 里的 `$legacy_jps_library` 描述符：
+2.14.0 解析不了 2026.2 发行版 `modules/module-descriptors.jar` 里的 `$legacy_jps_library` 描述符；
+2.19.0 在 2026.3 上也能正常解析与构建：
 
 ```
 Invalid XML value at position: 563:4: Field 'name' is required for type with serial name

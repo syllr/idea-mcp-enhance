@@ -11,7 +11,7 @@
       CDATA 紧跟 p 标签开头，避免描述以换行/缩进开头。
     -->
     <description><![CDATA[<p>IDE MCP Enhance turns IDE context into prompt text and adds the Run Configuration
-        lifecycle tools that the built-in MCP Server is missing.</p>
+        lifecycle and remote-process tools that the built-in MCP Server is missing.</p>
         <ul>
             <li><b>Copy as Prompt</b> - copy the selected code with its file path and line range, ready to paste into any chat.</li>
             <li><b>Copy Diagnostics as Prompt</b> - copy the current file's errors and warnings as one clean list.</li>
@@ -19,6 +19,9 @@
                 <code>stop_run_configuration</code>, <code>rerun_run_configuration</code> and
                 <code>inspect_run_configuration</code>, driving the IDE's own process handlers:
                 no port guessing, no command-line matching, no changes to your start scripts.</li>
+            <li><b>Remote Process MCP tools</b> - <code>deploy_remote_process</code> and
+                <code>list_remote_processes</code> drive the IDE's Remote Process configurations and
+                report the real state on the remote host.</li>
             <li><b>Project environment for native shells</b> - exposes <code>get_project_env</code> so an MCP client can
                 prepend the project's JDK / Node / Go / Maven / Python paths to its own shell instead of
                 opening a separate IDE terminal.</li>

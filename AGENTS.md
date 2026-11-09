@@ -16,10 +16,12 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 ## STACK
 
 - Gradle 9.3.1 · JDK 21 · Kotlin 2.3.20 · IntelliJ Platform Gradle Plugin **2.19.0**（不能退回 2.14.0：它解析不了
-  2026.2 的 `module-descriptors.jar`，连 `:test` 的依赖都算不出来）
+  2026.2 的 `module-descriptors.jar`，连 `:test` 的依赖都算不出来；2026.3 用同一个版本也可用）
 - 目标平台 **2026.3**（build 263.7307.200）：`pluginSinceBuild=263`、`pluginUntilBuild=263.*`。
   内置 MCP Server 的 `McpToolDescriptor` / `McpToolCategory` 构造器在 263 加了字段，与 262 二进制不兼容，
-  所以这一版只支持 2026.3；2026.2 用户留在 0.1.8
+  所以这一版只支持 2026.3
+- **`main` 的 0.1.9 面向 2026.2；本分支是同一版本号的 2026.3 变体**。只做本地 / 分支产物；
+  要发布到 Marketplace 前必须换一个版本号（0.1.9 已被 main 占用），并同时补两个 CHANGELOG 的对应段落
 - **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate
 - 运行时依赖：**无第三方库** —— 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` + 平台自带的
   `kotlinx-serialization-json`
@@ -46,7 +48,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 
 源码根: `src/main/kotlin/com/shenyuanlaolarou/ideamcpenhance/`
 
-**三个互不依赖的能力包**，各自三层：
+**两个互不依赖的能力包**（`mcp/` 内部再按能力分组），各自分层：
 
 ```
 ├── prompt/                        ← 能力一：复制 prompt（与上游 copy-as-prompt 逐字节一致）
@@ -55,56 +57,56 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │       ├── CopyAsPromptAction.kt
 │       ├── CopyDiagnosticsAction.kt
 │       └── EditorPromptContext.kt
-└── mcp/                           ← 能力二：Run Lifecycle + Run Configuration MCP 工具（只要 MCP Server）
-│   ├── RunLifecycleModels.kt      纯数据 + 纯函数：状态快照 → JSON（含精简列表形状）
-│   ├── RunLifecycleSchemas.kt     工具描述符 / 输入 schema / 参数解析
-│   ├── RunConfigAccess.kt         平台接线：RunManager / RunContentManager / ProcessHandler
-│   ├── RunLifecycleToolsProvider.kt  运行态 3 个 McpTool + 异常兜底
-│   ├── RunLogModels.kt            纯：日志键 / 文件名 / 历史条目 JSON
-│   ├── RunLogAccess.kt            平台：启动即采集输出、写 sidecar、扫历史、清理
-│   ├── RunConfigNaming.kt         纯：`[os@]base[@env]` 解析
-│   ├── RunKind.kt                 纯：job / server 判定（读 `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG`）
-│   ├── RunConfigDefinitionModels.kt   纯：inspect 的全貌 → JSON
-│   ├── RunConfigDefinitionAccess.kt   平台：读 `.run.xml`、解析 options/envs/method
-│   ├── RunConfigDefinitionSchemas.kt  `inspect` 的描述符
-│   └── RunConfigDefinitionToolsProvider.kt  inspect_run_configuration
-    （mcp/ 下还有能力三，见下）
+└── mcp/                           ← 其余 MCP 能力（都只要 MCP Server）
+    ├── 运行态（Run Lifecycle）
+    │   ├── RunLifecycleModels.kt        纯数据 + 纯函数：状态快照 → JSON
+    │   ├── RunLifecycleSchemas.kt       工具描述符 / 输入 schema / 参数解析
+    │   ├── RunConfigAccess.kt           平台接线：RunManager / RunContentManager / ProcessHandler
+    │   ├── RunLifecycleToolsProvider.kt 运行态 3 个 McpTool + 异常兜底
+    │   ├── RunLogModels.kt              纯：日志键 / 文件名 / 历史条目 JSON
+    │   ├── RunLogAccess.kt              平台：启动即采集输出、写 sidecar、扫历史、清理
+    │   ├── RunConfigNaming.kt           纯：`[os@]base[@env]` 解析
+    │   ├── RunKind.kt                   纯：job / server 判定
+    │   └── RunConfigurationStamping.kt  给 Run 会话盖配置名
+    ├── 定义态（inspect）
+    │   ├── RunConfigDefinitionModels.kt       纯：inspect 的全貌 → JSON
+    │   ├── RunConfigDefinitionAccess.kt       平台：读 `.run.xml`、解析 options/envs/method
+    │   ├── RunConfigDefinitionSchemas.kt      `inspect` 的描述符
+    │   └── RunConfigDefinitionToolsProvider.kt
+    ├── Remote Process / Deployment
+    │   ├── RemoteProcessRunConfiguration.kt   配置类型 + SettingsEditor
+    │   ├── RemoteProcessRunProfileState.kt    Run 状态：同步 + SSH 启动
+    │   ├── RemoteProcessFinder.kt / RemoteProcessHosts.kt
+    │   ├── RemoteProcessSync.kt / RemoteSshClient.kt
+    │   ├── RemoteProcessToolsProvider.kt      deploy_remote_process / list_remote_processes
+    │   ├── RemoteProcessDeploySchemas.kt
+    │   ├── DeploymentModels.kt / DeploymentSchemas.kt
+    │   ├── DeploymentAccess.kt               全插件唯一 import webDeployment 的文件
+    │   └── DeploymentToolsProvider.kt        get_ssh_servers / sync_deployments
+    ├── 项目环境（get_project_env）
+    │   ├── TerminalEnv.kt                    纯聚合：5 个 provider 按固定顺序拼 PATH
+    │   ├── JavaTerminalEnv.kt / NodeTerminalEnv.kt / GoTerminalEnv.kt
+    │   ├── MavenTerminalEnv.kt / PythonTerminalEnv.kt
+    │   ├── ProjectEnvSchemas.kt
+    │   └── ProjectEnvToolsProvider.kt
+    └── 公共
+        ├── McpToolBase.kt                    异常兜底 / 参数错误 / 项目解析
+        └── LocalPath.kt
 ```
 
-**能力三：Deployment 凭据通道（`get_ssh_servers`）**（额外需要 `com.jetbrains.plugins.webDeployment`，**仅 Ultimate
-有**）
+**运行态**：`list_running_configurations` / `stop_run_configuration` / `rerun_run_configuration`，
+靠 `ProcessHandler` 而不是命令行匹配。
 
-```
-    ├── DeploymentModels.kt          纯数据：SFTP server + 凭据 + 路径映射 → JSON
-    ├── DeploymentSchemas.kt         唯一一个工具的描述符 / 输入输出 schema
-    ├── DeploymentAccess.kt          平台接线：**全插件唯一** import webDeployment 的文件
-    └── DeploymentToolsProvider.kt   McpTool（前提由 config-file 把守）
-```
+**定义态**：只有 `inspect_run_configuration`（只读）。配置的新增 / 修改 / 删除回 IDE 界面；
+可重复的流程走 job skill，不由 agent 代写 `.run/`。
 
-只是一个**数据通道**：返回 SFTP server 的 host / port / 用户名 / 凭据，以及 deployment 的
-`name` / `localPath` / `deployPath`（已拼上 `rootFolder`）。传文件与远程执行都在
-`opencode-idea` 里自己用 ssh2 做，本插件不再有 `upload_to_deployment` / `download_from_deployment` /
-`get_deployment_task_status` / `list_server_deployments`。
+**Remote Process / Deployment**：`deploy_remote_process` / `list_remote_processes` 是模型可见工具；
+`get_ssh_servers` / `sync_deployments` 是隐藏的数据通道。文件传输与远端命令走
+`RemoteSshClient` / `RemoteProcessSync` 的 SSH 实现，deployment 仅用于拿凭据与路径映射。
 
-**能力四：项目环境变量（`get_project_env`）**
-
-```
-    ├── TerminalEnv.kt                纯聚合：5 个 provider 按固定顺序拼 PATH
-    ├── JavaTerminalEnv.kt            第 5 个 provider（项目 JDK）
-    ├── NodeTerminalEnv.kt            Node runtime / 包管理器
-    ├── GoTerminalEnv.kt              Go SDK
-    ├── MavenTerminalEnv.kt           Maven home
-    ├── PythonTerminalEnv.kt          Python SDK / venv
-    ├── ProjectEnvSchemas.kt          工具描述符 / 输入输出 schema
-    └── ProjectEnvToolsProvider.kt    McpTool
-```
-
-它不是给模型用的工具，而是 `opencode-idea` 在 `shell.hook("create.before")` 里直接调用的数据通道：
+**项目环境（`get_project_env`）**：`opencode-idea` 在 `shell.hook("create.before")` 里直接调用，
 把 IDE 里配的 SDK / runtime 变成 `{ PATH, variables }`，由那边前置拼到 OpenCode 原生 shell 的 PATH 上。
-所以**本地终端能力（`project_sdk_terminal`）已经整体移除** —— 不再有 tab、`terminal_read` 的本地分支。
-
-同一个道理，**远程执行也移出去了**：`DeploymentToolsProvider` 只多一个隐藏工具 `get_ssh_servers`
-（返回 SFTP server + 凭据），`opencode-idea` 的 `remote_exec` 自己 SSH。本插件不再碰远程进程。
+它不是给模型用的工具。`project_sdk_terminal` 与本地 `terminal_read` 分支已经整体移除。
 
 | 层                                    | 允许                                                | 禁止                                      | 测试方式                                            |
 |---------------------------------------|-----------------------------------------------------|-------------------------------------------|-----------------------------------------------------|
@@ -115,16 +117,22 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | `mcp/DeploymentModels` / `Schemas`       | 字符串、JsonObject、mcpserver 的 descriptor 类型    | 平台 import、IO、**webDeployment import** | 纯 JUnit 4（秒级）                                  |
 | `mcp/DeploymentAccess`                   | webDeployment + 平台 API（**全插件唯一允许处**）    | 字符串格式化 / 手写 JSON                  | 只能 `runIde` 手工验证（需要真的服务器）            |
 | `mcp/DeploymentToolsProvider`            | 编排（前提由 config-file 把守，**没有**运行时检查） | 在 EP 注册之前碰 webDeployment 类型       | 描述符 / 纯函数有单测                               |
+| `mcp/RemoteProcess*`                     | 平台 API + `com.intellij.ssh`                       | 字符串格式化 / 手写 JSON                  | 纯函数单测 + `runIde` 手工验证                      |
+| `mcp/ProjectEnv*` / `*TerminalEnv`       | 平台 API                                            | 字符串格式化 / 手写 JSON                  | 纯 JUnit 4（`ProjectEnvTest`）                      |
 
 测试根: `src/test/kotlin/com/shenyuanlaolarou/ideamcpenhance/`
 
 | 测试                                   | 类型                   | 覆盖                                                                                        | 状态            |
 |----------------------------------------|------------------------|---------------------------------------------------------------------------------------------|-----------------|
 | `prompt/format/PromptFormatTest`       | 纯 JUnit 4（11 例）    | 两个 prompt 格式契约 + 稳定排序                                                             | ✅ 通过         |
-| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（42 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
-| `mcp/DeploymentSchemaTest`             | 纯 JUnit 4（15 例）    | deployment 描述符 / 风险提示（危险组合的判定）/ 输出 JSON 形状                              | ✅ 通过         |
-| `mcp/RunLogAndNamingTest`              | 纯 JUnit 4（22 例）    | 命名文法 / 日志键与文件名 / 历史条目 null 键 / 列表精简形状 / 定义态 schema                 | ✅ 通过         |
-| `mcp/ProjectEnvTest`                   | 纯 JUnit 4             | `get_project_env` 的返回形状 / provider 固定顺序                                            | ✅ 通过         |
+| `mcp/RunLifecycleSchemaTest`           | 纯 JUnit 4（45 例）    | 工具集合 / 描述符 / 输入 schema / 输出 schema / 与内置工具的逐字对齐 / 参数解析 / 输出 JSON | ✅ 通过         |
+| `mcp/DeploymentSchemaTest`             | 纯 JUnit 4（6 例）     | deployment 描述符 / 风险提示 / 输出 JSON 形状                                               | ✅ 通过         |
+| `mcp/RunLogAndNamingTest`              | 纯 JUnit 4（24 例）    | 命名文法 / 日志键与文件名 / 历史条目 null 键 / 列表精简形状 / 定义态 schema                 | ✅ 通过         |
+| `mcp/RunLogTailTest`                   | 纯 JUnit 4（5 例）     | 日志尾部预览的截断与边界                                                                    | ✅ 通过         |
+| `mcp/RunKindTest`                      | 纯 JUnit 4（8 例）     | job / server 判定                                                                           | ✅ 通过         |
+| `mcp/RemoteProcessKindTest`            | 纯 JUnit 4（4 例）     | `RemoteProcess` 恒为 server                                                                 | ✅ 通过         |
+| `mcp/LocalPathTest`                    | 纯 JUnit 4（2 例）     | 本地路径规范化                                                                              | ✅ 通过         |
+| `mcp/ProjectEnvTest`                   | 纯 JUnit 4（2 例）     | `get_project_env` 的返回形状 / provider 固定顺序                                            | ✅ 通过         |
 | `prompt/actions/EditorDiagnosticsTest` | `BasePlatformTestCase` | 诊断采集能从 markup model 捞出编译错误                                                      | ⛔ 禁用（见下） |
 
 ### 测试纪律：不要随便写断言
@@ -163,17 +171,22 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改运行日志的采集 / 落盘 / 清理           | `mcp/RunLogAccess.kt`（抓点、大小上限、sidecar、历史扫描）+ `mcp/RunLogModels.kt`（键 / 文件名 / JSON）                                                                                             |
 | 改配置名的解析规则                       | `mcp/RunConfigNaming.kt` + `RunLogAndNamingTest`                                                                                                                                                    |
 | 改 `inspect` 返回的字段                  | `mcp/RunConfigDefinitionModels.kt` + `RunConfigDefinitionSchemas.kt` + `RunLogAndNamingTest`                                                                                                        |
+| 改 Remote Process 的部署 / 启动          | `mcp/RemoteProcessRunProfileState.kt` + `mcp/RemoteProcessSync.kt` + `mcp/RemoteSshClient.kt`                                                                                                      |
+| 改 `deploy_remote_process` / `list_remote_processes` | `mcp/RemoteProcessDeploySchemas.kt` + `mcp/RemoteProcessToolsProvider.kt`                                                                                                                  |
+| 改 Remote Process 配置页                 | `mcp/RemoteProcessRunConfiguration.kt`（`SettingsEditor`）                                                                                                                                          |
+| 改 `sync_deployments`                    | `mcp/DeploymentAccess.kt` + `mcp/DeploymentModels.kt` + `mcp/DeploymentSchemas.kt`                                                                                                                  |
 | 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                               |
 
 ## HARD RULES
 
 - **包名 = `com.shenyuanlaolarou.ideamcpenhance`**: 也是 `pluginGroup` / plugin id 的命名空间
-- **prompt 的格式化逻辑必须放 `prompt/format/` 且是纯函数**; MCP 的 JSON 构造必须放 `RunLifecycleModels.kt`
+- **prompt 的格式化逻辑必须放 `prompt/format/` 且是纯函数**; MCP 的 JSON 构造必须放在对应的纯数据层
+  （`RunLifecycleModels.kt` / `DeploymentModels.kt` / `RemoteProcessDeploySchemas.kt` 等）
 - **MCP 那半必须能独立于 MCP Server 消失**: 任何引用 `com.intellij.mcpserver.*` 的类 **只能**由 `META-INF/mcpserver.xml`
   触发加载，`plugin.xml` 主文件里不许出现
 - **禁止使用 `@TestOnly` / `@Internal` 的平台 API**; 尤其禁止 `com.intellij.execution.impl.*`
   —— `PluginManager.getPlugin` / `PluginManagerCore.getPlugin` **都**是 Internal（后者还 deprecated），
-  公开的 `IdeaPluginManager` 在 2026.2 里还不存在 ⇒ 这种场景只能反射调用
+  公开的 `IdeaPluginManager` 在 2026.2 / 2026.3 里都还不存在 ⇒ 这种场景只能反射调用
 - **插件运行时可见的模块必须在 `plugin.xml` 里声明**: `gradle.properties` 的 `platformBundledModules` 只管**编译期**
   classpath。不声明的话运行时看不到那些类（`NoClassDefFoundError`），Plugin Verifier 也会报整包 "not found"
 - **要用某个 plugin 的**实现 jar**里的类，要依赖 plugin 而不是 module**: module 依赖只给"导出的 API"
@@ -239,7 +252,8 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 **签名/发布 env**（`local.properties` 已 gitignore）: `PUBLISH_TOKEN`、`CERTIFICATE_CHAIN`、`PRIVATE_KEY`、
 `PRIVATE_KEY_PASSWORD`。 **绝对不能**进 git。
 
-`EditorDiagnosticsTest`（以及任何 `BasePlatformTestCase`）在 **2026.2.3 上必然失败**：`Cannot create extension
+`EditorDiagnosticsTest`（以及任何 `BasePlatformTestCase`）在 **2026.2.3 上必然失败**（2026.3 尚未重新启用验证，
+该测试仍带 `@Ignore`）：`Cannot create extension
 (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate]` —— `Z.Z.Z.Z.Z` 是 `lib/product-backend.jar` 里的平台内部接口，
 失败发生在打开测试项目的 post-startup 阶段。
 

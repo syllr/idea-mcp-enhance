@@ -8,12 +8,14 @@
 
 ## 0. 系统概览
 
-本插件由两个 **互不依赖**的能力组成：
+本插件由几组 **互不依赖**的能力组成：
 
-| 能力                   | 入口                | 输出                                       |
-|------------------------|---------------------|--------------------------------------------|
-| 复制 prompt            | 编辑器右键菜单      | 系统剪贴板（`location:` 信封 + 内容）      |
-| Run Lifecycle MCP 工具 | MCP（Open Code 等） | MCP `CallToolResult`（文本 + 结构化 JSON） |
+| 能力                              | 入口                | 输出                                       |
+|-----------------------------------|---------------------|--------------------------------------------|
+| 复制 prompt                       | 编辑器右键菜单      | 系统剪贴板（`location:` 信封 + 内容）      |
+| Run Lifecycle / inspect MCP 工具  | MCP（Open Code 等） | MCP `CallToolResult`（文本 + 结构化 JSON） |
+| Remote Process / Deployment 工具  | MCP（Open Code 等） | `CallToolResult`；Deployment 条目          |
+| 数据通道（SSH / 项目环境）        | opencode-idea       | 结构化 JSON，不进模型可见工具表            |
 
 **明确的非目标**（不要"顺手加回来"）：
 
@@ -28,6 +30,12 @@ prompt:  IDE 数据 → prompt/actions（取数）→ prompt/format（纯函数�
 
 mcp:     JsonObject 入参 → ToolsProvider（编排）→ RunConfigAccess（平台）
          → RunLifecycleModels（纯函数出 JSON）→ McpToolCallResult
+
+remote:  RemoteProcessToolsProvider → RemoteProcessSync / RemoteSshClient（SSH）
+         → 远端进程状态 / 启动结果
+
+env:     opencode-idea → get_project_env → TerminalEnv（5 个 provider）
+         → { PATH, variables } → shell 前置注入
 ```
 
 ---
@@ -160,11 +168,10 @@ diagnostics:
 
 > 职责切分的取舍：内置的 `get_run_configurations` 已经回答"有哪些配置"（静态），
 > 所以本插件 **不新增** `list_run_configurations`。运行态三个工具负责"现在到底什么在跑"与
-> "停 / 重启"；定义态四个工具负责"这个配置是什么、怎么建 / 改 / 删、历史日志在哪"。
+> "停 / 重启"；定义态当前只有 `inspect_run_configuration`，负责"这个配置是什么、历史日志在哪"。
 >
-> `.run/` 目录下 `*.run.xml` 的 **写入口只有定义态的 create / update / delete**
-> （`DESIGN.md` §7.1）。这条规则写在工具描述与 opencode-idea 侧的 guidance 里（提示词层），
-> **不做**技术拦截：用户明确要求手改文件时，工具报错比放行更糟。
+> **本插件不提供 `.run/` 的写入口**：配置的新增 / 修改 / 删除回 IDE 界面，可重复的流程走 job skill
+> （`idea-run-config-manager` / `run-job-manager`）。工具本身只读，见 `DESIGN.md` §7.1。
 
 ### 3.3 定位配置名的规则 (HARD CONTRACT)
 
@@ -521,13 +528,13 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 
 ---
 
-### 3.10 定义态工具（`inspect` / `create` / `update` / `delete`）
+### 3.10 定义态工具（`inspect`）
 
 作用域：
 
-- 只管理 **项目级** `.run/<name>.run.xml`。`.idea/runConfigurations`、workspace 级、临时配置、模板
-  MUST 拒绝写操作，并说明"请在 IDE 里改"；`inspect` 仍可读它们并如实报告 `storage.kind`
-- `.run/` 下 `*.run.xml` 的 **写入口只有 create / update / delete**（提示词层约束，见 §3.2 的说明）
+- 只读。可查看 **项目级** `.run/<name>.run.xml`，也可读 `.idea/runConfigurations`、workspace 级、
+  临时配置和模板，并如实报告 `storage.kind`
+- 不提供 create / update / delete：写操作回 IDE 界面，可重复流程走 job skill（见 §3.2 的说明）
 
 `inspect_run_configuration`：
 
@@ -552,6 +559,18 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 - `[os@]base[@env]`；`os` 只有 `win` 是平台段（缺省 `mac-linux`）
 - `win@base` 两段 = 平台 + base（ **没有**环境）；`base@env` 两段 = base + 环境
 - 三段及以上：首段是 `win` 时中间是 base，否则首段并进 base
+
+### 3.11 Remote Process / Deployment 工具 (HARD CONTRACT)
+
+- `deploy_remote_process` MUST **触发即返回**（`triggered: true` + `started: null` 是正常结果），
+  MUST NOT 等远端进程退出；这个会话的 Stop 只关日志、不杀远端
+- `list_remote_processes` MUST 只读，直接查远端（`ps` + cwd / `docker ps`），
+  MUST NOT 依赖 IDE 的 Run 会话 —— 所以 IDE 外启动的进程也能看到
+- `get_ssh_servers` / `sync_deployments` 是隐藏数据通道，MUST NOT 出现在模型可见工具表
+- `com.jetbrains.plugins.webDeployment` 缺失时 MUST 安静跳过 deployment 的两个工具，
+  其余工具与 prompt 功能照常工作
+- 文件传输 MUST 走 SSH（`RemoteSshClient` / `RemoteProcessSync`），
+  MUST NOT 依赖 webDeployment 的上传下载入口
 
 ## 4. 安全与代码规范 (HARD RULES)
 
@@ -623,7 +642,7 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 | IntelliJ Platform Gradle Plugin  | **2.19.0**        | 2.14.0 解析不了 2026.2 的 module 描述符              |
 | JUnit                            | 4.13.2            | 测试                                                 |
 | opentest4j                       | 1.3.0             | 测试断言                                             |
-| IntelliJ Platform TestFramework  | 2026.3            | 平台集成测试（当前不可用，见 AGENTS.md「已知阻塞」） |
+| IntelliJ Platform TestFramework  | 2026.3            | 平台集成测试（2026.2.3 上阻塞；2026.3 仍 `@Ignore`，见 AGENTS.md「已知阻塞」） |
 | `com.intellij.mcpServer`（内置） | 263.x             | **可选依赖**：MCP 工具的唯一来源                     |
 | `com.intellij.java`（内置）      | —                 | **仅测试**；不进 `plugin.xml`                        |
 | Qodana（linter / Gradle plugin） | 2024.3 / 2025.3.1 | 静态分析                                             |
