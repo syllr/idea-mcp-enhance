@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-05
+
 ### Added
 
 - **`rerun_run_configuration` 区分 job / server**：job（构建脚本、测试、迁移，跑完就退）现在会**等到进程退出**

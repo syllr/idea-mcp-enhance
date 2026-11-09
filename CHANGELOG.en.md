@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-05
+
 ### Added
 
 - **`rerun_run_configuration` tells jobs from servers**: a job (build script, test, migration — something that ends by itself) is now awaited until the process exits, and returns `exitCode` plus the full output; a server (dev server, long-lived process) now returns as soon as the start is **triggered** — the deployment sync, the upload and the launch keep running in the background, so the caller polls instead of blocking. The result gains `triggered`: `triggered: true` with `started: null` is the normal server outcome. The configuration declares it with the `IDEA_MCP_ENHANCE_SERVER_RUN_CONFIG` environment variable: setting it (to anything but `false` / `0` / `no` / `off`) means server, leaving it out means job — the name only marks the exceptional case, so it reads the same way as the default. A `RemoteProcess` configuration is always a server — its Run session follows remote logs and never terminates. The result gains `runKind`, `exited` and `exitCode`.
