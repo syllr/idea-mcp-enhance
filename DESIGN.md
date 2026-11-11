@@ -32,11 +32,14 @@ src/main/kotlin/com/shenyuanlaolarou/ideamcpenhance/
 │       ├── CopyAsPromptAction.kt       ← 平台接线：选区
 │       ├── CopyDiagnosticsAction.kt    ← 平台接线：诊断
 │       └── EditorPromptContext.kt      ← 平台 API → 纯数据
-└── mcp/
+├── mcp/
     ├── RunLifecycleModels.kt           ← 纯数据 + 纯函数：状态快照 → JSON
     ├── RunLifecycleSchemas.kt          ← 工具描述符 / 输入 schema / 参数解析
     ├── RunConfigAccess.kt              ← 平台 API：RunManager / RunContentManager / ProcessHandler
     └── RunLifecycleToolsProvider.kt    ← 三个 McpTool：解析参数 → 调接线层 → 包结果
+
+└── ui/
+    └── AgentThreadsRightLayoutExtension.kt ← 默认布局扩展：air.threads 停靠右栏
 ```
 
 | 层                                                            | 允许                                                 | 禁止                      |
@@ -44,6 +47,7 @@ src/main/kotlin/com/shenyuanlaolarou/ideamcpenhance/
 | `prompt/format/`、`RunLifecycleModels`、`RunLifecycleSchemas` | 字符串 / `JsonObject` / mcpserver 的 descriptor 类型 | 平台 import、IO           |
 | `prompt/actions/`、`RunConfigAccess.kt`                       | 平台 API                                             | 字符串格式化 / 手写 JSON  |
 | `RunLifecycleToolsProvider.kt`                                | 编排                                                 | 直接操作 `ProcessHandler` |
+| `ui/`                                                         | 平台 API（`com.intellij.toolWindow` 的默认布局扩展） | 字符串格式化 / 手写 JSON  |
 
 **为什么这么切**：两个能力各有一样"对外契约"（prompt 文本 / MCP JSON），把契约做成纯函数，改契约的成本 = 改一个函数 +
 改断言，不需要启动 IDE。反过来，平台接线集中在一层，出问题时知道去哪儿看。
@@ -379,7 +383,8 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 | `mcp/TerminalEnv.kt` + `*TerminalEnv.kt`             | 纯/平台 | 5 个 provider 按固定顺序拼 `PATH`                                                                                                     |
 | `mcp/ProjectEnvSchemas.kt` / `ProjectEnvToolsProvider.kt` | 纯/编排 | `get_project_env`                                                                                                                     |
 | `mcp/McpToolBase.kt` / `LocalPath.kt`                | 编排/纯 | 异常兜底、项目解析；路径规范化                                                                                                        |
-| `resources/META-INF/plugin.xml`                      | —    | 插件描述 + 2 个 action + 可选依赖声明                                                                                                 |
+| `ui/AgentThreadsRightLayoutExtension.kt`             | 平台 | 默认布局扩展：把内置 `air.threads` 改挂右栏                                                                                           |
+| `resources/META-INF/plugin.xml`                      | —    | 插件描述 + 2 个 action + 默认布局扩展 + 可选依赖声明                                                                                  |
 | `resources/META-INF/mcpserver.xml`                   | —    | 可选依赖专属：`mcpServer.mcpToolsProvider` 注册                                                                                       |
 | `resources/META-INF/EULA.txt` / `PRIVACY_POLICY.txt` | —    | Marketplace 法务文本                                                                                                                  |
 | `test/.../format/PromptFormatTest.kt`                | 纯   | prompt 格式契约                                                                                                                       |
@@ -516,6 +521,38 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 解析是 **纯函数**（可单测）：按 `@` 切分，最多三段；两段时首段是 `win` 就算平台段，
 否则算环境段。解析结果由 `inspect_run_configuration` 的 `naming` 字段给出 ——
 让"这个配置是哪个 base 的哪个变体"成为工具给出的事实，而不是 agent 自己去猜。
+
+---
+
+## 8. 界面调整：Agent Sessions 默认停靠右侧
+
+**诉求**：IDEA 内置 JetBrains AI 的「Agent Sessions」（toolWindow id = `air.threads`）默认在左栏，
+手动拖到右边只对当前项目生效，新项目又回到左侧。
+
+**为什么只能在「默认布局」层改**：这个窗口不是本插件提供的。`air-plugin` 的 `plugin.xml` 声明的是
+`anchor="left"`，并且它还注册了一条 `defaultToolWindowLayout` 扩展，在构建默认布局时把
+`air.threads` 塞进左栏。`anchor` 不是扩展能单独赋值的字段 —— `DefaultToolWindowDescriptorBuilder`
+只有 `getAnchor()`，值由 `addOrUpdate` 所属的 stripe 决定（同 id 复用同一个 builder，后写覆盖先写）。
+所以我们的做法就是 `builder.right.addOrUpdate("air.threads") {}`，让后写的那次落在右栏。
+
+**为什么 `order` 只能写 `last`**（这条最容易写错，结论来自平台源码 + 实测）：
+
+| 写法 | 结果 |
+|------|------|
+| 不写 `order`（ANY） | 内置那条是 `last`，而 `last` 的语义是「排在所有非 last 扩展之后」⇒ 内置后执行，右栏被改回左栏 |
+| `order="after <内置的 orderId>"` | 与上面那条形成环，`LoadingOrder.sortByLoadingOrder` 直接抛 `SortingException: Could not satisfy sorting requirements` |
+| `order="last"` | 两条都在 last 组且互不约束 ⇒ 平台按**注册顺序**稳定排列；第三方插件晚于内置插件注册，故本插件最后执行 |
+
+顺带记一笔：`order="after X"` 里的 `X` 是 orderId —— xml 的 `id` 属性；没有 `id` 时兜底为
+`defaultExtensionNs + "." + 标签名`（2026.3 的实现，已用字节码确认）。
+本例内置那条没写 `id`，所以它的 orderId 是 `com.intellij.defaultToolWindowLayout`。
+
+**生效范围**：只有默认布局层 —— 全局 `window.layouts.xml` 还没有布局时构建的初始布局，以及
+`seedIntoExistingLayout` 把新工具窗口「补种」进既有项目布局时用的工厂默认布局。
+项目里已经存了 `air.threads` 条目的布局（用户手动调过的）不受影响。
+
+**风险**：`air.threads` 是 `air-plugin` 的内部标识，无稳定性保证；id 变了这里会退化成一条无人认领的
+布局记录（不报错、也不生效）。
 
 ---
 

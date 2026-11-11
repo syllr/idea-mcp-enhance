@@ -89,6 +89,20 @@
         -->
         <configurationType
                 implementation="com.shenyuanlaolarou.ideamcpenhance.mcp.RemoteProcessConfigurationType"/>
+
+        <!--
+          把内置 JetBrains AI 的「Agent Sessions」（air.threads）默认停靠到右栏。
+
+          order 必须是 last，不能写成 `after ...`：
+            · 内置 air-plugin 那条注册本身就是 order="last"；
+            · 平台里 last 的含义是「排在所有非 last 扩展之后」，所以非 last 的扩展一定先执行；
+            · `after <一个 last 扩展>` 会与上面这条形成环，平台抛 SortingException。
+          两条都是 last 时按注册顺序稳定排列，第三方插件晚于内置插件注册，故本插件最后执行。
+          详见 AgentThreadsRightLayoutExtension 的类注释。
+        -->
+        <defaultToolWindowLayout
+                implementation="com.shenyuanlaolarou.ideamcpenhance.ui.AgentThreadsRightLayoutExtension"
+                order="last"/>
     </extensions>
 
 </idea-plugin>

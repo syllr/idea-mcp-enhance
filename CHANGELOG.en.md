@@ -15,6 +15,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Agent Sessions docks on the right by default**: a `defaultToolWindowLayout` extension moves the built-in JetBrains AI `air.threads` tool window from the left stripe (where the bundled air plugin puts it) to the right stripe. It only affects the default layout — the initial layout of a fresh configuration and the factory default used when seeding a new tool window into an existing project layout. Project layouts that already contain the entry are left untouched.
+
+## [0.1.11] - 2026-11-11
+
+### Changed
+
+- **Version bump only**: the plugin content is identical to 0.1.9; this release is rebuilt from the 2026.3 compatibility branch (target platform 2026.3, `sinceBuild=263`).
+
 ## [0.1.9] - 2026-11-05
 
 ### Added

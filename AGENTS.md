@@ -57,7 +57,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 │       ├── CopyAsPromptAction.kt
 │       ├── CopyDiagnosticsAction.kt
 │       └── EditorPromptContext.kt
-└── mcp/                           ← 其余 MCP 能力（都只要 MCP Server）
+├── mcp/                           ← 其余 MCP 能力（都只要 MCP Server）
     ├── 运行态（Run Lifecycle）
     │   ├── RunLifecycleModels.kt        纯数据 + 纯函数：状态快照 → JSON
     │   ├── RunLifecycleSchemas.kt       工具描述符 / 输入 schema / 参数解析
@@ -92,6 +92,8 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
     └── 公共
         ├── McpToolBase.kt                    异常兜底 / 参数错误 / 项目解析
         └── LocalPath.kt
+└── ui/                            ← 与 prompt / mcp 都无关的界面调整
+    └── AgentThreadsRightLayoutExtension.kt  默认布局扩展：air.threads 停靠右栏
 ```
 
 **运行态**：`list_running_configurations` / `stop_run_configuration` / `rerun_run_configuration`，
@@ -176,6 +178,7 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | 改 Remote Process 配置页                 | `mcp/RemoteProcessRunConfiguration.kt`（`SettingsEditor`）                                                                                                                                          |
 | 改 `sync_deployments`                    | `mcp/DeploymentAccess.kt` + `mcp/DeploymentModels.kt` + `mcp/DeploymentSchemas.kt`                                                                                                                  |
 | 改插件显示名 / 版本号                    | `gradle.properties` 的 `pluginName` / `pluginVersion`                                                                                                                                               |
+| 改「Agent Sessions」的默认停靠位置        | `ui/AgentThreadsRightLayoutExtension.kt` + `plugin.xml` 的 `<defaultToolWindowLayout>`（`order` 只能写 `last`，理由见该类注释）                                                                     |
 
 ## HARD RULES
 
@@ -305,6 +308,9 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
   模型拿到的仍是 `description`；传 null 时回退到 `description`
 - **`McpToolCategory` 的 `displayName` / `displayDescription`（2026.3 新增）** —— 都有默认值，按需补
 - **`McpToolsProvider.getTools()` 在 Kotlin 里是函数不是属性** —— 调用写 `.getTools()`
+- **`defaultToolWindowLayout` 的 `order` 只能写 `last`** —— `after <一个 last 扩展>` 会与「last 排在所有
+  非 last 之后」形成环，平台直接抛 `SortingException`；两条都写 `last` 时按注册顺序排列，第三方插件晚于
+  内置插件注册，所以能覆盖内置 `air-plugin` 对 `air.threads` 的左栏设置
 - **平台可能为「这个配置能不能跑」弹模态框，永久卡死 EDT** ⇒ 工具侧必须主动判断「现在是不是有模态对话框在等用户」
 - **`rerun` 的"结果未知"**：`started` / `runningAfter` 为 `null`（不知道）—— 别把 `null` 和 `false` 混起来。
   server 的**正常**返回就是 `triggered = true` + `started = null`，这不是异常
