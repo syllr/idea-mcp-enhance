@@ -25,13 +25,17 @@ internal object RemoteProcessHosts {
         return Path.of(base, ".opencode", "remote-shell", "hosts.json")
     }
 
-    /** 读整个 `hosts` 对象；文件不存在 / 坏掉时返回空对象。 */
+    /** 读整个 `hosts` 对象；文件不存在返回空对象，解析失败则明确报配置错误。 */
     fun readHosts(project: Project): JsonObject {
         val path = file(project)
         if (!Files.exists(path)) return JsonObject(emptyMap())
-        return runCatching {
-            Json.parseToJsonElement(Files.readString(path)).jsonObject["hosts"] as? JsonObject
-        }.getOrNull() ?: JsonObject(emptyMap())
+        val parsed = try {
+            Json.parseToJsonElement(Files.readString(path)).jsonObject
+        } catch (e: Exception) {
+            throw DeploymentConfigException("hosts.json 不是合法 JSON：${e.message}")
+        }
+        return parsed["hosts"] as? JsonObject
+            ?: throw DeploymentConfigException("hosts.json 缺少 hosts 对象。")
     }
 
     /** 这个 server 在 hosts.json 里有没有条目。 */
@@ -49,12 +53,15 @@ internal object RemoteProcessHosts {
         } ?: return emptyList()
         return array.mapNotNull { item ->
             val record = runCatching { item.jsonObject }.getOrNull() ?: return@mapNotNull null
-            val name = record["name"]?.jsonPrimitive?.content.orEmpty()
-            val localPath = record["localPath"]?.jsonPrimitive?.content.orEmpty()
-            val deployPath = record["deployPath"]?.jsonPrimitive?.content.orEmpty()
+            // 两条入口都 trim：`sync_deployments` 的工具参数和 `mappingFor` 都按 trim 后的值工作，
+            // 这里不 trim 会让「同一个值写进 hosts.json」和「从工具传进来」两种走法结果不同。
+            val name = record["name"]?.jsonPrimitive?.content?.trim().orEmpty()
+            val localPath = record["localPath"]?.jsonPrimitive?.content?.trim().orEmpty()
+            val deployPath = record["deployPath"]?.jsonPrimitive?.content?.trim().orEmpty()
             if (name.isEmpty() || localPath.isEmpty() || deployPath.isEmpty()) return@mapNotNull null
-            // 项目级 hosts.json 跟着仓库走：只允许相对路径。
+            // 项目级 hosts.json 跟着仓库走：只允许相对路径，且不能逃出项目根。
             requireRelativeLocalPath(name, localPath)
+            requireAbsoluteDeployPath(name, deployPath)
             val exclude = record["exclude"]?.let { element ->
                 runCatching { element as kotlinx.serialization.json.JsonArray }.getOrNull()
             }?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }.orEmpty()

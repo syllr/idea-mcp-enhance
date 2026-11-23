@@ -54,6 +54,17 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
         val command = options.command?.takeIf { it.isNotBlank() }
             ?: return McpToolCallResult.error("command 不能为空。", null)
         val kind = options.kind?.takeIf { it.isNotBlank() } ?: inferKind(command)
+        if (kind != "docker") {
+            val deploymentName = options.deployment?.takeIf { it.isNotBlank() }
+                ?: return McpToolCallResult.error("[deployment_config_incomplete] Deployment 不能为空。", null)
+            // 在触发 Run 之前读一遍；路径不合规会在这里以 deployment_config_incomplete 返回，
+            // 而不是等后台线程失败后只剩一行 Run 日志。
+            RemoteProcessHosts.deployments(project, server).firstOrNull { it.name == deploymentName }
+                ?: return McpToolCallResult.error(
+                    "[deployment_config_incomplete] 服务器 \"$server\" 下没有名为 \"$deploymentName\" 的 deployment。",
+                    null,
+                )
+        }
 
         val environment = buildRunEnvironment(project, settings)
             ?: return McpToolCallResult.error(
@@ -109,6 +120,8 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
             if (outcome.triggered) {
                 append("已触发发布：远端同步与启动在后台进行，是否成功尚未确认；")
                 append("读 `fullOutputPath` 看启动日志，按 2s / 4s / 8s / 16s 退避查远端进程")
+            } else if (outcome.submittedOnly) {
+                append("启动请求已提交，Before launch 构建仍在进行；稍后用 `list_remote_processes` 查终态")
             } else {
                 append("发布未触发（平台没接受启动请求）")
             }
@@ -128,7 +141,7 @@ private class DeployRemoteProcessTool : BaseMcpTool() {
                 put("server", server)
                 put("kind", kind)
                 put("triggered", outcome.triggered)
-                put("started", if (outcome.triggeredOnly) null else outcome.started)
+                put("started", if (outcome.triggeredOnly || outcome.submittedOnly) null else outcome.started)
                 put("triggeredAt", deployStartedAtMillis)
                 put("triggeredAtIso", isoTimestamp(deployStartedAtMillis))
                 outcome.sessionId?.let { put("sessionId", it) }
@@ -196,19 +209,19 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
     override suspend fun body(arguments: JsonObject): McpToolCallResult {
         val project = currentProject()
             ?: return invalidArgument("$LIST_REMOTE_PROCESSES_TOOL_NAME: no project is bound to this MCP session.")
-        val nameFilter = arguments.optionalString("configurationName")
-        val serverFilter = arguments.optionalString("server")
+        val nameFilter = arguments.optionalString("configurationName")?.trim()?.takeIf { it.isNotEmpty() }
+        val serverFilter = arguments.optionalString("server")?.trim()?.takeIf { it.isNotEmpty() }
 
-        val items = RunManager.getInstance(project).allSettings
-            .filter { it.type.id == "RemoteProcess" && !it.isTemplate }
+        val configurations = RunManager.getInstance(project).allSettings
+            .filter { it.type.id == REMOTE_PROCESS_TYPE_ID && !it.isTemplate }
             .mapNotNull { it.configuration as? RemoteProcessRunConfiguration }
+
+        val items = configurations
             .filter { nameFilter == null || it.name == nameFilter }
             .mapNotNull { inspect(project, it, serverFilter) }
 
-        val text = if (items.isEmpty()) {
-            "没有匹配的 Remote Process 配置。"
-        } else {
-            items.joinToString("\n") { item ->
+        val text = when {
+            items.isNotEmpty() -> items.joinToString("\n") { item ->
                 val where = item.server.ifEmpty { "?" }
                 val detail = when {
                     item.pid != null -> "  pid ${item.pid}"
@@ -218,6 +231,21 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
                 val log = item.logDir?.let { "  logDir $it" }.orEmpty()
                 "- [$where] ${item.configurationName}  ${item.kind}  ${item.status}$detail$log"
             }
+
+            // 空结果不是死路：项目里一条 Remote Process 都没有时，要给一条能照着做的路径，
+            // 否则调用方只会得出“这套部署规则用不上”。配置是项目资产，就在 .run/ 目录里。
+            configurations.isEmpty() -> buildString {
+                append("项目里还没有 Remote Process 配置。部署不会因此不可用 —— 先建一条：\n")
+                append("1. 在项目根写 `.run/<app>@<env>.run.xml`，`type=\"RemoteProcess\"`：")
+                append("`server` 用 IDE 的 SSH 配置名，`deployment` 用 ")
+                append("`.opencode/remote-shell/hosts.json` 里该 server 的 `deployments[].name`")
+                append("（项目级 `localPath` 必须相对项目根且只用 `/`，`deployPath` 必须是远端 `/` 开头的绝对路径）。\n")
+                append("2. 建完再调一次本工具：新配置会以 `status=stopped` 出现。\n")
+                append("3. 部署用 `deploy_remote_process`（远端配置的 Deploy）；只想传文件就不必建配置。")
+            }
+
+            else -> "没有匹配的 Remote Process 配置（name / server 过滤条件没命中）。当前全部：" +
+                configurations.joinToString("、") { it.name }
         }
         return McpToolCallResult.text(
             text,
@@ -301,11 +329,49 @@ private class ListRemoteProcessesTool : BaseMcpTool() {
                     workingDirectory = workingDirectory,
                     logDir = resolveAppLogDir(options.logDir, workingDirectory),
                     error = null,
+                    // `process` 也要给启动时间：部署说明让 agent 用 `startedAt >= triggeredAt`
+                    // 确认新实例起来了，只有 docker 填的话最常见的 process 场景永远无法确认。
+                    startedAt = pid?.let { processStartedAt(project, server, it.toString()) },
                 )
             }
 
             else -> invalid("kind 只能是 process 或 docker。")
         }
+    }
+}
+
+/** `ps -o etime=` 的 `[[dd-]hh:]mm:ss` → 秒数；解析不了返回 null。 */
+internal fun elapsedSeconds(raw: String): Long? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    val days = if ('-' in text) text.substringBefore('-').trim().toLongOrNull() ?: return null else 0L
+    val clock = if ('-' in text) text.substringAfter('-') else text
+    val parts = clock.split(':').map { part -> part.trim().toLongOrNull() ?: return null }
+    val seconds = when (parts.size) {
+        3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+        2 -> parts[0] * 60 + parts[1]
+        else -> return null
+    }
+    return days * 86_400 + seconds
+}
+
+/**
+ * 远端进程的启动时间（ISO-8601 UTC）。
+ *
+ * `ps -o lstart=` 的格式跟 locale 走、不能当契约；`etimes` 在 macOS 上不存在。所以用
+ * `etime`（两端都有）加远端 `date +%s` 反推绝对时刻。
+ */
+private fun processStartedAt(project: Project, server: String, pid: String): String? {
+    val safePid = pid.filter { it.isDigit() }
+    if (safePid.isEmpty()) return null
+    return try {
+        val lines = RemoteSshClient.run(project, server, "date +%s; ps -o etime= -p $safePid")
+            .lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val now = lines.getOrNull(0)?.toLongOrNull()
+        val elapsed = elapsedSeconds(lines.getOrNull(1).orEmpty())
+        if (now == null || elapsed == null) null else java.time.Instant.ofEpochSecond(now - elapsed).toString()
+    } catch (e: Exception) {
+        null
     }
 }
 

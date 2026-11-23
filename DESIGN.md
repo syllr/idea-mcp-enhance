@@ -373,7 +373,7 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 | `mcp/RunConfigurationStamping.kt`                    | 平台 | 用 `ExecutionListener` 给 `ProcessHandler` 盖配置名                                                                                   |
 | `mcp/RemoteProcessRunConfiguration.kt`               | 平台 | `RemoteProcess` 配置类型 + SettingsEditor                                                                                             |
 | `mcp/RemoteProcessRunProfileState.kt`                | 平台 | 部署同步 + SSH 启动                                                                                                                   |
-| `mcp/RemoteProcessFinder.kt` / `RemoteProcessHosts.kt` | 平台 | 找配置 / `hosts.json` 三级合并                                                                                                        |
+| `mcp/RemoteProcessFinder.kt` / `RemoteProcessHosts.kt` | 平台 | 找配置 / 读项目级 `hosts.json`                                                                                                        |
 | `mcp/RemoteProcessSync.kt` / `RemoteSshClient.kt`    | 平台 | SFTP 差量同步 / SSH 执行                                                                                                              |
 | `mcp/RemoteProcessToolsProvider.kt`                  | 编排 | `deploy_remote_process` / `list_remote_processes`                                                                                     |
 | `mcp/RemoteProcessDeploySchemas.kt`                  | 纯   | 两个 Remote Process 工具的描述符 / 输出 schema                                                                                        |
@@ -408,7 +408,7 @@ Cannot create extension (class=Z.Z.Z.Z.Z) [Plugin: com.intellij.modules.ultimate
 - 日志文件在 `PathManager.getTempDir()`，单文件 8 MB 封顶；IDE 启动时清理 7 天前的旧文件
 - 没有静态全局可变状态：配置名、日志路径、开始时刻都盖在 `ProcessHandler` 自己身上（`UserDataHolderBase`）
 
-MCP 工具的等待上限（默认 5s / 10s）是 **有意的**：避免 agent 卡在一个永不退出的进程上，也让 IDE 的
+MCP 工具的等待上限（默认 300s）是 **有意的**：避免 agent 卡在一个永不退出的进程上，也让 IDE 的
 事件循环不会被长时间占住。
 
 ---
@@ -563,7 +563,7 @@ ij_enhance_run__<key16>_<startedAtMillis>_<rand4>.json  ← 富化：pid / exitC
 | 目标平台 263+                   | 不可降                    | MCP Server 是 2026.3 内置插件且未上 Marketplace，编译它的 API 会抬高低限；263 的构造器与 262 二进制不兼容，所以下限就是 263 |
 | `rerun` 不支持 `file:line`      | 只按配置名                | 内置 MCP 的 `get_run_configurations(filePath=...)` 已能给出可执行点，组合使用即可 |
 | MCP 无自动化启停测试            | 靠 `runIde` 手工验证      | `BasePlatformTestCase` 在 2026.2.3 上阻塞；2026.3 仍 `@Ignore`，恢复后应补        |
-| `stop` 的等待是同步阻塞         | 默认 5s 上限              | 事件循环友好的做法是挂 `ProcessListener` + suspend；当前调用量下同步更简单可靠    |
+| `stop` 的等待是同步阻塞         | 默认 300s 上限            | 事件循环友好的做法是挂 `ProcessListener` + suspend；当前调用量下同步更简单可靠    |
 | executor 信息不在输出里         | 不返回                    | `ExecutionManager.getExecutors(descriptor)` 是 `@ApiStatus.Internal`，本插件不用  |
 | 诊断的 quick-fix 建议           | 只输出消息 + 出错行       | `HighlightInfo` 有 quick fix 列表，但 API 偏 internal                             |
 | 依赖 `HighlightInfo`（impl 包） | 已确认非 `@Internal`      | 若未来被废弃，改 `collectDiagnostics` 一处即可                                    |

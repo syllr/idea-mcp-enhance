@@ -20,8 +20,8 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 - 目标平台 **2026.3**（build 263.7307.200）：`pluginSinceBuild=263`、`pluginUntilBuild=263.*`。
   内置 MCP Server 的 `McpToolDescriptor` / `McpToolCategory` 构造器在 263 加了字段，与 262 二进制不兼容，
   所以这一版只支持 2026.3
-- **`main` 的 0.1.9 面向 2026.2；本分支是同一版本号的 2026.3 变体**。只做本地 / 分支产物；
-  要发布到 Marketplace 前必须换一个版本号（0.1.9 已被 main 占用），并同时补两个 CHANGELOG 的对应段落
+- **当前 0.1.16 面向 2026.3**（0.1.9 是 2026.2 的旧版本，已不再更新）。
+  发布前必须在 `CHANGELOG.md` 与 `CHANGELOG.en.md` 各补一段当前版本；缺英文段会让构建失败
 - **IDEA Community 在 2026.2 已停发**（`ideaIC:2026.2.3` 不存在），只能用 `intellijIdea(...)` 拉 Ultimate
 - 运行时依赖：**无第三方库** —— 只用 IntelliJ Platform API + 内置 `com.intellij.mcpServer` + 平台自带的
   `kotlinx-serialization-json`
@@ -132,8 +132,9 @@ prompt 那一半不联网、不起进程、不读配置文件；MCP 那一半只
 | `mcp/RunLogAndNamingTest`              | 纯 JUnit 4（24 例）    | 命名文法 / 日志键与文件名 / 历史条目 null 键 / 列表精简形状 / 定义态 schema                 | ✅ 通过         |
 | `mcp/RunLogTailTest`                   | 纯 JUnit 4（5 例）     | 日志尾部预览的截断与边界                                                                    | ✅ 通过         |
 | `mcp/RunKindTest`                      | 纯 JUnit 4（8 例）     | job / server 判定                                                                           | ✅ 通过         |
-| `mcp/RemoteProcessKindTest`            | 纯 JUnit 4（4 例）     | `RemoteProcess` 恒为 server                                                                 | ✅ 通过         |
-| `mcp/LocalPathTest`                    | 纯 JUnit 4（2 例）     | 本地路径规范化                                                                              | ✅ 通过         |
+| `mcp/RemoteProcessKindTest`            | 纯 JUnit 4（4 例）     | `RemoteProcess` 恒为 server / 运行时长解析                                                                 | ✅ 通过         |
+| `mcp/LocalPathTest`                    | 纯 JUnit 4（5 例）     | 本地路径规范化                                                                              | ✅ 通过         |
+| `mcp/DeploymentMappingTest`            | 纯 JUnit 4（3 例）     | `deployPath` → IDE「rootFolder + 相对路径」的映射                                          | ✅ 通过         |
 | `mcp/ProjectEnvTest`                   | 纯 JUnit 4（2 例）     | `get_project_env` 的返回形状 / provider 固定顺序                                            | ✅ 通过         |
 | `prompt/actions/EditorDiagnosticsTest` | `BasePlatformTestCase` | 诊断采集能从 markup model 捞出编译错误                                                      | ⛔ 禁用（见下） |
 
@@ -327,6 +328,9 @@ unzip -l build/distributions/idea-mcp-enhance-*.zip
 - **远程执行已整体移出本插件** —— `execute_in_remote_host` / `terminal_read` / `terminal_interrupt` / `list_terminals` / `RemoteTerminalAccess` / `terminal-io.xml` / `remote-terminal.xml` 全部删除；`opencode-idea` 的 `remote_exec` 直接 SSH，凭据由本插件的隐藏工具 `get_ssh_servers` 提供
 - **`get_ssh_servers` 只返回 SSH 配置与凭据，不含 deployment 映射** —— `Deployable.copyToCredentials()` 会把 `Credentials.getPasswordAsString()` 塞进 holder（PASSWORD → `password`，KEY_PAIR → `passphrase`），所以不需要读 PasswordSafe / Keychain；工具在 `opencode-idea` 的隐藏清单里，summary 里**绝不能出现凭据字段**
 - **mapping 的 `deployPath` 必须拼上 `rootFolder` 再返回** —— IDE 里它是**相对路径**（`/` = 服务器根），直接当目标目录会把文件传到远端 `/`；`runIde` 沙箱实测过 `mcp-test-project` 这一条（`rootFolder=/Users/yutao/Desktop/data/test` + `deploy=/`）
+- **`deployPath` 按 POSIX 判，`localPath` 按三平台判** —— 部署机只有 Linux / macOS，`deployPath` 必须以 `/` 开头：相对路径会被 SFTP 当成 SSH 用户的家目录，文件落到 `/home/<user>/...`，启动命令却还在找原目录，表现成「部署成功、进程起不来」；`localPath` 必须相对项目根且不含 `..`。两边都**不能用 `Path.isAbsolute`** —— 它按本机语义算（Windows 上 `/srv/app` 不算绝对路径，macOS 上 `C:\app` 也不算）。分隔符只允许 `/`，`src\app` 直接报错，Windows 也一样
+- **`RemoteProcessHosts.deployments()` 抛出的配置错误必须在 SettingsEditor 里兜住** —— 它在 `resetEditorFrom()` 里被调用，一条写坏的 deployment 抛出去就是整张配置页报错、看不到根因；界面统一走 `deploymentsOf()`，把原因显示成红字提示行
+- **`list_remote_processes` 的空结果要给下一步** —— 项目里一条 Remote Process 都没有时返回「怎么建」（`.run/<app>@<env>.run.xml` + `type="RemoteProcess"`），否则调用方只能得出「这套部署规则用不上」；文案只写本插件自己的工具名，`ide_` 前缀是客户端别名，不属于这里
 
 ## REFERENCES
 

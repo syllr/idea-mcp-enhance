@@ -54,24 +54,5 @@ internal object RemoteProcessFinder {
     private fun sanitize(command: String): String =
         command.replace("'", "").replace("\"", "").trim()
 
-    private fun cwdOf(project: Project, server: String, pid: Long): String? {
-        val output = RemoteSshClient.run(
-            project,
-            server,
-            "lsof -p $pid -a -d cwd -Fn 2>/dev/null | tail -1 | sed 's/^n//' || true",
-        )
-        return output.trim().takeIf { it.isNotEmpty() }
-    }
-
-    /** `cd <dir> && pwd -P`：展开符号链接，和 `lsof` 的 cwd 对齐（`/tmp` → `/private/tmp`）。 */
-    private fun normalizePath(project: Project, server: String, path: String): String {
-        val output = RemoteSshClient.run(
-            project,
-            server,
-            "cd ${quote(path)} 2>/dev/null && pwd -P || echo ${quote(path)}",
-        )
-        return output.trim()
-    }
-
     private fun quote(value: String): String = "'${value.replace("'", "'\\''")}'"
 }

@@ -104,7 +104,7 @@ internal object RemoteProcessSync {
     /** 相对路径是否命中排除项：`p === pattern` 或 `p` 以 `pattern/` 开头。 */
     internal fun isExcluded(relative: String, patterns: List<String>): Boolean =
         patterns.any { pattern ->
-            val trimmed = pattern.trim().trimEnd('/')
+            val trimmed = pattern.trim().replace(Regex("^\\./"), "").trimEnd('/')
             trimmed.isNotEmpty() && (relative == trimmed || relative.startsWith("$trimmed/"))
         }
 }

@@ -657,7 +657,7 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 | 操作系统 | 无平台限制（纯平台 API + AWT）                                                                       |
 | 目标 IDE | **2026.3（build 263）**；`platformBundledPlugins` 里的 `com.intellij.mcpServer` 决定了这一下限 |
 | 外部命令 | 无                                                                                                   |
-| 用户配置 | 无（不读写任何配置文件）                                                                             |
+| 用户配置 | 没有自己的配置文件；`Remote Process` 读项目 `.opencode/remote-shell/hosts.json` 与 `.run/*.run.xml`，`sync_deployments` 改写 IDE 的 Deployment 配置                 |
 
 ---
 
@@ -671,4 +671,4 @@ MCP Server 在派发任何工具之前，先解析"这次调用针对哪个项�
 
 ## 版本与变更
 
-见 [`CHANGELOG.md`](./CHANGELOG.md)。当前版本 `0.0.1`。
+见 [`CHANGELOG.md`](./CHANGELOG.md)。当前版本 `0.1.16`。

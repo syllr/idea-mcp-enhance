@@ -150,6 +150,9 @@ internal fun startRemoteProcess(
                 ?: throw ExecutionException("服务器 \"$server\" 下没有名为 \"$deploymentName\" 的 deployment。")
             val directory = options.workingDirectory?.takeIf { it.isNotBlank() }
                 ?: deployment.deployPath
+            // `workingDirectory` 是远端路径；相对路径会让 `cd` 失败但 `& echo $!` 仍回一个 pid，
+            // 表现成“已启动、实际没进程”。
+            requireAbsoluteRemotePath("workingDirectory", directory)
             workingDirectory = directory
             // 启动命令的 stdout/stderr 放在部署目录下的 `process-output/`，**一次运行一个文件**：
             // - 复用同一个文件（`>>` 追加）会把上一次的输出混进来，排查时分不清哪次是哪次；
@@ -242,7 +245,8 @@ private fun confirmRestart(project: Project, message: String): Boolean {
 internal fun resolveAppLogDir(configured: String?, workingDirectory: String?): String? {
     val raw = configured?.trim().orEmpty()
     if (raw.isEmpty()) return null
-    if (java.nio.file.Path.of(raw).isAbsolute) return raw
+    // logDir 是远端路径，不能用本机 Path.isAbsolute 判。
+    if (raw.startsWith("/")) return raw
     return if (workingDirectory.isNullOrBlank()) raw else "$workingDirectory/$raw"
 }
 
@@ -410,9 +414,5 @@ internal fun ensureDockerName(command: String, container: String): String {
         trimmed.replaceFirst("docker run", "docker run --name $container")
     }
 }
-
-/** 从 `docker run --name x` 里取容器名。 */
-internal fun containerNameOf(command: String): String? =
-    Regex("(?:^|\\s)--name[=\\s]+([^\\s]+)").find(command)?.groupValues?.get(1)
 
 internal fun quote(value: String): String = "'${value.replace("'", "'\\''")}'"

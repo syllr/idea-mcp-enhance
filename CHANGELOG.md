@@ -4,11 +4,29 @@
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-23
+
 ### Added
 
 - **「Agent Sessions」默认停靠右栏**：新增一条 `defaultToolWindowLayout` 扩展，把 IDEA 内置 JetBrains AI 的
   `air.threads` 工具窗口从内置插件声明的左栏改挂到右栏。只作用于默认布局层（新建配置的初始布局、
   以及新工具窗口补种进既有项目布局时用的工厂默认布局），已经存了该条目的项目布局不受影响。
+
+### Fixed
+
+- **deployment 路径约束在入口处挡住了「传错目录」这类静默失败**：`hosts.json` 的 `deployPath` 必须是远端
+  POSIX 绝对路径（以 `/` 开头）—— 相对路径会被 SFTP 当成 SSH 用户的家目录，文件传到 `/home/<user>/...`
+  而启动命令仍在找原目录，表现出来的却是「部署成功、进程起不来」；`localPath` 除必须相对项目根之外，
+  现在也不允许出现 `..`（不能逃出项目根）；分隔符只允许 `/`，`src\app` 直接报错，Windows 也一样。
+  判定按「三平台的绝对写法」逐个排除而不是 `Path.isAbsolute`，后者按本机语义算，
+  会在 Windows 上把 `/srv/app` 误判成相对路径。违反时 deploy 直接以 `[deployment_config_incomplete]`
+  失败并点名是哪条 deployment，不再把文件传到别处。
+- **配置页不会因为 `hosts.json` 写坏而整张报错**：`RemoteProcessHosts.deployments()` 的校验异常会在
+  `resetEditorFrom()` 里抛出（以前一条写错的 deployment 就让配置页崩掉、看不到根因）。现在 Deployment
+  下拉框照常可用，错误原因显示在下方的红字提示行里。
+- **`list_remote_processes` 空结果不再是死路**：项目里一条 Remote Process 都没有时，返回建配置的路径
+  （`.run/<app>@<env>.run.xml`、`type="RemoteProcess"`，`deployment` 取 `hosts.json` 里该 server 的名字），
+  否则调用方只能得出「这套部署规则用不上」；过滤条件没命中时则列出当前全部配置名。
 
 ## [0.1.11] - 2026-11-11
 

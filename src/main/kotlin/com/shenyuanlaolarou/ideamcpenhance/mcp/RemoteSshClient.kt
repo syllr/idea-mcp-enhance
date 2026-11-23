@@ -75,27 +75,6 @@ internal object RemoteSshClient {
         }.get()
     }
 
-    /** 跑一条命令，输出非空就算活着；查询失败按活着处理，避免误删记录。 */
-    fun alive(project: Project, serverName: String, remoteCommand: String): Boolean = runCatching {
-        run(project, serverName, remoteCommand).trim().isNotEmpty()
-    }.getOrDefault(true)
-
-    /** 批量查远端哪些 pid 还活着。 */
-    fun alivePids(project: Project, serverName: String, pids: Collection<Long>): Set<Long> {
-        if (pids.isEmpty()) return emptySet()
-        val list = pids.joinToString(",")
-        val output = run(project, serverName, "ps -p $list -o pid= 2>/dev/null || true")
-        return output.lineSequence()
-            .mapNotNull { it.trim().toLongOrNull() }
-            .toSet()
-    }
-
-    /** 远端 PID 是否还活着。 */
-    fun isAlive(project: Project, serverName: String, pid: Long): Boolean = runCatching {
-        val output = run(project, serverName, "ps -p $pid -o pid= 2>/dev/null || true")
-        output.trim().toLongOrNull() == pid
-    }.getOrDefault(false)
-
     /** 先 TERM，1 秒后还在就 KILL。 */
     fun kill(project: Project, serverName: String, pid: Long) {
         run(
@@ -160,5 +139,4 @@ internal object RemoteSshClient {
         return path.replace("\$USER_HOME\$", home).replace("\${USER_HOME}", home)
     }
 
-    private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 }

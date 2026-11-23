@@ -36,9 +36,8 @@ import javax.swing.JPanel
 /**
  * `Remote Process`：在某个 SSH 配置对应的机器上启动 / 停止一个后台进程。
  *
- * 配置存在 run configuration 里；进程状态存在项目 `hosts.json` 的
- * `hosts.<server>.processes` 下 —— 与 OpenCode 的 `remote_start` / `remote_list_processes`
- * 读的是同一份，谁启动的都能在 Run 窗口和工具结果里看到。
+ * 配置存在 run configuration 里；进程状态**不持久化**，以远端 `ps` / `docker ps` 的结果
+ * 为准（`list_remote_processes` 每次现查），所以谁启动的都能看到，也不会因为插件重启而失真。
  *
  * Start / Rerun 会先做一次 IDE deployment 同步（差量、overwrite），再 `nohup` 启动；
  * Stop 先 TERM 再 KILL。Attach / Unattach 不在这里 —— 它们不启动进程，走 MCP 侧。
@@ -132,6 +131,14 @@ class RemoteProcessRunConfiguration(
         if (kind == "docker" && remoteOptions.container.isNullOrBlank()) {
             throw RuntimeConfigurationError("docker 需要 Container 名（用于判断容器是否已启动）。")
         }
+        // workingDirectory 是远端路径；相对路径会让 cd 失败但启动脚本仍回一个 pid。
+        remoteOptions.workingDirectory?.takeIf { it.isNotBlank() }?.let { directory ->
+            try {
+                requireAbsoluteRemotePath("workingDirectory", directory)
+            } catch (e: DeploymentConfigException) {
+                throw RuntimeConfigurationError(e.message)
+            }
+        }
     }
 
     override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState =
@@ -154,6 +161,18 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
     private val containerField = JBTextField()
 
     private val statusLabel = JBLabel("未查询")
+
+    /**
+     * `hosts.json` 写坏时的提示；正常时整行隐藏。
+     *
+     * 配置页是用户点开就能看到的地方，不能因为一条写错的 deployment 让 `resetEditorFrom()`
+     * 抛异常 —— 那样整张页面报错，反而看不到是哪条配置的问题。
+     */
+    private val deploymentsErrorLabel = JBLabel().apply {
+        foreground = com.intellij.ui.JBColor.RED
+        isVisible = false
+    }
+
     private val deployButton = JButton("Deploy").apply { addActionListener { deploy() } }
     private val statusPanel = JPanel(BorderLayout(8, 0)).apply {
         add(statusLabel, BorderLayout.CENTER)
@@ -161,6 +180,7 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
     }
     /** 配置页打开期间每 10 秒查一次远端状态；关闭后停掉。 */
     private val statusTimer = Timer(10_000) { refreshProcesses() }
+    private var statusTimerHooked = false
 
     /** 一次查询还没回来就不再发新的，避免状态一直停在「查询中」。 */
     @Volatile
@@ -177,6 +197,7 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
     private val rootPanel: JComponent = panel {
         row("SSH configuration:") { cell(serverCombo).align(AlignX.FILL) }
         row("Deployment:") { cell(deploymentCombo).align(AlignX.FILL) }
+        row { cell(deploymentsErrorLabel).align(AlignX.FILL) }
         row("Command:") { cell(commandField).align(AlignX.FILL) }
         workingDirectoryRow = row("Working directory:") { cell(workingDirectoryField).align(AlignX.FILL) }
         logDirRow = row("Application log directory:") { cell(logDirField).align(AlignX.FILL) }
@@ -229,13 +250,27 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
 
     private fun refreshDeployments() {
         val server = serverCombo.selectedItem as? String
-        val names = server?.let { name -> RemoteProcessHosts.deployments(project, name).map { it.name } }
-            .orEmpty()
+        val names = deploymentsOf(server).map { it.name }
         val current = deploymentCombo.selectedItem as? String
         deploymentCombo.removeAllItems()
         names.forEach { deploymentCombo.addItem(it) }
         if (current != null && names.contains(current)) deploymentCombo.selectedItem = current
         applyDeploymentDefaultPath()
+    }
+
+    /** 读某个 server 的 deployment 列表；`hosts.json` 写坏时把原因显示在配置页上，不往上抛。 */
+    private fun deploymentsOf(server: String?): List<RemoteProcessHosts.Deployment> {
+        if (server == null) return emptyList()
+        return runCatching { RemoteProcessHosts.deployments(project, server) }
+            .onSuccess {
+                deploymentsErrorLabel.isVisible = false
+                deploymentsErrorLabel.text = ""
+            }
+            .onFailure { e ->
+                deploymentsErrorLabel.text = e.message?.takeIf { it.isNotBlank() } ?: "读取 deployment 失败。"
+                deploymentsErrorLabel.isVisible = true
+            }
+            .getOrDefault(emptyList())
     }
 
     /**
@@ -246,8 +281,8 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
     private fun applyDeploymentDefaultPath() {
         val server = serverCombo.selectedItem as? String
         val name = deploymentCombo.selectedItem as? String
-        val path = if (server != null && name != null) {
-            RemoteProcessHosts.deployments(project, server).firstOrNull { it.name == name }?.deployPath
+        val path = if (name != null) {
+            deploymentsOf(server).firstOrNull { it.name == name }?.deployPath
         } else {
             null
         }
@@ -335,7 +370,13 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
         val dialog = com.intellij.openapi.ui.DialogWrapper.findInstance(rootPanel)
         val launch = {
             runManager.selectedConfiguration = settings
-            ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+            try {
+                ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+            } catch (e: Exception) {
+                // 没走到 execute() 就没人清这个标记；留着会让下一次普通 Run 变成 deploy 语义。
+                (settings.configuration as? RemoteProcessRunConfiguration)?.remoteOptions?.deployOnly = false
+                Messages.showErrorDialog(project, e.message ?: "启动失败", "Remote Process")
+            }
         }
         if (dialog != null) {
             dialog.close(com.intellij.openapi.ui.DialogWrapper.OK_EXIT_CODE)
@@ -360,12 +401,15 @@ private class RemoteProcessSettingsEditor(private val project: Project) :
         containerField.text = options.container.orEmpty()
         lastDeploymentPath = (deploymentCombo.selectedItem as? String)?.takeIf { it.isNotBlank() }?.let { name ->
             val server = serverCombo.selectedItem as? String
-            server?.let { RemoteProcessHosts.deployments(project, it).firstOrNull { it.name == name }?.deployPath }
+            deploymentsOf(server).firstOrNull { it.name == name }?.deployPath
         }
         updateKindRows()
         refreshProcesses()
 
-        // 配置页显示期间每 3 秒查一次；从界面上移除就停掉。
+        // 配置页显示期间每 10 秒查一次；从界面上移除就停掉。
+        // `resetEditorFrom` 会被 Reset / 重开配置页反复调用，监听器只能注册一次。
+        if (statusTimerHooked) return
+        statusTimerHooked = true
         rootPanel.addAncestorListener(object : javax.swing.event.AncestorListener {
             override fun ancestorAdded(event: javax.swing.event.AncestorEvent) {
                 statusTimer.start()

@@ -89,9 +89,8 @@ content:
 ```kotlin
 val a = 1
 val b = 2
-````
-
 ```
+````
 
 ### 2. 复制当前文件的错误与警告（Copy Diagnostics as Prompt）
 
@@ -100,8 +99,7 @@ val b = 2
 
 输出示例：
 
-```
-
+````
 location:src/main/kotlin/Foo.kt
 diagnostics:
 
@@ -109,14 +107,15 @@ diagnostics:
   foo();
 - [WARNING] line 14: 'x' is never used
   val x = 1
-
 ````
 
 > **菜单项是灰的？** 说明当前文件没有 error / warning（这也是它在告诉你"这个文件没问题"）。**Copy as Prompt** 则是没选中非空白文本时为灰。
 
 ## 配置
 
-**无需任何配置。** 插件不读写配置文件、不读取环境变量。MCP 工具的开关跟随 IDE 内置 MCP Server 的设置。
+**没有自己的配置文件。** 插件不读取环境变量；`Remote Process` 会读项目里的
+`.opencode/remote-shell/hosts.json` 与 `.run/*.run.xml`（通过 IDE 的 run configuration 机制），
+`sync_deployments` 会改写 IDE 的 Deployment 配置。MCP 工具的开关跟随 IDE 内置 MCP Server 的设置。
 
 ## 故障排除
 
@@ -148,7 +147,7 @@ diagnostics:
 ./gradlew test                     # 单元测试（纯函数 + 平台集成）
 ./gradlew runIde                   # 启动带插件的 IDE
 ./gradlew buildPlugin              # 构建插件 zip
-````
+```
 
 目录结构、强制约束与平台 API 踩坑见 [`AGENTS.md`](./AGENTS.md)；行为契约见 [`SPEC.md`](./SPEC.md)；架构与关键决策见 [`DESIGN.md`](./DESIGN.md)。
 
@@ -157,7 +156,7 @@ diagnostics:
 | 项       | 约束                                                         |
 | -------- | ------------------------------------------------------------ |
 | IDE      | **2026.3（build 263）**——MCP 增强依赖这一版的内置 MCP Server |
-| 其他 IDE | 带 `com.intellij.modules.platform` 的都支持（prompt 功能）   |
+| 其他 IDE | 其他 JetBrains IDE 只支持 prompt 两个 action；MCP 增强依赖 2026.3 的内置 MCP Server |
 | JDK      | 21（仅构建需要，运行在 IDE 自带的 JBR 上）                   |
 
 > ⚠️ 与上游 [`syllr/copy-as-prompt`](https://github.com/syllr/copy-as-prompt) 的关系：prompt 部分的实现与输出格式契约来自那个仓库，保持逐字节一致；本仓库额外加入了 MCP 增强，并把目标平台提到 2026.3。

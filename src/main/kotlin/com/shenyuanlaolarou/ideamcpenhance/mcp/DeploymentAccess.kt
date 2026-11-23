@@ -123,7 +123,14 @@ internal fun syncDeployments(
 
     for (request in requests) {
         requireRelativeLocalPath(request.name, request.localPath)
-        val existing = manager.flattenedServers.firstOrNull { it.getName() == request.name }
+        requireAbsoluteDeployPath(request.name, request.deployPath)
+        val sameName = manager.flattenedServers.firstOrNull { it.getName() == request.name }
+        if (sameName != null && sameName.findSshConfig(project)?.name != serverName) {
+            throw DeploymentConfigException(
+                "deployment \"${request.name}\" 已存在于另一台 server，名字必须全局唯一。",
+            )
+        }
+        val existing = sameName
         if (existing == null) {
             val webServer = WebServerConfig().apply {
                 // `addServer` 会 clone 之后再加入；id 必须在这里生成，否则写 mapping 时
@@ -133,7 +140,8 @@ internal fun syncDeployments(
                 fileTransferConfig.apply {
                     accessType = AccessType.SFTP
                     setSshConfig(sshConfig)
-                    setRootFolder(request.deployPath)
+                    // 与 resolveMapping 一样按 trim 后的值写：校验放过的就是 trim 后的路径。
+                    setRootFolder(request.deployPath.trim())
                 }
                 // `setSshConfig` 会把 name 重算成 `sftp://host:port`，必须在它之后写回用户给的名字。
                 setName(request.name)
@@ -178,12 +186,21 @@ private fun applyDeployment(
     server: WebServerConfig,
     request: DeploymentSyncRequest,
 ): Boolean {
-    val mapping = mappingFor(project, server, request)
+    val currentRoot = server.fileTransferConfig.rootFolder?.trim().orEmpty()
+    val (nextRoot, relative) = resolveMapping(currentRoot, request.deployPath)
+    val mapping = DeploymentPathMapping().apply {
+        localPath = resolveLocalPath(project.basePath, request.localPath)
+        deployPath = relative
+        webPath = "/"
+    }
     val excludes = request.exclude.map { ExcludedPath(it, true) }
 
     val currentMappings = publish.getPathMappings(server.id).orEmpty()
     val currentExcludes = publish.getExcludedPaths(server.id).orEmpty()
-    val sameMapping = currentMappings.size == 1 &&
+    // `rootFolder` 也要比：deployPath 改成不相关目录时相对路径同样是 `/`，
+    // 只比 mapping 会得出 `unchanged`，而部署目标其实已经变了。
+    val sameMapping = currentRoot == nextRoot &&
+        currentMappings.size == 1 &&
         currentMappings.first().localPath == mapping.localPath &&
         currentMappings.first().deployPath == mapping.deployPath
     val sameExcludes = currentExcludes.map { it.path.orEmpty() } == excludes.map { it.path.orEmpty() }
@@ -191,6 +208,7 @@ private fun applyDeployment(
 
     // 平台的配置写入口：必须在写锁里，UI 与 MCP 线程都要能看到同一个状态。
     ApplicationManager.getApplication().invokeAndWait {
+        if (currentRoot != nextRoot) server.fileTransferConfig.setRootFolder(nextRoot)
         publish.setPathMappings(server.id, listOf(mapping))
         publish.setExcludedPaths(server.id, excludes)
     }
@@ -200,28 +218,18 @@ private fun applyDeployment(
 /**
  * `hosts.json` 的绝对 `deployPath` → IDE 的「rootFolder + 相对路径」。
  *
- * 能嵌进现有 rootFolder 就嵌进去；嵌不进就把 rootFolder 改成 deployment 目录、
+ * 能嵌进现有 rootFolder 就嵌进去；嵌不进就以 deployment 目录为 rootFolder、
  * mapping 用 `/`。这样拼出来的绝对路径始终等于请求里的 `deployPath`。
+ *
+ * 纯函数：`rootFolder` 的写回由调用方放进 `invokeAndWait`，不在这里改平台状态。
  */
-private fun mappingFor(
-    project: Project,
-    server: WebServerConfig,
-    request: DeploymentSyncRequest,
-): DeploymentPathMapping {
-    val root = server.fileTransferConfig.rootFolder?.trim().orEmpty()
-    val deployPath = request.deployPath.trim()
-    val relative = when {
-        root.isNotEmpty() && deployPath == root -> "/"
-        root.isNotEmpty() && deployPath.startsWith("$root/") -> deployPath.removePrefix(root)
-        else -> {
-            server.fileTransferConfig.setRootFolder(deployPath)
-            "/"
-        }
-    }
-    return DeploymentPathMapping().apply {
-        localPath = resolveLocalPath(project.basePath, request.localPath)
-        this.deployPath = relative
-        webPath = "/"
+internal fun resolveMapping(rootFolder: String?, deployPath: String): Pair<String, String> {
+    val root = rootFolder?.trim().orEmpty()
+    val target = deployPath.trim()
+    return when {
+        root.isNotEmpty() && target == root -> root to "/"
+        root.isNotEmpty() && target.startsWith("$root/") -> root to target.removePrefix(root)
+        else -> target to "/"
     }
 }
 

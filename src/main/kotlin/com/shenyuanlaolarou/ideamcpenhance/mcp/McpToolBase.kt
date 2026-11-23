@@ -1,5 +1,6 @@
 package com.shenyuanlaolarou.ideamcpenhance.mcp
 
+import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.mcpserver.McpTool
 import com.intellij.mcpserver.McpToolCallResult
 import com.intellij.mcpserver.projectOrNull
@@ -17,6 +18,10 @@ internal abstract class BaseMcpTool : McpTool {
 
     final override suspend fun call(args: JsonObject): McpToolCallResult = try {
         body(args)
+    } catch (e: DeploymentConfigException) {
+        McpToolCallResult.error("[deployment_config_incomplete] ${e.message}", null)
+    } catch (e: RuntimeConfigurationError) {
+        McpToolCallResult.error("[deployment_config_incomplete] ${e.message}", null)
     } catch (t: Throwable) {
         val detail = t.message?.takeIf { it.isNotBlank() } ?: t::class.java.simpleName
         McpToolCallResult.error("[internal_error] Tool ${descriptor.name} failed: $detail", null)

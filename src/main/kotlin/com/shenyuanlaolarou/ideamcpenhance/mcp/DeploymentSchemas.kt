@@ -114,8 +114,8 @@ private val DEPLOYMENT_SYNC_ITEM_SCHEMA: JsonObject = buildJsonObject {
         "properties",
         properties(
             "name" to property("string", "Deployment name; the WebServer entry in the IDE's Deployment list."),
-            "localPath" to property("string", "Local directory relative to the project root."),
-            "deployPath" to property("string", "Absolute remote directory."),
+            "localPath" to property("string", "Local directory relative to the project root, using `/` only."),
+            "deployPath" to property("string", "Absolute remote POSIX directory (Linux / macOS, starts with `/`)."),
             "exclude" to arrayOf(
                 property("string", "Path prefix or exact file; no `*` or `?` wildcards."),
                 "Paths that must not be transferred.",

@@ -20,8 +20,19 @@ class RemoteProcessKindTest {
     fun `应用日志目录只解析相对路径`() {
         assertNull(resolveAppLogDir(null, "/work"))
         assertEquals("/work/logs", resolveAppLogDir("logs", "/work"))
+        // logDir 是远端路径：按 `/` 开头判绝对，与本机平台无关。
         assertEquals("/abs/logs", resolveAppLogDir("/abs/logs", "/work"))
         assertEquals("logs", resolveAppLogDir("logs", null))
+    }
+
+    @Test
+    fun `进程运行时长按 etime 格式解析`() {
+        assertEquals(0L, elapsedSeconds("00:00"))
+        assertEquals(83L, elapsedSeconds("01:23"))
+        assertEquals(2L * 3600 + 3L * 60 + 4L, elapsedSeconds(" 2:03:04 "))
+        assertEquals(3L * 86_400 + 4L * 3600 + 5L * 60 + 6L, elapsedSeconds("3-04:05:06"))
+        assertNull(elapsedSeconds(""))
+        assertNull(elapsedSeconds("not-a-duration"))
     }
 
     @Test
@@ -38,12 +49,5 @@ class RemoteProcessKindTest {
             "docker run --name c img",
             ensureDockerName("docker run --name=old img", "c"),
         )
-    }
-
-    @Test
-    fun `从 docker run 里解析容器名`() {
-        assertEquals("aidata", containerNameOf("docker run -d --name aidata redis"))
-        assertEquals("aidata", containerNameOf("docker run --name=aidata redis"))
-        assertNull(containerNameOf("java -jar app.jar"))
     }
 }

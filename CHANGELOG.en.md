@@ -15,9 +15,17 @@
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-23
+
 ### Added
 
 - **Agent Sessions docks on the right by default**: a `defaultToolWindowLayout` extension moves the built-in JetBrains AI `air.threads` tool window from the left stripe (where the bundled air plugin puts it) to the right stripe. It only affects the default layout — the initial layout of a fresh configuration and the factory default used when seeding a new tool window into an existing project layout. Project layouts that already contain the entry are left untouched.
+
+### Fixed
+
+- **Deployment path rules now reject "writes to the wrong directory" configurations up front**: a `deployPath` in `hosts.json` must be an absolute remote POSIX path starting with `/` — a relative one is resolved by SFTP against the SSH user's home, so files land in `/home/<user>/...` while the start command still looks in the configured directory, which shows up as "deploy succeeded, process never came up". A `localPath` must stay relative to the project root and may no longer contain `..`, so it cannot escape it; only `/` is accepted, and a Windows-authored `src\app` is rejected on every OS. Absolute paths are recognised by checking the absolute forms of all three platforms rather than with `Path.isAbsolute`, whose semantics are the host's own and would treat `/srv/app` as relative on Windows. Both failures now stop the deploy with `[deployment_config_incomplete]`, naming the offending deployment, instead of copying files elsewhere.
+- **The configuration page survives a broken `hosts.json`**: the validation in `RemoteProcessHosts.deployments()` is reachable from `resetEditorFrom()` and used to take the whole page down with it, hiding the cause. The Deployment dropdown now stays usable and the reason is shown in a red hint row below it.
+- **`list_remote_processes` no longer dead-ends on an empty result**: when the project has no Remote Process configuration at all, the tool returns how to create one (`.run/<app>@<env>.run.xml` with `type="RemoteProcess"`, `deployment` taken from the server's entry in `hosts.json`); otherwise a caller could only conclude that the deployment setup does not apply. When filters match nothing, all current configuration names are listed instead.
 
 ## [0.1.11] - 2026-11-11
 
